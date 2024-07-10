@@ -1,9 +1,7 @@
 #ifndef LUNAR_LOG_H
 #define LUNAR_LOG_H
 
-// User must provide their own JSON implementation
 #include "json.hpp"
-
 #include <string>
 #include <chrono>
 #include <memory>
@@ -18,6 +16,7 @@
 #include <regex>
 #include <iostream>
 #include <filesystem>
+#include <iomanip>
 
 namespace minta {
 
@@ -119,8 +118,7 @@ private:
         std::string message;
         std::chrono::system_clock::time_point timestamp;
         std::string templateStr;
-        nlohmann::json arguments;
-        bool hasNamedPlaceholders;
+        std::vector<std::pair<std::string, std::string>> arguments;
         bool isJsonLogging;
     };
 
@@ -146,17 +144,12 @@ private:
 
         auto now = std::chrono::system_clock::now();
         std::string message = formatMessage(messageTemplate, args...);
-        bool hasNamedPlaceholders = this->hasNamedPlaceholders(messageTemplate);
-        nlohmann::json argumentsJson = mapArgumentsToPlaceholders(messageTemplate, args...);
+        auto argumentPairs = mapArgumentsToPlaceholders(messageTemplate, args...);
 
         std::unique_lock<std::mutex> lock(queueMutex);
-        logQueue.emplace(LogEntry{level, std::move(message), now, messageTemplate, argumentsJson, hasNamedPlaceholders, this->jsonLogging});
+        logQueue.emplace(LogEntry{level, std::move(message), now, messageTemplate, std::move(argumentPairs), this->jsonLogging});
         lock.unlock();
         logCV.notify_one();
-
-        if (this->jsonLogging && !hasNamedPlaceholders && !messageTemplate.empty() && messageTemplate.find("{}") != std::string::npos) {
-            std::cerr << "Warning: Unnamed placeholders used in JSON logging mode." << std::endl;
-        }
     }
 
     bool rateLimitCheck() {
@@ -222,32 +215,17 @@ private:
     }
 
     static std::string formatJsonLogEntry(const LogEntry& entry) {
-        nlohmann::json jsonEntry;
-        jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
+        nlohmann::ordered_json jsonEntry;
+
         jsonEntry["level"] = getLevelString(entry.level);
+        jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
         jsonEntry["message"] = entry.message;
 
-        if (entry.hasNamedPlaceholders) {
-            for (const auto& [key, value] : entry.arguments.items()) {
-                jsonEntry[key] = value;
-            }
+        for (const auto& [key, value] : entry.arguments) {
+            jsonEntry[key] = value;
         }
 
         return jsonEntry.dump();
-    }
-
-    static std::string sanitizeAndTruncate(const std::string& input, size_t maxLength) {
-        std::string sanitized;
-        sanitized.reserve(std::min(input.length(), maxLength));
-        for (char c : input) {
-            if (sanitized.length() >= maxLength) break;
-            if (std::isprint(static_cast<unsigned char>(c))) {
-                sanitized += c;
-            } else {
-                sanitized += "&#" + std::to_string(static_cast<int>(c)) + ";";
-            }
-        }
-        return sanitized;
     }
 
     static std::string formatTimestamp(const std::chrono::system_clock::time_point& time) {
@@ -260,7 +238,7 @@ private:
         return oss.str();
     }
 
-    static std::string getLevelString(Level level) {
+    static const char* getLevelString(Level level) {
         switch (level) {
             case Level::TRACE: return "TRACE";
             case Level::DEBUG: return "DEBUG";
@@ -270,25 +248,6 @@ private:
             case Level::FATAL: return "FATAL";
             default:           return "UNKNOWN";
         }
-    }
-
-    static bool hasNamedPlaceholders(const std::string& messageTemplate) {
-        std::regex namedPlaceholderRegex(R"(\{[a-zA-Z_][a-zA-Z0-9_]*\})");
-        return std::regex_search(messageTemplate, namedPlaceholderRegex);
-    }
-
-    static std::vector<std::string> parseNamedPlaceholders(const std::string& messageTemplate) {
-        std::vector<std::string> placeholders;
-        std::regex namedPlaceholderRegex(R"(\{([a-zA-Z_][a-zA-Z0-9_]*)\})");
-        auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), namedPlaceholderRegex);
-        auto placeholderEnd = std::sregex_iterator();
-
-        for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
-            std::smatch match = *i;
-            placeholders.push_back(match[1].str());
-        }
-
-        return placeholders;
     }
 
     template<typename T>
@@ -306,34 +265,34 @@ private:
     static std::string formatMessage(const std::string& messageTemplate, const Args&... args) {
         std::vector<std::string> values{toString(args)...};
         std::string result = messageTemplate;
-        std::regex placeholderRegex(R"(\{[^}]*\})");
-
+        size_t pos = 0;
         for (const auto& value : values) {
-            result = std::regex_replace(result, placeholderRegex, value, std::regex_constants::format_first_only);
+            pos = result.find("{", pos);
+            if (pos == std::string::npos) break;
+            size_t endPos = result.find("}", pos);
+            if (endPos == std::string::npos) break;
+            result.replace(pos, endPos - pos + 1, value);
+            pos += value.length();
         }
-
         return result;
     }
 
     template<typename... Args>
-    static nlohmann::json mapArgumentsToPlaceholders(const std::string& messageTemplate, const Args&... args) {
-        nlohmann::json json;
+    static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(const std::string& messageTemplate, const Args&... args) {
+        std::vector<std::pair<std::string, std::string>> argumentPairs;
         std::vector<std::string> values{toString(args)...};
 
-        bool hasNamed = hasNamedPlaceholders(messageTemplate);
+        std::regex placeholderRegex(R"(\{([^}]+)\})");
+        auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), placeholderRegex);
+        auto placeholderEnd = std::sregex_iterator();
 
-        if (hasNamed) {
-            auto placeholders = parseNamedPlaceholders(messageTemplate);
-            for (size_t i = 0; i < placeholders.size() && i < values.size(); ++i) {
-                json[placeholders[i]] = values[i];
-            }
-        } else if (!messageTemplate.empty() && messageTemplate.find("{}") != std::string::npos) {
-            for (size_t i = 0; i < values.size(); ++i) {
-                json["arg" + std::to_string(i)] = values[i];
-            }
+        size_t valueIndex = 0;
+        for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd && valueIndex < values.size(); ++i, ++valueIndex) {
+            std::smatch match = *i;
+            argumentPairs.emplace_back(match[1].str(), values[valueIndex]);
         }
 
-        return json;
+        return argumentPairs;
     }
 };
 

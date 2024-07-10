@@ -5,15 +5,16 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <iostream>
+#include <unistd.h>
 
 class LunarLogTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Setup code if needed
+        std::cout << "Current working directory: " << getcwd(nullptr, 0) << std::endl;
     }
 
     void TearDown() override {
-        // Clean up test log files
         std::vector<std::string> filesToRemove = {
             "test_log.txt",
             "json_log.txt",
@@ -21,37 +22,55 @@ protected:
             "rate_limit_test_log.txt",
         };
 
-        // Remove the specific log files
         for (const auto &filename : filesToRemove) {
-            std::remove(filename.c_str());
+            if (remove(filename.c_str()) != 0) {
+                std::cerr << "Error deleting file: " << filename << std::endl;
+            }
         }
 
-        // Remove all files starting with 'rotation_test_log'
         const char* logFilePrefix = "rotation_test_log";
-
         DIR* dir;
         struct dirent* ent;
 
         if ((dir = opendir(".")) != NULL) {
             while ((ent = readdir(dir)) != NULL) {
                 if (strncmp(ent->d_name, logFilePrefix, strlen(logFilePrefix)) == 0) {
-                    std::remove(ent->d_name);
+                    if (remove(ent->d_name) != 0) {
+                        std::cerr << "Error deleting file: " << ent->d_name << std::endl;
+                    }
                 }
             }
             closedir(dir);
         } else {
-            // Could not open directory
             FAIL() << "Could not open current directory.";
         }
     }
 
     std::string readLogFile(const std::string &filename) {
         std::ifstream file(filename);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return "";
+        }
         std::stringstream buffer;
         buffer << file.rdbuf();
         return buffer.str();
     }
+
+    void waitForFileContent(const std::string &filename, int maxAttempts = 10) {
+        for (int i = 0; i < maxAttempts; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!readLogFile(filename).empty()) {
+                return;
+            }
+        }
+        std::cerr << "Timeout waiting for file content: " << filename << std::endl;
+    }
 };
+
+#define ASSERT_LOG_CONTAINS(logContent, expected) \
+    ASSERT_TRUE(logContent.find(expected) != std::string::npos) \
+        << "Expected '" << expected << "' not found in log:\n" << logContent
 
 TEST_F(LunarLogTest, BasicLogging) {
     minta::LunarLog logger(minta::LunarLog::Level::TRACE, "test_log.txt");
@@ -63,15 +82,18 @@ TEST_F(LunarLogTest, BasicLogging) {
         logger.warn("Warning: {attempts} attempts remaining", 3);
         logger.error("Error occurred: {error}", "File not found");
         logger.fatal("Fatal error: {error}", "System crash");
-        });
+    });
 
+    waitForFileContent("test_log.txt");
     std::string logContent = readLogFile("test_log.txt");
-    EXPECT_TRUE(logContent.find("This is a trace message") != std::string::npos);
-    EXPECT_TRUE(logContent.find("This is a debug message with a number: 42") != std::string::npos);
-    EXPECT_TRUE(logContent.find("User alice logged in from 192.168.1.1") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Warning: 3 attempts remaining") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Error occurred: File not found") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Fatal error: System crash") != std::string::npos);
+    std::cout << "Log content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "This is a trace message");
+    ASSERT_LOG_CONTAINS(logContent, "This is a debug message with a number: 42");
+    ASSERT_LOG_CONTAINS(logContent, "User alice logged in from 192.168.1.1");
+    ASSERT_LOG_CONTAINS(logContent, "Warning: 3 attempts remaining");
+    ASSERT_LOG_CONTAINS(logContent, "Error occurred: File not found");
+    ASSERT_LOG_CONTAINS(logContent, "Fatal error: System crash");
 }
 
 TEST_F(LunarLogTest, JsonLogging) {
@@ -80,13 +102,16 @@ TEST_F(LunarLogTest, JsonLogging) {
 
     EXPECT_NO_THROW({
         logger.info("User {username} logged in from {ip_address}", "alice", "192.168.1.1");
-        });
+    });
 
+    waitForFileContent("json_log.txt");
     std::string logContent = readLogFile("json_log.txt");
-    EXPECT_TRUE(logContent.find("\"level\":\"INFO\"") != std::string::npos);
-    EXPECT_TRUE(logContent.find("\"message\":\"User alice logged in from 192.168.1.1\"") != std::string::npos);
-    EXPECT_TRUE(logContent.find("\"username\":\"alice\"") != std::string::npos);
-    EXPECT_TRUE(logContent.find("\"ip_address\":\"192.168.1.1\"") != std::string::npos);
+    std::cout << "JSON Log content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "\"level\":\"INFO\"");
+    ASSERT_LOG_CONTAINS(logContent, "\"message\":\"User alice logged in from 192.168.1.1\"");
+    ASSERT_LOG_CONTAINS(logContent, "\"username\":\"alice\"");
+    ASSERT_LOG_CONTAINS(logContent, "\"ip_address\":\"192.168.1.1\"");
 }
 
 TEST_F(LunarLogTest, LogLevels) {
@@ -99,11 +124,14 @@ TEST_F(LunarLogTest, LogLevels) {
     logger.error("This error should be logged");
     logger.fatal("This fatal error should be logged");
 
+    waitForFileContent("level_test_log.txt");
     std::string logContent = readLogFile("level_test_log.txt");
+    std::cout << "Log Levels content:\n" << logContent << std::endl;
+
     EXPECT_TRUE(logContent.find("This should not be logged") == std::string::npos);
-    EXPECT_TRUE(logContent.find("This warning should be logged") != std::string::npos);
-    EXPECT_TRUE(logContent.find("This error should be logged") != std::string::npos);
-    EXPECT_TRUE(logContent.find("This fatal error should be logged") != std::string::npos);
+    ASSERT_LOG_CONTAINS(logContent, "This warning should be logged");
+    ASSERT_LOG_CONTAINS(logContent, "This error should be logged");
+    ASSERT_LOG_CONTAINS(logContent, "This fatal error should be logged");
 }
 
 TEST_F(LunarLogTest, RateLimiting) {
@@ -117,24 +145,25 @@ TEST_F(LunarLogTest, RateLimiting) {
 
     logger.info("This message should appear after the rate limit reset");
 
+    waitForFileContent("rate_limit_test_log.txt");
     std::string logContent = readLogFile("rate_limit_test_log.txt");
+    std::cout << "Rate Limiting content:\n" << logContent << std::endl;
+
     size_t messageCount = std::count(logContent.begin(), logContent.end(), '\n');
     EXPECT_EQ(messageCount, 1001);
-    EXPECT_TRUE(logContent.find("This message should appear after the rate limit reset") != std::string::npos);
+    ASSERT_LOG_CONTAINS(logContent, "This message should appear after the rate limit reset");
 }
 
 TEST_F(LunarLogTest, FileRotation) {
     minta::LunarLog logger(minta::LunarLog::Level::INFO, "rotation_test_log.txt", 100);
-    // Small max file size for testing
 
     for (int i = 0; i < 100; ++i) {
         logger.info("This is a long message to test file rotation: {i}", i);
     }
 
-    // Check if original file exists and has content
+    waitForFileContent("rotation_test_log.txt");
     EXPECT_TRUE(std::ifstream("rotation_test_log.txt").good());
 
-    // Check if at least one rotated file exists
     bool rotatedFileExists = false;
     DIR* dir;
     struct dirent* ent;
@@ -143,33 +172,33 @@ TEST_F(LunarLogTest, FileRotation) {
     if ((dir = opendir(".")) != NULL) {
         while ((ent = readdir(dir)) != NULL) {
             if (strncmp(ent->d_name, logFilePrefix, strlen(logFilePrefix)) == 0) {
-                // Check if the suffix is a valid timestamp
                 std::string suffix = ent->d_name + strlen(logFilePrefix);
                 if (std::all_of(suffix.begin(), suffix.end(), ::isdigit)) {
                     rotatedFileExists = true;
-                    std::remove(ent->d_name);
                     break;
                 }
             }
         }
         closedir(dir);
     } else {
-        // Could not open directory
         FAIL() << "Could not open current directory.";
     }
 
     EXPECT_TRUE(rotatedFileExists);
+    std::cout << "File Rotation: Rotated file exists: " << (rotatedFileExists ? "Yes" : "No") << std::endl;
 }
-
 
 TEST_F(LunarLogTest, EmptyPlaceholder) {
     minta::LunarLog logger(minta::LunarLog::Level::INFO, "test_log.txt");
 
     logger.info("This message has an empty placeholder: {}", 1);
 
+    waitForFileContent("test_log.txt");
     std::string logContent = readLogFile("test_log.txt");
-    EXPECT_TRUE(logContent.find("This message has an empty placeholder:") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Warning: Empty placeholder found") != std::string::npos);
+    std::cout << "Empty Placeholder content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "This message has an empty placeholder:");
+    ASSERT_LOG_CONTAINS(logContent, "Warning: Empty placeholder found");
 }
 
 TEST_F(LunarLogTest, RepeatedPlaceholder) {
@@ -177,9 +206,12 @@ TEST_F(LunarLogTest, RepeatedPlaceholder) {
 
     logger.info("This message has a repeated placeholder: {repeat} and {repeat}", "value1", "value2");
 
+    waitForFileContent("test_log.txt");
     std::string logContent = readLogFile("test_log.txt");
-    EXPECT_TRUE(logContent.find("This message has a repeated placeholder: value1 and value2") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Warning: Repeated placeholder name: repeat") != std::string::npos);
+    std::cout << "Repeated Placeholder content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "This message has a repeated placeholder: value1 and value2");
+    ASSERT_LOG_CONTAINS(logContent, "Warning: Repeated placeholder name: repeat");
 }
 
 TEST_F(LunarLogTest, MismatchedPlaceholdersAndValues) {
@@ -188,9 +220,12 @@ TEST_F(LunarLogTest, MismatchedPlaceholdersAndValues) {
     logger.info("Too few values: {a} {b} {c}", "value1", "value2");
     logger.info("Too many values: {a}", "value1", "value2");
 
+    waitForFileContent("test_log.txt");
     std::string logContent = readLogFile("test_log.txt");
-    EXPECT_TRUE(logContent.find("Too few values: value1 value2") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Warning: More placeholders than provided values") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Too many values: value1") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Warning: More values provided than placeholders") != std::string::npos);
+    std::cout << "Mismatched Placeholders content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "Too few values: value1 value2");
+    ASSERT_LOG_CONTAINS(logContent, "Warning: More placeholders than provided values");
+    ASSERT_LOG_CONTAINS(logContent, "Too many values: value1");
+    ASSERT_LOG_CONTAINS(logContent, "Warning: More values provided than placeholders");
 }

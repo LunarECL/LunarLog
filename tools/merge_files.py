@@ -6,11 +6,11 @@ def merge_files(source_file_path, target_file_path):
             source_content = source_file.read()
 
         # Find the content to be copied from source file
-        include_index = source_content.find('#include <nlohmann/json>')
+        include_index = source_content.find('#include <nlohmann/json.hpp>')
         if include_index == -1:
-            raise ValueError(f'#include "json.hpp" not found in {source_file_path}')
+            raise ValueError(f'#include <nlohmann/json.hpp> not found in {source_file_path}')
 
-        content_to_copy = source_content[include_index + len('#include "json.hpp"\n'):]
+        content_to_copy = source_content[include_index + len('#include <nlohmann/json.hpp>\n'):]
 
         # Read the target file content
         with open(target_file_path, 'r') as target_file:

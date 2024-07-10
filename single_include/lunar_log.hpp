@@ -24792,6 +24792,7 @@ inline void swap(nlohmann::NLOHMANN_BASIC_JSON_TPL& j1, nlohmann::NLOHMANN_BASIC
 #include <regex>
 #include <iostream>
 #include <iomanip>
+#include <set>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -24929,16 +24930,57 @@ private:
     std::thread logThread;
 
     template<typename... Args>
-    void log(Level level, const std::string& messageTemplate, const Args&... args) {
+static std::pair<std::string, std::vector<std::string>> validatePlaceholders(const std::string& messageTemplate, const Args&... args) {
+        std::vector<std::string> warnings;
+        std::vector<std::string> placeholders;
+        std::set<std::string> uniquePlaceholders;
+        std::vector<std::string> values{toString(args)...};
+
+        std::regex placeholderRegex(R"(\{([^}]*)\})");
+        auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), placeholderRegex);
+        auto placeholderEnd = std::sregex_iterator();
+
+        for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
+            std::smatch match = *i;
+            std::string placeholder = match[1].str();
+            placeholders.push_back(placeholder);
+
+            if (placeholder.empty()) {
+                warnings.push_back("Warning: Empty placeholder found");
+            } else if (!uniquePlaceholders.insert(placeholder).second) {
+                warnings.push_back("Warning: Repeated placeholder name: " + placeholder);
+            }
+        }
+
+        if (placeholders.size() < values.size()) {
+            warnings.push_back("Warning: More values provided than placeholders");
+        } else if (placeholders.size() > values.size()) {
+            warnings.push_back("Warning: More placeholders than provided values");
+        }
+
+        return std::make_pair(messageTemplate, warnings);
+    }
+
+    template<typename... Args>
+void log(Level level, const std::string& messageTemplate, const Args&... args) {
         if (level < minLevel) return;
         if (!rateLimitCheck()) return;
 
+        auto validationResult = validatePlaceholders(messageTemplate, args...);
+        std::string validatedTemplate = validationResult.first;
+        std::vector<std::string> warnings = validationResult.second;
+
         auto now = std::chrono::system_clock::now();
-        std::string message = formatMessage(messageTemplate, args...);
-        auto argumentPairs = mapArgumentsToPlaceholders(messageTemplate, args...);
+        std::string message = formatMessage(validatedTemplate, args...);
+        auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
 
         std::unique_lock<std::mutex> lock(queueMutex);
-        logQueue.emplace(LogEntry{level, std::move(message), now, messageTemplate, std::move(argumentPairs), this->jsonLogging});
+        logQueue.emplace(LogEntry{level, std::move(message), now, validatedTemplate, std::move(argumentPairs), this->jsonLogging});
+
+        for (const auto& warning : warnings) {
+            logQueue.emplace(LogEntry{Level::WARN, warning, now, warning, {}, this->jsonLogging});
+        }
+
         lock.unlock();
         logCV.notify_one();
     }
@@ -25068,13 +25110,17 @@ private:
         std::vector<std::string> values{toString(args)...};
         std::string result = messageTemplate;
         size_t pos = 0;
-        for (const auto& value : values) {
-            pos = result.find("{", pos);
-            if (pos == std::string::npos) break;
+        size_t valueIndex = 0;
+        while ((pos = result.find("{", pos)) != std::string::npos) {
             size_t endPos = result.find("}", pos);
             if (endPos == std::string::npos) break;
-            result.replace(pos, endPos - pos + 1, value);
-            pos += value.length();
+            if (valueIndex < values.size()) {
+                result.replace(pos, endPos - pos + 1, values[valueIndex]);
+                pos += values[valueIndex].length();
+                valueIndex++;
+            } else {
+                pos = endPos + 1;
+            }
         }
         return result;
     }

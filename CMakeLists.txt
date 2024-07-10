@@ -51,7 +51,18 @@ add_executable(TestLunarLog
         tests/test_main.cpp
         tests/test_lunar_log.cpp
 )
-target_link_libraries(TestLunarLog PRIVATE LunarLog gtest gtest_main nlohmann_json::nlohmann_json)
+target_link_libraries(TestLunarLog PRIVATE
+        LunarLog
+        gtest
+        gtest_main
+        nlohmann_json::nlohmann_json
+        pthread
+)
+
+# Add compile definitions for test output
+target_compile_definitions(TestLunarLog PRIVATE
+        GTEST_COUT=std::cerr
+)
 
 include(GoogleTest)
 gtest_discover_tests(TestLunarLog)

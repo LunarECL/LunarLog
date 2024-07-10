@@ -24776,8 +24776,8 @@ inline void swap(nlohmann::NLOHMANN_BASIC_JSON_TPL& j1, nlohmann::NLOHMANN_BASIC
 
 #endif  // INCLUDE_NLOHMANN_JSON_HPP_
 
-// ...
-
+// LunarECL (Minseok Kim)
+// https://github.com/LunarECL/LunarLog
 #include <string>
 #include <chrono>
 #include <memory>
@@ -24791,10 +24791,25 @@ inline void swap(nlohmann::NLOHMANN_BASIC_JSON_TPL& j1, nlohmann::NLOHMANN_BASIC
 #include <fstream>
 #include <regex>
 #include <iostream>
-#include <filesystem>
 #include <iomanip>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace minta {
+
+#if __cplusplus < 201402L
+template<typename T, typename... Args>
+std::unique_ptr<T> make_unique(Args&&... args) {
+    return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+}
+#else
+using std::make_unique;
+#endif
 
 class LunarLog {
 public:
@@ -24807,7 +24822,7 @@ public:
         FATAL
     };
 
-    explicit LunarLog(Level minLevel = Level::INFO, const std::string& filename = "", size_t maxFileSize = 10 * 1024 * 1024, bool jsonLogging = false)
+    explicit LunarLog(Level minLevel = Level::INFO, const std::string& filename = "", size_t maxFileSize = 0, bool jsonLogging = false)
         : minLevel(minLevel)
         , jsonLogging(jsonLogging)
         , logFilename(filename)
@@ -24848,9 +24863,9 @@ public:
         if (fileStream) {
             fileStream->close();
         }
-        fileStream = std::make_unique<std::ofstream>(filename, std::ios::app);
-        std::filesystem::permissions(filename, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-        currentFileSize = std::filesystem::file_size(filename);
+        fileStream = make_unique<std::ofstream>(filename, std::ios::app);
+        setFilePermissions(filename);
+        currentFileSize = getFileSize(filename);
         logFilename = filename;
     }
 
@@ -24962,7 +24977,7 @@ private:
                     *fileStream << formattedMessage << std::endl;
                     fileStream->flush();
                     currentFileSize += formattedMessage.length() + 1;
-                    if (currentFileSize >= maxFileSize) {
+                    if (maxFileSize > 0 && currentFileSize >= maxFileSize) {
                         rotateLogFile();
                     }
                 }
@@ -24976,9 +24991,9 @@ private:
         if (!fileStream) return;
         fileStream->close();
         std::string newFilename = logFilename + "." + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-        std::filesystem::rename(logFilename, newFilename);
+        std::rename(logFilename.c_str(), newFilename.c_str());
         fileStream->open(logFilename, std::ios::app);
-        std::filesystem::permissions(logFilename, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+        setFilePermissions(logFilename);
         currentFileSize = 0;
     }
 
@@ -24997,8 +25012,8 @@ private:
         jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
         jsonEntry["message"] = entry.message;
 
-        for (const auto& [key, value] : entry.arguments) {
-            jsonEntry[key] = value;
+        for (const auto& arg : entry.arguments) {
+            jsonEntry[arg.first] = arg.second;
         }
 
         return jsonEntry.dump();
@@ -25028,13 +25043,24 @@ private:
 
     template<typename T>
     static std::string toString(const T& value) {
-        if constexpr (std::is_same_v<T, std::string>) {
-            return value;
-        } else {
-            std::ostringstream oss;
-            oss << value;
-            return oss.str();
-        }
+        return toStringImpl(value, 0);
+    }
+
+    template<typename T>
+    static auto toStringImpl(const T& value, int) -> decltype(std::to_string(value)) {
+        return std::to_string(value);
+    }
+
+    template<typename T>
+    static auto toStringImpl(const T& value, long) -> decltype(std::string(value)) {
+        return std::string(value);
+    }
+
+    template<typename T>
+    static std::string toStringImpl(const T& value, ...) {
+        std::ostringstream oss;
+        oss << value;
+        return oss.str();
     }
 
     template<typename... Args>
@@ -25069,6 +25095,48 @@ private:
         }
 
         return argumentPairs;
+    }
+
+    void setFilePermissions(const std::string& filename) {
+    #ifdef _WIN32
+        PACL pACL = NULL;
+        EXPLICIT_ACCESS ea;
+
+        ZeroMemory(&ea, sizeof(EXPLICIT_ACCESS));
+        ea.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+        ea.grfAccessMode = SET_ACCESS;
+        ea.grfInheritance = NO_INHERITANCE;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        ea.Trustee.ptstrName = (LPTSTR)"CURRENT_USER";
+
+        if (SetEntriesInAcl(1, &ea, NULL, &pACL) == ERROR_SUCCESS) {
+            SetNamedSecurityInfo((LPSTR)filename.c_str(), SE_FILE_OBJECT,
+                                 DACL_SECURITY_INFORMATION, NULL, NULL, pACL, NULL);
+            LocalFree(pACL);
+        }
+    #else
+        chmod(filename.c_str(), S_IRUSR | S_IWUSR);
+    #endif
+    }
+
+    size_t getFileSize(const std::string& filename) {
+    #ifdef _WIN32
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (GetFileAttributesEx(filename.c_str(), GetFileExInfoStandard, &fad)) {
+            LARGE_INTEGER size;
+            size.HighPart = fad.nFileSizeHigh;
+            size.LowPart = fad.nFileSizeLow;
+            return static_cast<size_t>(size.QuadPart);
+        }
+        return 0;
+    #else
+        struct stat st;
+        if (stat(filename.c_str(), &st) == 0) {
+            return static_cast<size_t>(st.st_size);
+        }
+        return 0;
+    #endif
     }
 };
 

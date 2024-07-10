@@ -16,7 +16,8 @@ void testBasicLogging() {
 
 void testJsonLogging() {
     try {
-        minta::LunarLog logger(minta::LunarLog::Level::TRACE, "json_log.txt", 10 * 1024 * 1024, true);
+        minta::LunarLog logger(minta::LunarLog::Level::TRACE, "json_log.txt");
+        logger.enableJsonLogging(true);
 
         logger.trace("This is a trace message");
         logger.debug("This is a debug message with a number: {number}", 42);

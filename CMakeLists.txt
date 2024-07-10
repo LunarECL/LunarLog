@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 project(LunarLog VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(LUNARLOG_CXX_STANDARD "11" CACHE STRING "C++ standard to use (11, 14, or 17)")
+set_property(CACHE LUNARLOG_CXX_STANDARD PROPERTY STRINGS 11 14 17)
+
+set(CMAKE_CXX_STANDARD ${LUNARLOG_CXX_STANDARD})
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Option to use separate includes and implementation
@@ -13,7 +16,7 @@ if(LUNARLOG_USE_SINGLE_INCLUDE_WITH_JSON)
     target_include_directories(LunarLog INTERFACE
             ${CMAKE_CURRENT_SOURCE_DIR}/single_include
     )
-    add_definitions(-DLUNARLOG_WITH_JSON)
+    target_compile_definitions(LunarLog INTERFACE LUNARLOG_WITH_JSON)
 elseif(LUNARLOG_USE_SEPARATE_INCLUDE)
     add_library(LunarLog INTERFACE)
     target_include_directories(LunarLog INTERFACE
@@ -26,36 +29,16 @@ else()
     )
 endif()
 
+if(WIN32)
+    target_link_libraries(LunarLog INTERFACE advapi32)
+endif()
+
 # Examples
 add_executable(BasicUsage examples/basic_usage.cpp)
-if(LUNARLOG_USE_SINGLE_INCLUDE_WITH_JSON)
-    target_include_directories(BasicUsage PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/single_include
-    )
-    add_definitions(-DLUNARLOG_WITH_JSON)
-elseif(LUNARLOG_USE_SEPARATE_INCLUDE)
-    target_include_directories(BasicUsage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-else()
-    target_include_directories(BasicUsage PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/single_include
-    )
-endif()
 target_link_libraries(BasicUsage PRIVATE LunarLog)
 
 # Tests
 enable_testing()
 add_executable(TestLunarLog tests/test_lunar_log.cpp)
-if(LUNARLOG_USE_SINGLE_INCLUDE_WITH_JSON)
-    target_include_directories(TestLunarLog PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/single_include
-    )
-    add_definitions(-DLUNARLOG_WITH_JSON)
-elseif(LUNARLOG_USE_SEPARATE_INCLUDE)
-    target_include_directories(TestLunarLog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-else()
-    target_include_directories(TestLunarLog PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/single_include
-    )
-endif()
 target_link_libraries(TestLunarLog PRIVATE LunarLog)
 add_test(NAME TestLunarLog COMMAND TestLunarLog)

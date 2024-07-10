@@ -24776,8 +24776,8 @@ inline void swap(nlohmann::NLOHMANN_BASIC_JSON_TPL& j1, nlohmann::NLOHMANN_BASIC
 
 #endif  // INCLUDE_NLOHMANN_JSON_HPP_
 
-// ...
-
+// LunarECL (Minseok Kim)
+// https://github.com/LunarECL/LunarLog
 #include <string>
 #include <chrono>
 #include <memory>
@@ -24791,9 +24791,26 @@ inline void swap(nlohmann::NLOHMANN_BASIC_JSON_TPL& j1, nlohmann::NLOHMANN_BASIC
 #include <fstream>
 #include <regex>
 #include <iostream>
-#include <filesystem>
+#include <iomanip>
+#include <set>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace minta {
+
+#if __cplusplus < 201402L
+template<typename T, typename... Args>
+std::unique_ptr<T> make_unique(Args&&... args) {
+    return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+}
+#else
+using std::make_unique;
+#endif
 
 class LunarLog {
 public:
@@ -24806,7 +24823,7 @@ public:
         FATAL
     };
 
-    explicit LunarLog(Level minLevel = Level::INFO, const std::string& filename = "", size_t maxFileSize = 10 * 1024 * 1024, bool jsonLogging = false)
+    explicit LunarLog(Level minLevel = Level::INFO, const std::string& filename = "", size_t maxFileSize = 0, bool jsonLogging = false)
         : minLevel(minLevel)
         , jsonLogging(jsonLogging)
         , logFilename(filename)
@@ -24847,9 +24864,9 @@ public:
         if (fileStream) {
             fileStream->close();
         }
-        fileStream = std::make_unique<std::ofstream>(filename, std::ios::app);
-        std::filesystem::permissions(filename, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-        currentFileSize = std::filesystem::file_size(filename);
+        fileStream = make_unique<std::ofstream>(filename, std::ios::app);
+        setFilePermissions(filename);
+        currentFileSize = getFileSize(filename);
         logFilename = filename;
     }
 
@@ -24893,8 +24910,7 @@ private:
         std::string message;
         std::chrono::system_clock::time_point timestamp;
         std::string templateStr;
-        nlohmann::json arguments;
-        bool hasNamedPlaceholders;
+        std::vector<std::pair<std::string, std::string>> arguments;
         bool isJsonLogging;
     };
 
@@ -24914,23 +24930,59 @@ private:
     std::thread logThread;
 
     template<typename... Args>
-    void log(Level level, const std::string& messageTemplate, const Args&... args) {
+static std::pair<std::string, std::vector<std::string>> validatePlaceholders(const std::string& messageTemplate, const Args&... args) {
+        std::vector<std::string> warnings;
+        std::vector<std::string> placeholders;
+        std::set<std::string> uniquePlaceholders;
+        std::vector<std::string> values{toString(args)...};
+
+        std::regex placeholderRegex(R"(\{([^}]*)\})");
+        auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), placeholderRegex);
+        auto placeholderEnd = std::sregex_iterator();
+
+        for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
+            std::smatch match = *i;
+            std::string placeholder = match[1].str();
+            placeholders.push_back(placeholder);
+
+            if (placeholder.empty()) {
+                warnings.push_back("Warning: Empty placeholder found");
+            } else if (!uniquePlaceholders.insert(placeholder).second) {
+                warnings.push_back("Warning: Repeated placeholder name: " + placeholder);
+            }
+        }
+
+        if (placeholders.size() < values.size()) {
+            warnings.push_back("Warning: More values provided than placeholders");
+        } else if (placeholders.size() > values.size()) {
+            warnings.push_back("Warning: More placeholders than provided values");
+        }
+
+        return std::make_pair(messageTemplate, warnings);
+    }
+
+    template<typename... Args>
+void log(Level level, const std::string& messageTemplate, const Args&... args) {
         if (level < minLevel) return;
         if (!rateLimitCheck()) return;
 
+        auto validationResult = validatePlaceholders(messageTemplate, args...);
+        std::string validatedTemplate = validationResult.first;
+        std::vector<std::string> warnings = validationResult.second;
+
         auto now = std::chrono::system_clock::now();
-        std::string message = formatMessage(messageTemplate, args...);
-        bool hasNamedPlaceholders = this->hasNamedPlaceholders(messageTemplate);
-        nlohmann::json argumentsJson = mapArgumentsToPlaceholders(messageTemplate, args...);
+        std::string message = formatMessage(validatedTemplate, args...);
+        auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
 
         std::unique_lock<std::mutex> lock(queueMutex);
-        logQueue.emplace(LogEntry{level, std::move(message), now, messageTemplate, argumentsJson, hasNamedPlaceholders, this->jsonLogging});
+        logQueue.emplace(LogEntry{level, std::move(message), now, validatedTemplate, std::move(argumentPairs), this->jsonLogging});
+
+        for (const auto& warning : warnings) {
+            logQueue.emplace(LogEntry{Level::WARN, warning, now, warning, {}, this->jsonLogging});
+        }
+
         lock.unlock();
         logCV.notify_one();
-
-        if (this->jsonLogging && !hasNamedPlaceholders && !messageTemplate.empty() && messageTemplate.find("{}") != std::string::npos) {
-            std::cerr << "Warning: Unnamed placeholders used in JSON logging mode." << std::endl;
-        }
     }
 
     bool rateLimitCheck() {
@@ -24967,7 +25019,7 @@ private:
                     *fileStream << formattedMessage << std::endl;
                     fileStream->flush();
                     currentFileSize += formattedMessage.length() + 1;
-                    if (currentFileSize >= maxFileSize) {
+                    if (maxFileSize > 0 && currentFileSize >= maxFileSize) {
                         rotateLogFile();
                     }
                 }
@@ -24981,9 +25033,9 @@ private:
         if (!fileStream) return;
         fileStream->close();
         std::string newFilename = logFilename + "." + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-        std::filesystem::rename(logFilename, newFilename);
+        std::rename(logFilename.c_str(), newFilename.c_str());
         fileStream->open(logFilename, std::ios::app);
-        std::filesystem::permissions(logFilename, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+        setFilePermissions(logFilename);
         currentFileSize = 0;
     }
 
@@ -24996,32 +25048,17 @@ private:
     }
 
     static std::string formatJsonLogEntry(const LogEntry& entry) {
-        nlohmann::json jsonEntry;
-        jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
+        nlohmann::ordered_json jsonEntry;
+
         jsonEntry["level"] = getLevelString(entry.level);
+        jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
         jsonEntry["message"] = entry.message;
 
-        if (entry.hasNamedPlaceholders) {
-            for (const auto& [key, value] : entry.arguments.items()) {
-                jsonEntry[key] = value;
-            }
+        for (const auto& arg : entry.arguments) {
+            jsonEntry[arg.first] = arg.second;
         }
 
         return jsonEntry.dump();
-    }
-
-    static std::string sanitizeAndTruncate(const std::string& input, size_t maxLength) {
-        std::string sanitized;
-        sanitized.reserve(std::min(input.length(), maxLength));
-        for (char c : input) {
-            if (sanitized.length() >= maxLength) break;
-            if (std::isprint(static_cast<unsigned char>(c))) {
-                sanitized += c;
-            } else {
-                sanitized += "&#" + std::to_string(static_cast<int>(c)) + ";";
-            }
-        }
-        return sanitized;
     }
 
     static std::string formatTimestamp(const std::chrono::system_clock::time_point& time) {
@@ -25034,7 +25071,7 @@ private:
         return oss.str();
     }
 
-    static std::string getLevelString(Level level) {
+    static const char* getLevelString(Level level) {
         switch (level) {
             case Level::TRACE: return "TRACE";
             case Level::DEBUG: return "DEBUG";
@@ -25046,68 +25083,106 @@ private:
         }
     }
 
-    static bool hasNamedPlaceholders(const std::string& messageTemplate) {
-        std::regex namedPlaceholderRegex(R"(\{[a-zA-Z_][a-zA-Z0-9_]*\})");
-        return std::regex_search(messageTemplate, namedPlaceholderRegex);
-    }
-
-    static std::vector<std::string> parseNamedPlaceholders(const std::string& messageTemplate) {
-        std::vector<std::string> placeholders;
-        std::regex namedPlaceholderRegex(R"(\{([a-zA-Z_][a-zA-Z0-9_]*)\})");
-        auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), namedPlaceholderRegex);
-        auto placeholderEnd = std::sregex_iterator();
-
-        for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
-            std::smatch match = *i;
-            placeholders.push_back(match[1].str());
-        }
-
-        return placeholders;
+    template<typename T>
+    static std::string toString(const T& value) {
+        return toStringImpl(value, 0);
     }
 
     template<typename T>
-    static std::string toString(const T& value) {
-        if constexpr (std::is_same_v<T, std::string>) {
-            return value;
-        } else {
-            std::ostringstream oss;
-            oss << value;
-            return oss.str();
-        }
+    static auto toStringImpl(const T& value, int) -> decltype(std::to_string(value)) {
+        return std::to_string(value);
+    }
+
+    template<typename T>
+    static auto toStringImpl(const T& value, long) -> decltype(std::string(value)) {
+        return std::string(value);
+    }
+
+    template<typename T>
+    static std::string toStringImpl(const T& value, ...) {
+        std::ostringstream oss;
+        oss << value;
+        return oss.str();
     }
 
     template<typename... Args>
     static std::string formatMessage(const std::string& messageTemplate, const Args&... args) {
         std::vector<std::string> values{toString(args)...};
         std::string result = messageTemplate;
-        std::regex placeholderRegex(R"(\{[^}]*\})");
-
-        for (const auto& value : values) {
-            result = std::regex_replace(result, placeholderRegex, value, std::regex_constants::format_first_only);
+        size_t pos = 0;
+        size_t valueIndex = 0;
+        while ((pos = result.find("{", pos)) != std::string::npos) {
+            size_t endPos = result.find("}", pos);
+            if (endPos == std::string::npos) break;
+            if (valueIndex < values.size()) {
+                result.replace(pos, endPos - pos + 1, values[valueIndex]);
+                pos += values[valueIndex].length();
+                valueIndex++;
+            } else {
+                pos = endPos + 1;
+            }
         }
-
         return result;
     }
 
     template<typename... Args>
-    static nlohmann::json mapArgumentsToPlaceholders(const std::string& messageTemplate, const Args&... args) {
-        nlohmann::json json;
+    static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(const std::string& messageTemplate, const Args&... args) {
+        std::vector<std::pair<std::string, std::string>> argumentPairs;
         std::vector<std::string> values{toString(args)...};
 
-        bool hasNamed = hasNamedPlaceholders(messageTemplate);
+        std::regex placeholderRegex(R"(\{([^}]+)\})");
+        auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), placeholderRegex);
+        auto placeholderEnd = std::sregex_iterator();
 
-        if (hasNamed) {
-            auto placeholders = parseNamedPlaceholders(messageTemplate);
-            for (size_t i = 0; i < placeholders.size() && i < values.size(); ++i) {
-                json[placeholders[i]] = values[i];
-            }
-        } else if (!messageTemplate.empty() && messageTemplate.find("{}") != std::string::npos) {
-            for (size_t i = 0; i < values.size(); ++i) {
-                json["arg" + std::to_string(i)] = values[i];
-            }
+        size_t valueIndex = 0;
+        for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd && valueIndex < values.size(); ++i, ++valueIndex) {
+            std::smatch match = *i;
+            argumentPairs.emplace_back(match[1].str(), values[valueIndex]);
         }
 
-        return json;
+        return argumentPairs;
+    }
+
+    void setFilePermissions(const std::string& filename) {
+    #ifdef _WIN32
+        PACL pACL = NULL;
+        EXPLICIT_ACCESS ea;
+
+        ZeroMemory(&ea, sizeof(EXPLICIT_ACCESS));
+        ea.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+        ea.grfAccessMode = SET_ACCESS;
+        ea.grfInheritance = NO_INHERITANCE;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        ea.Trustee.ptstrName = (LPTSTR)"CURRENT_USER";
+
+        if (SetEntriesInAcl(1, &ea, NULL, &pACL) == ERROR_SUCCESS) {
+            SetNamedSecurityInfo((LPSTR)filename.c_str(), SE_FILE_OBJECT,
+                                 DACL_SECURITY_INFORMATION, NULL, NULL, pACL, NULL);
+            LocalFree(pACL);
+        }
+    #else
+        chmod(filename.c_str(), S_IRUSR | S_IWUSR);
+    #endif
+    }
+
+    size_t getFileSize(const std::string& filename) {
+    #ifdef _WIN32
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (GetFileAttributesEx(filename.c_str(), GetFileExInfoStandard, &fad)) {
+            LARGE_INTEGER size;
+            size.HighPart = fad.nFileSizeHigh;
+            size.LowPart = fad.nFileSizeLow;
+            return static_cast<size_t>(size.QuadPart);
+        }
+        return 0;
+    #else
+        struct stat st;
+        if (stat(filename.c_str(), &st) == 0) {
+            return static_cast<size_t>(st.st_size);
+        }
+        return 0;
+    #endif
     }
 };
 

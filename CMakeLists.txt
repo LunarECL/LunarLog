@@ -32,10 +32,24 @@ FetchContent_MakeAvailable(googletest json)
 get_target_property(JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
 
 add_library(LunarLog INTERFACE)
-target_include_directories(LunarLog INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${JSON_INCLUDE_DIR}
-)
+
+if(LUNARLOG_USE_SEPARATE_INCLUDE)
+    target_include_directories(LunarLog INTERFACE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${JSON_INCLUDE_DIR}
+    )
+    target_compile_definitions(LunarLog INTERFACE LUNARLOG_USE_SEPARATE_INCLUDE)
+elseif(LUNARLOG_USE_SINGLE_INCLUDE_WITH_JSON)
+    target_include_directories(LunarLog INTERFACE
+            ${CMAKE_CURRENT_SOURCE_DIR}/single_include
+            ${JSON_INCLUDE_DIR}
+    )
+    target_compile_definitions(LunarLog INTERFACE LUNARLOG_USE_SINGLE_INCLUDE_WITH_JSON)
+else()
+    target_include_directories(LunarLog INTERFACE
+            ${CMAKE_CURRENT_SOURCE_DIR}/single_include
+    )
+endif()
 
 if(WIN32)
     target_link_libraries(LunarLog INTERFACE advapi32)

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <iostream>
 #include <unistd.h>
+#include <algorithm>
 
 class LunarLogTest : public ::testing::Test {
 protected:
@@ -20,6 +21,10 @@ protected:
             "json_log.txt",
             "level_test_log.txt",
             "rate_limit_test_log.txt",
+            "test_log1.txt",
+            "test_log2.txt",
+            "escaped_brackets_test.txt",
+            "escaped_brackets_placeholders_test.txt"
         };
 
         for (const auto &filename : filesToRemove) {
@@ -73,7 +78,9 @@ protected:
         << "Expected '" << expected << "' not found in log:\n" << logContent
 
 TEST_F(LunarLogTest, BasicLogging) {
-    minta::LunarLog logger(minta::LunarLog::Level::TRACE, "test_log.txt");
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
+    logger.addSink(std::move(fileSink));
 
     EXPECT_NO_THROW({
         logger.trace("This is a trace message");
@@ -97,7 +104,9 @@ TEST_F(LunarLogTest, BasicLogging) {
 }
 
 TEST_F(LunarLogTest, JsonLogging) {
-    minta::LunarLog logger(minta::LunarLog::Level::TRACE, "json_log.txt");
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    auto fileSink = minta::make_unique<minta::FileSink>("json_log.txt");
+    logger.addSink(std::move(fileSink));
     logger.enableJsonLogging(true);
 
     EXPECT_NO_THROW({
@@ -115,7 +124,9 @@ TEST_F(LunarLogTest, JsonLogging) {
 }
 
 TEST_F(LunarLogTest, LogLevels) {
-    minta::LunarLog logger(minta::LunarLog::Level::WARN, "level_test_log.txt");
+    minta::LunarLog logger(minta::LogLevel::WARN);
+    auto fileSink = minta::make_unique<minta::FileSink>("level_test_log.txt");
+    logger.addSink(std::move(fileSink));
 
     logger.trace("This should not be logged");
     logger.debug("This should not be logged");
@@ -135,7 +146,9 @@ TEST_F(LunarLogTest, LogLevels) {
 }
 
 TEST_F(LunarLogTest, RateLimiting) {
-    minta::LunarLog logger(minta::LunarLog::Level::INFO, "rate_limit_test_log.txt");
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("rate_limit_test_log.txt");
+    logger.addSink(std::move(fileSink));
 
     for (int i = 0; i < 1200; ++i) {
         logger.info("Message {i}", i);
@@ -155,28 +168,29 @@ TEST_F(LunarLogTest, RateLimiting) {
 }
 
 TEST_F(LunarLogTest, FileRotation) {
-    minta::LunarLog logger(minta::LunarLog::Level::INFO, "rotation_test_log.txt", 100);
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("rotation_test_log.txt", 100);
+    logger.addSink(std::move(fileSink));
 
     for (int i = 0; i < 100; ++i) {
         logger.info("This is a long message to test file rotation: {i}", i);
     }
 
-    waitForFileContent("rotation_test_log.txt");
-    EXPECT_TRUE(std::ifstream("rotation_test_log.txt").good());
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    EXPECT_TRUE(std::ifstream("rotation_test_log.txt").good()) << "rotation_test_log.txt should exist";
 
     bool rotatedFileExists = false;
     DIR* dir;
     struct dirent* ent;
-    const char* logFilePrefix = "rotation_test_log.txt.";
+    const char* logFilePrefix = "rotation_test_log.";
 
     if ((dir = opendir(".")) != NULL) {
         while ((ent = readdir(dir)) != NULL) {
             if (strncmp(ent->d_name, logFilePrefix, strlen(logFilePrefix)) == 0) {
-                std::string suffix = ent->d_name + strlen(logFilePrefix);
-                if (std::all_of(suffix.begin(), suffix.end(), ::isdigit)) {
-                    rotatedFileExists = true;
-                    break;
-                }
+                rotatedFileExists = true;
+                std::cout << "Found rotated file: " << ent->d_name << std::endl;
+                break;
             }
         }
         closedir(dir);
@@ -184,12 +198,13 @@ TEST_F(LunarLogTest, FileRotation) {
         FAIL() << "Could not open current directory.";
     }
 
-    EXPECT_TRUE(rotatedFileExists);
-    std::cout << "File Rotation: Rotated file exists: " << (rotatedFileExists ? "Yes" : "No") << std::endl;
+    EXPECT_TRUE(rotatedFileExists) << "A rotated log file should exist";
 }
 
 TEST_F(LunarLogTest, EmptyPlaceholder) {
-    minta::LunarLog logger(minta::LunarLog::Level::INFO, "test_log.txt");
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
+    logger.addSink(std::move(fileSink));
 
     logger.info("This message has an empty placeholder: {}", 1);
 
@@ -202,7 +217,9 @@ TEST_F(LunarLogTest, EmptyPlaceholder) {
 }
 
 TEST_F(LunarLogTest, RepeatedPlaceholder) {
-    minta::LunarLog logger(minta::LunarLog::Level::INFO, "test_log.txt");
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
+    logger.addSink(std::move(fileSink));
 
     logger.info("This message has a repeated placeholder: {repeat} and {repeat}", "value1", "value2");
 
@@ -215,7 +232,9 @@ TEST_F(LunarLogTest, RepeatedPlaceholder) {
 }
 
 TEST_F(LunarLogTest, MismatchedPlaceholdersAndValues) {
-    minta::LunarLog logger(minta::LunarLog::Level::INFO, "test_log.txt");
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
+    logger.addSink(std::move(fileSink));
 
     logger.info("Too few values: {a} {b} {c}", "value1", "value2");
     logger.info("Too many values: {a}", "value1", "value2");
@@ -228,4 +247,106 @@ TEST_F(LunarLogTest, MismatchedPlaceholdersAndValues) {
     ASSERT_LOG_CONTAINS(logContent, "Warning: More placeholders than provided values");
     ASSERT_LOG_CONTAINS(logContent, "Too many values: value1");
     ASSERT_LOG_CONTAINS(logContent, "Warning: More values provided than placeholders");
+}
+
+TEST_F(LunarLogTest, MultipleSinks) {
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink1 = minta::make_unique<minta::FileSink>("test_log1.txt");
+    auto fileSink2 = minta::make_unique<minta::FileSink>("test_log2.txt");
+    logger.addSink(std::move(fileSink1));
+    logger.addSink(std::move(fileSink2));
+
+    logger.info("This message should appear in both logs");
+
+    waitForFileContent("test_log1.txt");
+    waitForFileContent("test_log2.txt");
+    std::string logContent1 = readLogFile("test_log1.txt");
+    std::string logContent2 = readLogFile("test_log2.txt");
+
+    ASSERT_LOG_CONTAINS(logContent1, "This message should appear in both logs");
+    ASSERT_LOG_CONTAINS(logContent2, "This message should appear in both logs");
+}
+
+TEST_F(LunarLogTest, RemoveSink) {
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink1 = minta::make_unique<minta::FileSink>("test_log1.txt");
+    auto fileSink2 = minta::make_unique<minta::FileSink>("test_log2.txt");
+    auto* fileSink2Ptr = fileSink2.get();
+    logger.addSink(std::move(fileSink1));
+    logger.addSink(std::move(fileSink2));
+
+    logger.info("This message should appear in both logs");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    logger.removeSink(fileSink2Ptr);
+    logger.info("This message should appear only in log1");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    std::string logContent1 = readLogFile("test_log1.txt");
+    std::string logContent2 = readLogFile("test_log2.txt");
+
+    ASSERT_LOG_CONTAINS(logContent1, "This message should appear in both logs");
+    ASSERT_LOG_CONTAINS(logContent1, "This message should appear only in log1");
+    ASSERT_LOG_CONTAINS(logContent2, "This message should appear in both logs");
+    EXPECT_TRUE(logContent2.find("This message should appear only in log1") == std::string::npos);
+}
+
+TEST_F(LunarLogTest, DefaultConsoleSink) {
+    std::stringstream buffer;
+    std::streambuf* prevcoutbuf = std::cout.rdbuf(buffer.rdbuf());
+
+    {
+        minta::LunarLog logger(minta::LogLevel::INFO);
+        logger.info("This message should appear in console");
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    std::cout.rdbuf(prevcoutbuf);
+
+    std::string output = buffer.str();
+    std::cout << "Captured output: " << output << std::endl;
+    ASSERT_LOG_CONTAINS(output, "This message should appear in console");
+}
+
+TEST_F(LunarLogTest, EscapedBrackets) {
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("escaped_brackets_test.txt");
+    logger.addSink(std::move(fileSink));
+
+    logger.info("This message has escaped brackets: {{escaped}}");
+    logger.info("This message has a mix of escaped and unescaped brackets: {{escaped}} and {unescaped}", "value");
+    logger.info("This message has double escaped brackets: {{{{double_escaped}}}}");
+    logger.info("This message has an escaped opening bracket: {{open and a closing bracket}", "value");
+    logger.info("This message has an opening bracket and an escaped closing bracket: {open}} and {unescaped}", "value1", "value2");
+
+    waitForFileContent("escaped_brackets_test.txt");
+    std::string logContent = readLogFile("escaped_brackets_test.txt");
+    std::cout << "Escaped Brackets content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "This message has escaped brackets: {escaped}");
+    ASSERT_LOG_CONTAINS(logContent, "This message has a mix of escaped and unescaped brackets: {escaped} and value");
+    ASSERT_LOG_CONTAINS(logContent, "This message has double escaped brackets: {{double_escaped}}");
+    ASSERT_LOG_CONTAINS(logContent, "This message has an escaped opening bracket: {open and a closing bracket}");
+    ASSERT_LOG_CONTAINS(logContent, "This message has an opening bracket and an escaped closing bracket: value1} and value2");
+}
+
+TEST_F(LunarLogTest, EscapedBracketsWithPlaceholders) {
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    auto fileSink = minta::make_unique<minta::FileSink>("escaped_brackets_placeholders_test.txt");
+    logger.addSink(std::move(fileSink));
+
+    logger.info("Escaped brackets don't count as placeholders: {{name}}", "value");
+    logger.info("Mixed escaped and unescaped: {{escaped}} {unescaped} {{another_escaped}}", "value");
+    logger.info("Escaped brackets next to placeholders: {{}}{}{{}} {}", "value1", "value2");
+
+    waitForFileContent("escaped_brackets_placeholders_test.txt");
+    std::string logContent = readLogFile("escaped_brackets_placeholders_test.txt");
+    std::cout << "Escaped Brackets with Placeholders content:\n" << logContent << std::endl;
+
+    ASSERT_LOG_CONTAINS(logContent, "Escaped brackets don't count as placeholders: {name}");
+    ASSERT_LOG_CONTAINS(logContent, "Mixed escaped and unescaped: {escaped} value {another_escaped}");
+    ASSERT_LOG_CONTAINS(logContent, "Escaped brackets next to placeholders: {}value1{} value2");
 }

@@ -3,7 +3,7 @@
 
 #include "lunar_log_common.hpp"
 #include "lunar_log_sink_interface.hpp"
-#include "lunar_log_console_sink.hpp"
+#include "lunar_log_sink_factory.hpp"
 #include <memory>
 #include <vector>
 #include <queue>
@@ -25,7 +25,7 @@ public:
         , lastLogTime(std::chrono::steady_clock::now())
         , logCount(0)
     {
-        addSink(minta::make_unique<ConsoleSink>());
+        addSink<ConsoleSink>();
         logThread = std::thread(&LunarLog::processLogQueue, this);
     }
 
@@ -54,15 +54,27 @@ public:
         jsonLogging = enable;
     }
 
-    void addSink(std::unique_ptr<ILogSink> sink) {
+    template<typename SinkType, typename... Args>
+    SinkType* addSink(Args&&... args) {
+        auto sink = SinkFactory::createSink<SinkType>(std::forward<Args>(args)...);
+        SinkType* rawPtr = sink.get();
         std::lock_guard<std::mutex> lock(sinkMutex);
         sinks.push_back(std::move(sink));
+        return rawPtr;
     }
 
     void removeSink(ILogSink* sink) {
         std::lock_guard<std::mutex> lock(sinkMutex);
         sinks.erase(std::remove_if(sinks.begin(), sinks.end(),
             [sink](const std::unique_ptr<ILogSink>& p) { return p.get() == sink; }),
+            sinks.end());
+    }
+
+    template<typename SinkType>
+    void removeSinkOfType() {
+        std::lock_guard<std::mutex> lock(sinkMutex);
+        sinks.erase(std::remove_if(sinks.begin(), sinks.end(),
+            [](const std::unique_ptr<ILogSink>& p) { return dynamic_cast<SinkType*>(p.get()) != nullptr; }),
             sinks.end());
     }
 

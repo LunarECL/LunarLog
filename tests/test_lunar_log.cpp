@@ -79,8 +79,7 @@ protected:
 
 TEST_F(LunarLogTest, BasicLogging) {
     minta::LunarLog logger(minta::LogLevel::TRACE);
-    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("test_log.txt");
 
     EXPECT_NO_THROW({
         logger.trace("This is a trace message");
@@ -105,8 +104,7 @@ TEST_F(LunarLogTest, BasicLogging) {
 
 TEST_F(LunarLogTest, JsonLogging) {
     minta::LunarLog logger(minta::LogLevel::TRACE);
-    auto fileSink = minta::make_unique<minta::FileSink>("json_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("json_log.txt");
     logger.enableJsonLogging(true);
 
     EXPECT_NO_THROW({
@@ -125,8 +123,7 @@ TEST_F(LunarLogTest, JsonLogging) {
 
 TEST_F(LunarLogTest, LogLevels) {
     minta::LunarLog logger(minta::LogLevel::WARN);
-    auto fileSink = minta::make_unique<minta::FileSink>("level_test_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("level_test_log.txt");
 
     logger.trace("This should not be logged");
     logger.debug("This should not be logged");
@@ -147,8 +144,7 @@ TEST_F(LunarLogTest, LogLevels) {
 
 TEST_F(LunarLogTest, RateLimiting) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("rate_limit_test_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("rate_limit_test_log.txt");
 
     for (int i = 0; i < 1200; ++i) {
         logger.info("Message {i}", i);
@@ -169,8 +165,7 @@ TEST_F(LunarLogTest, RateLimiting) {
 
 TEST_F(LunarLogTest, FileRotation) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("rotation_test_log.txt", 100);
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("rotation_test_log.txt", 100);
 
     for (int i = 0; i < 100; ++i) {
         logger.info("This is a long message to test file rotation: {i}", i);
@@ -203,8 +198,7 @@ TEST_F(LunarLogTest, FileRotation) {
 
 TEST_F(LunarLogTest, EmptyPlaceholder) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("test_log.txt");
 
     logger.info("This message has an empty placeholder: {}", 1);
 
@@ -218,8 +212,7 @@ TEST_F(LunarLogTest, EmptyPlaceholder) {
 
 TEST_F(LunarLogTest, RepeatedPlaceholder) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("test_log.txt");
 
     logger.info("This message has a repeated placeholder: {repeat} and {repeat}", "value1", "value2");
 
@@ -233,8 +226,7 @@ TEST_F(LunarLogTest, RepeatedPlaceholder) {
 
 TEST_F(LunarLogTest, MismatchedPlaceholdersAndValues) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("test_log.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("test_log.txt");
 
     logger.info("Too few values: {a} {b} {c}", "value1", "value2");
     logger.info("Too many values: {a}", "value1", "value2");
@@ -251,10 +243,8 @@ TEST_F(LunarLogTest, MismatchedPlaceholdersAndValues) {
 
 TEST_F(LunarLogTest, MultipleSinks) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink1 = minta::make_unique<minta::FileSink>("test_log1.txt");
-    auto fileSink2 = minta::make_unique<minta::FileSink>("test_log2.txt");
-    logger.addSink(std::move(fileSink1));
-    logger.addSink(std::move(fileSink2));
+    auto fileSink1 = logger.addSink<minta::FileSink>("test_log1.txt");
+    auto fileSink2 = logger.addSink<minta::FileSink>("test_log2.txt");
 
     logger.info("This message should appear in both logs");
 
@@ -269,17 +259,14 @@ TEST_F(LunarLogTest, MultipleSinks) {
 
 TEST_F(LunarLogTest, RemoveSink) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink1 = minta::make_unique<minta::FileSink>("test_log1.txt");
-    auto fileSink2 = minta::make_unique<minta::FileSink>("test_log2.txt");
-    auto* fileSink2Ptr = fileSink2.get();
-    logger.addSink(std::move(fileSink1));
-    logger.addSink(std::move(fileSink2));
+    auto fileSink1 = logger.addSink<minta::FileSink>("test_log1.txt");
+    auto fileSink2 = logger.addSink<minta::FileSink>("test_log2.txt");
 
     logger.info("This message should appear in both logs");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    logger.removeSink(fileSink2Ptr);
+    logger.removeSink(fileSink2);
     logger.info("This message should appear only in log1");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -294,27 +281,22 @@ TEST_F(LunarLogTest, RemoveSink) {
 }
 
 TEST_F(LunarLogTest, DefaultConsoleSink) {
-    std::stringstream buffer;
-    std::streambuf* prevcoutbuf = std::cout.rdbuf(buffer.rdbuf());
+    testing::internal::CaptureStdout();
 
     {
         minta::LunarLog logger(minta::LogLevel::INFO);
         logger.info("This message should appear in console");
-
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    std::cout.rdbuf(prevcoutbuf);
-
-    std::string output = buffer.str();
+    std::string output = testing::internal::GetCapturedStdout();
     std::cout << "Captured output: " << output << std::endl;
-    ASSERT_LOG_CONTAINS(output, "This message should appear in console");
+    ASSERT_TRUE(output.find("This message should appear in console") != std::string::npos);
 }
 
 TEST_F(LunarLogTest, EscapedBrackets) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("escaped_brackets_test.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("escaped_brackets_test.txt");
 
     logger.info("This message has escaped brackets: {{escaped}}");
     logger.info("This message has a mix of escaped and unescaped brackets: {{escaped}} and {unescaped}", "value");
@@ -335,8 +317,7 @@ TEST_F(LunarLogTest, EscapedBrackets) {
 
 TEST_F(LunarLogTest, EscapedBracketsWithPlaceholders) {
     minta::LunarLog logger(minta::LogLevel::INFO);
-    auto fileSink = minta::make_unique<minta::FileSink>("escaped_brackets_placeholders_test.txt");
-    logger.addSink(std::move(fileSink));
+    auto fileSink = logger.addSink<minta::FileSink>("escaped_brackets_placeholders_test.txt");
 
     logger.info("Escaped brackets don't count as placeholders: {{name}}", "value");
     logger.info("Mixed escaped and unescaped: {{escaped}} {unescaped} {{another_escaped}}", "value");

@@ -102,10 +102,12 @@ private:
     }
 
     static std::string formatJsonLogEntry(const LogEntry& entry) {
-        nlohmann::json jsonEntry;
-        jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
+        nlohmann::ordered_json jsonEntry;
+
         jsonEntry["level"] = getLevelString(entry.level);
+        jsonEntry["timestamp"] = formatTimestamp(entry.timestamp);
         jsonEntry["message"] = entry.message;
+
         for (const auto& arg : entry.arguments) {
             jsonEntry[arg.first] = arg.second;
         }

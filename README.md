@@ -11,27 +11,23 @@ LunarLog is a flexible, high-performance C++ logging library designed for modern
 - File rotation based on size
 - Rate limiting to prevent log flooding
 - Thread-safe design
+- Separated source and sink components for greater flexibility
+- Asynchronous logging with non-blocking log calls
 
 ## Requirements
 
-- C++11, C++14, C++17 compatible compiler
+- C++11 or later compatible compiler
 - [nlohmann/json](https://github.com/nlohmann/json) library for JSON support (MIT License)
 
 ## Installation
 
-1. **Using the single include version with JSON included**:
-   - Include the `single_include/lunar_log.hpp` file in your project.
-   
-   ```cpp
-   #include "single_include/lunar_log.hpp"
-   ```
+Include the following header in your project:
 
-2. **Using the separate include version**:
-    - Include the `include/lunar_log.hpp` and ensure you have the `nlohmann/json.hpp` file included and properly linked.
+```cpp
+#include "lunar_log.hpp"
+```
 
-   ```cpp
-   #include "include/lunar_log.hpp"
-   ```
+Ensure that all the component headers (lunar_log_common.hpp, lunar_log_sink_interface.hpp, etc.) are in your include path.
 
 ## Usage
 
@@ -39,11 +35,20 @@ LunarLog is a flexible, high-performance C++ logging library designed for modern
 #include "lunar_log.hpp"
 
 int main() {
-    minta::LunarLog logger(minta::LunarLog::Level::INFO, "app.log");
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    
+    // Add a console sink using the factory pattern
+    auto consoleSink = logger.addSink<minta::ConsoleSink>();
+
+    // Add a file sink using the factory pattern
+    auto fileSink = logger.addSink<minta::FileSink>("app.log", 10 * 1024 * 1024);
 
     logger.info("Application started");
     logger.warn("Low disk space: {remaining} MB remaining", 100);
     logger.error("Failed to connect to database: {error}", "Connection timeout");
+
+    // Using escaped brackets
+    logger.info("Escaped brackets example: {{escaped}} {not_escaped}", "value");
 
     return 0;
 }
@@ -52,7 +57,9 @@ int main() {
 ### JSON Logging
 
 ```cpp
-minta::LunarLog logger(minta::LunarLog::Level::DEBUG, "app.json.log", 10 * 1024 * 1024, true);
+minta::LunarLog logger(minta::LogLevel::DEBUG);
+auto jsonFileSink = logger.addSink<minta::FileSink>("app.json.log", 10 * 1024 * 1024);
+logger.enableJsonLogging(true);
 
 logger.info("User {username} logged in from {ip_address}", "alice", "192.168.1.1");
 ```
@@ -71,44 +78,24 @@ This will produce a JSON log entry like:
 
 ## Configuration
 
-- Set minimum log level: `logger.setMinLevel(minta::LunarLog::Level::WARN)`
+- Set minimum log level: `logger.setMinLevel(minta::LogLevel::WARN)`
 - Enable/disable JSON logging: `logger.enableJsonLogging(true)`
-- Set log file: `logger.setLogFile("new_log_file.log")`
+- Add a sink: `logger.addSink<SinkType>(args...)`
+- Remove a specific sink: `logger.removeSink(sinkPointer)`
+- Remove all sinks of a specific type: `logger.removeSinkOfType<SinkType>()`
 
 ## Best Practices
 
 1. Use named placeholders following the [Message Templates](https://messagetemplates.org/) specification for better readability and maintainability.
 2. Set an appropriate log level for production environments.
-3. Monitor log file sizes and implement log rotation as needed.
+3. Implement multiple sinks for different logging needs (e.g., file for persistent logs, console for immediate feedback).
 4. Use JSON logging for easier log parsing and analysis.
+5. Use escaped brackets when you need to include literal curly braces in your log messages.
+6. Utilize the factory pattern for creating and managing sinks.
 
 ## License
 
 LunarLog is released under the MIT License. See the LICENSE file for details.
-
-```
-MIT License
-
-Copyright (c) 2024 Minseok Kim
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
 
 ## Contributing
 
@@ -117,4 +104,3 @@ Contributions to LunarLog are welcome! Please feel free to submit a Pull Request
 ## Support
 
 If you encounter any issues or have questions about using LunarLog, please file an issue on the project's GitHub page.
-

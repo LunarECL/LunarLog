@@ -1,11 +1,9 @@
 #ifndef LUNAR_LOG_SOURCE_HPP
 #define LUNAR_LOG_SOURCE_HPP
 
-#include "core/log_common.hpp"
 #include "core/log_entry.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
-#include "sink/file_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
 #include <atomic>
 #include <thread>
@@ -89,11 +87,11 @@ namespace minta {
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, validatedTemplate, std::move(argumentPairs), false
+                level, std::move(message), now, validatedTemplate, std::move(argumentPairs)
             });
 
             for (const auto &warning: warnings) {
-                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {}, false});
+                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {}});
             }
 
             lock.unlock();

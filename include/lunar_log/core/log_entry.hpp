@@ -13,7 +13,6 @@ namespace minta {
         std::chrono::system_clock::time_point timestamp;
         std::string templateStr;
         std::vector<std::pair<std::string, std::string> > arguments;
-        bool isJsonLogging;
     };
 } // namespace minta
 

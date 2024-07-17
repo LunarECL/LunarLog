@@ -1,82 +1,49 @@
-// usage.cpp
 #include "lunar_log.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
 
-void logInThread(minta::LunarLog& logger, int threadId) {
-    for (int i = 0; i < 5; ++i) {
-        logger.info("Log from thread {threadId}, iteration {iteration}", threadId, i);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-}
-
 int main() {
     // Create a logger with minimum level set to TRACE
     minta::LunarLog logger(minta::LogLevel::TRACE);
 
-    // Add a console sink using the factory
-    auto consoleSink = logger.addSink<minta::ConsoleSink>();
+    // Add a console sink with default formatter
+    logger.addSink<minta::ConsoleSink>();
 
-    // Add a file sink with rotation at 1MB using the factory
-    auto fileSink = logger.addSink<minta::FileSink>("app.log", 1024 * 1024);
+    // Add a file sink with default formatter
+    logger.addSink<minta::FileSink>("app.log");
 
-    // Add a JSON file sink using the factory
-    auto jsonFileSink = logger.addSink<minta::FileSink>("app.json.log", 1024 * 1024);
+    // Add a file sink with built-in JSON formatter
+    logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
 
-    // Basic logging
+    // Basic logging with named placeholders
     logger.trace("This is a trace message");
-    logger.debug("This is a debug message");
-    logger.info("This is an info message");
-    logger.warn("This is a warning message");
-    logger.error("This is an error message");
-    logger.fatal("This is a fatal message");
-
-    // Logging with placeholders
-    int userId = 1234;
-    std::string username = "alice";
-    logger.info("User {userId} logged in with username {username}", userId, username);
+    logger.debug("This is a debug message with a number: {number}", 42);
+    logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
+    logger.warn("Warning: {attempts} attempts remaining", 3);
+    logger.error("Error occurred: {error}", "File not found");
+    logger.fatal("Fatal error: {errorType}", "System crash");
 
     // Demonstrating escaped brackets
-    logger.info("Escaped brackets example: {{escaped}} {not_escaped}", "value");
-
-    // JSON logging
-    logger.enableJsonLogging(true);
-    logger.info("This message will be logged in JSON format");
-    logger.info("User {username} performed action {action}", "bob", "delete");
-    logger.enableJsonLogging(false);
+    logger.info("Escaped brackets example: {{escaped}} {notEscaped}", "value");
 
     // Demonstrate rate limiting
     for (int i = 0; i < 2000; ++i) {
-        logger.info("Rate limit test message {iteration}", i);
+        logger.info("Rate limit test message {index}", i);
     }
 
-    // Demonstrate multi-threaded logging
-    std::thread t1(logInThread, std::ref(logger), 1);
-    std::thread t2(logInThread, std::ref(logger), 2);
-    t1.join();
-    t2.join();
-
-    logger.removeSink(consoleSink);
-
-    logger.info("This message should appear in files but not in console");
-
+    // Wait for a second to reset rate limiting
     std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    logger.info("This is another message that should be in the file");
+    logger.info("This message should appear after the rate limit reset");
 
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    logger.removeSinkOfType<minta::FileSink>();
-
-    logger.info("This message should not appear anywhere as all sinks have been removed");
+    // Demonstrating placeholder validation warnings
+    logger.info("Empty placeholder: {}", "value");
+    logger.info("Repeated placeholder: {placeholder} and {placeholder}", "value1", "value2");
+    logger.info("Too few values: {placeholder1} and {placeholder2}", "value");
+    logger.info("Too many values: {placeholder}", "value1", "value2");
 
     std::cout << "Check app.log and app.json.log for the logged messages." << std::endl;
 
-    std::ifstream logFile("app.log");
-    if (logFile.is_open()) {
-        std::cout << "\nContents of app.log:\n";
-        std::cout << logFile.rdbuf();
-    }
     return 0;
 }

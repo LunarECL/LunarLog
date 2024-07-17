@@ -1,4 +1,3 @@
-
 def merge_files(source_file_path, target_file_path):
     try:
         # Read the source file content
@@ -36,6 +35,7 @@ def merge_files(source_file_path, target_file_path):
         print("Files merged successfully.")
     except Exception as e:
         print(f"An error occurred: {e}")
+
 
 # Example usage
 if __name__ == "__main__":

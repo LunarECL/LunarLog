@@ -1,97 +1,112 @@
 # LunarLog
 
-LunarLog is a flexible, high-performance C++ logging library designed for modern applications. It offers a range of features to meet various logging needs, from basic console output to structured JSON logging.
+LunarLog is a flexible, high-performance C++17 logging library designed for modern applications. It offers a range of features to meet various logging needs, from basic console output to structured JSON logging.
 
 ## Features
 
-- Header-only library for easy integration
 - Multiple log levels (TRACE, DEBUG, INFO, WARN, ERROR, FATAL)
 - Support for [Message Templates](https://messagetemplates.org/) specification
-- JSON logging support
-- File rotation based on size
-- Rate limiting to prevent log flooding
+- Customizable formatters, including built-in JSON formatter
+- Multiple transport options (file, console)
 - Thread-safe design
-- Separated source and sink components for greater flexibility
-- Asynchronous logging with non-blocking log calls
+- Rate limiting to prevent log flooding
+- Placeholder validation for improved debugging
+- Escaped brackets support for literal curly braces in log messages
 
 ## Requirements
 
 - C++11 or later compatible compiler
-- [nlohmann/json](https://github.com/nlohmann/json) library for JSON support (MIT License)
+- [nlohmann/json](https://github.com/nlohmann/json) library for JSON support
 
 ## Installation
 
-Include the following header in your project:
+1. Include the LunarLog headers in your project:
 
 ```cpp
 #include "lunar_log.hpp"
 ```
 
-Ensure that all the component headers (lunar_log_common.hpp, lunar_log_sink_interface.hpp, etc.) are in your include path.
+2. Ensure all component headers are in your include path.
+3. Configure your build system to use C++11 (e.g., `-std=c++11` for GCC/Clang).
 
-## Usage
+## Basic Usage
 
 ```cpp
 #include "lunar_log.hpp"
+#include <iostream>
+#include <thread>
+#include <chrono>
 
 int main() {
-    minta::LunarLog logger(minta::LogLevel::INFO);
-    
-    // Add a console sink using the factory pattern
-    auto consoleSink = logger.addSink<minta::ConsoleSink>();
+    // Create a logger with minimum level set to TRACE
+    minta::LunarLog logger(minta::LogLevel::TRACE);
 
-    // Add a file sink using the factory pattern
-    auto fileSink = logger.addSink<minta::FileSink>("app.log", 10 * 1024 * 1024);
+    // Add a console sink with default formatter
+    logger.addSink<minta::ConsoleSink>();
 
-    logger.info("Application started");
-    logger.warn("Low disk space: {remaining} MB remaining", 100);
-    logger.error("Failed to connect to database: {error}", "Connection timeout");
+    // Add a file sink with default formatter
+    logger.addSink<minta::FileSink>("app.log");
 
-    // Using escaped brackets
-    logger.info("Escaped brackets example: {{escaped}} {not_escaped}", "value");
+    // Add a file sink with built-in JSON formatter
+    logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
+
+    // Basic logging with named placeholders
+    logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
+
+    // Demonstrating escaped brackets
+    logger.info("Escaped brackets example: {{escaped}} {notEscaped}", "value");
 
     return 0;
 }
 ```
 
-### JSON Logging
+## Advanced Features
+
+### Custom Formatters
+
+Create custom formatters by implementing the `IFormatter` interface:
 
 ```cpp
-minta::LunarLog logger(minta::LogLevel::DEBUG);
-auto jsonFileSink = logger.addSink<minta::FileSink>("app.json.log", 10 * 1024 * 1024);
-logger.enableJsonLogging(true);
+class CustomFormatter : public minta::IFormatter {
+public:
+    std::string format(const minta::LogEntry &entry) const override {
+        return "CUSTOM: " + entry.message;
+    }
+};
 
-logger.info("User {username} logged in from {ip_address}", "alice", "192.168.1.1");
+// Usage
+logger.addSink<minta::FileSink, CustomFormatter>("custom_log.txt");
 ```
 
-This will produce a JSON log entry like:
+### Rate Limiting
 
-```json
-{
-  "level": "INFO",
-  "message": "User alice logged in from 192.168.1.1",
-  "timestamp": "2024-07-09 14:04:56.519",
-  "username": "alice",
-  "ip_address": "192.168.1.1"
+LunarLog automatically applies rate limiting to prevent log flooding:
+
+```cpp
+for (int i = 0; i < 2000; ++i) {
+    logger.info("Rate limit test message {index}", i);
 }
 ```
 
-## Configuration
+### Placeholder Validation
 
-- Set minimum log level: `logger.setMinLevel(minta::LogLevel::WARN)`
-- Enable/disable JSON logging: `logger.enableJsonLogging(true)`
-- Add a sink: `logger.addSink<SinkType>(args...)`
-- Remove a specific sink: `logger.removeSink(sinkPointer)`
-- Remove all sinks of a specific type: `logger.removeSinkOfType<SinkType>()`
+LunarLog provides warnings for common placeholder issues:
+
+```cpp
+logger.info("Empty placeholder: {}", "value");
+logger.info("Repeated placeholder: {placeholder} and {placeholder}", "value1", "value2");
+logger.info("Too few values: {placeholder1} and {placeholder2}", "value");
+logger.info("Too many values: {placeholder}", "value1", "value2");
+```
 
 ## Best Practices
 
-1. Use named placeholders following the [Message Templates](https://messagetemplates.org/) specification for better readability and maintainability.
+1. Use named placeholders for better readability and maintainability.
 2. Set an appropriate log level for production environments.
-3. Implement multiple sinks for different logging needs (e.g., file for persistent logs, console for immediate feedback).
+3. Implement multiple sinks for different logging needs.
 4. Use JSON logging for easier log parsing and analysis.
-5. Use escaped brackets when you need to include literal curly braces in your log messages.
-6. Utilize the factory pattern for creating and managing sinks.
+5. Utilize custom formatters for specialized logging requirements.
+6. Be aware of rate limiting when logging high-frequency events.
 
 ## License
 

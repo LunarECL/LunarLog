@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(LunarLog VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(LUNARLOG_CXX_STANDARD "11" CACHE STRING "C++ standard to use (11, 14, or 17)")
+set_property(CACHE LUNARLOG_CXX_STANDARD PROPERTY STRINGS 11 14 17)
 
 # Add Google Test
 include(FetchContent)

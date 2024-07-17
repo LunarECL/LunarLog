@@ -1,6 +1,7 @@
 # LunarLog
 
-LunarLog is a flexible, high-performance C++ logging library designed for modern applications. It offers a range of features to meet various logging needs, from basic console output to structured JSON logging.
+LunarLog is a flexible, high-performance C++ logging library designed for modern applications. It offers a range of
+features to meet various logging needs, from basic console output to structured JSON logging.
 
 ## Features
 
@@ -27,7 +28,8 @@ Include the following header in your project:
 #include "lunar_log.hpp"
 ```
 
-Ensure that all the component headers (lunar_log_common.hpp, lunar_log_sink_interface.hpp, etc.) are in your include path.
+Ensure that all the component headers (lunar_log_common.hpp, lunar_log_sink_interface.hpp, etc.) are in your include
+path.
 
 ## Usage
 
@@ -86,9 +88,11 @@ This will produce a JSON log entry like:
 
 ## Best Practices
 
-1. Use named placeholders following the [Message Templates](https://messagetemplates.org/) specification for better readability and maintainability.
+1. Use named placeholders following the [Message Templates](https://messagetemplates.org/) specification for better
+   readability and maintainability.
 2. Set an appropriate log level for production environments.
-3. Implement multiple sinks for different logging needs (e.g., file for persistent logs, console for immediate feedback).
+3. Implement multiple sinks for different logging needs (e.g., file for persistent logs, console for immediate
+   feedback).
 4. Use JSON logging for easier log parsing and analysis.
 5. Use escaped brackets when you need to include literal curly braces in your log messages.
 6. Utilize the factory pattern for creating and managing sinks.

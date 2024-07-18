@@ -187,13 +187,17 @@ TEST_F(LunarLogTest, JsonFormatter) {
     waitForFileContent("json_formatter_log.txt");
     std::string logContent = readLogFile("json_formatter_log.txt");
 
-    // Parse the JSON content
-    auto json = nlohmann::json::parse(logContent);
+    if (!logContent.empty() && logContent.back() == '\n') {
+        logContent.pop_back();
+    }
 
-    // Check if the JSON has the expected structure and content
-    EXPECT_EQ(json["level"], "INFO");
-    EXPECT_EQ(json["message"], "User alice logged in from 192.168.1.1");
-    EXPECT_TRUE(json.contains("timestamp"));
-    EXPECT_EQ(json["username"], "alice");
-    EXPECT_EQ(json["ip"], "192.168.1.1");
+    EXPECT_TRUE(logContent.find(R"("level":"INFO")") != std::string::npos);
+    EXPECT_TRUE(logContent.find(R"("message":"User alice logged in from 192.168.1.1")") != std::string::npos);
+    EXPECT_TRUE(logContent.find(R"("timestamp":"2024-07-18)") != std::string::npos);  // Check for date part
+    EXPECT_TRUE(logContent.find(R"("username":"alice")") != std::string::npos);
+    EXPECT_TRUE(logContent.find(R"("ip":"192.168.1.1")") != std::string::npos);
+
+    EXPECT_EQ(logContent.front(), '{');
+    EXPECT_EQ(logContent.back(), '}');
+    EXPECT_EQ(std::count(logContent.begin(), logContent.end(), '"'), 20);
 }

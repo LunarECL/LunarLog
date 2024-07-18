@@ -13,21 +13,11 @@ FetchContent_Declare(
 # For Windows: Prevent overriding the parent project's compiler/linker settings
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-# Add nlohmann/json
-FetchContent_Declare(
-        json
-        URL https://github.com/nlohmann/json/archive/v3.11.3.tar.gz
-)
-
-FetchContent_MakeAvailable(googletest json)
-
-# Get the path to nlohmann/json include directory
-get_target_property(JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+FetchContent_MakeAvailable(googletest)
 
 add_library(LunarLog INTERFACE)
 target_include_directories(LunarLog INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${JSON_INCLUDE_DIR}
 )
 
 if (WIN32)
@@ -36,7 +26,7 @@ endif ()
 
 # Examples
 add_executable(BasicUsage examples/basic_usage.cpp)
-target_link_libraries(BasicUsage PRIVATE LunarLog nlohmann_json::nlohmann_json)
+target_link_libraries(BasicUsage PRIVATE LunarLog)
 
 # Tests
 enable_testing()
@@ -48,7 +38,6 @@ target_link_libraries(TestLunarLog PRIVATE
         LunarLog
         gtest
         gtest_main
-        nlohmann_json::nlohmann_json
         pthread
 )
 

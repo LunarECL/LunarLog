@@ -16,7 +16,6 @@ LunarLog is a flexible, high-performance C++17 logging library designed for mode
 ## Requirements
 
 - C++11 or later compatible compiler
-- [nlohmann/json](https://github.com/nlohmann/json) library for JSON support
 
 ## Installation
 

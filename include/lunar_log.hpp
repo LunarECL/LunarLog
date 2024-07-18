@@ -7,6 +7,7 @@
 #include "lunar_log/formatter/formatter_interface.hpp"
 #include "lunar_log/formatter/human_readable_formatter.hpp"
 #include "lunar_log/formatter/json_formatter.hpp"
+#include "lunar_log/formatter/xml_formatter.hpp"
 #include "lunar_log/transport/transport_interface.hpp"
 #include "lunar_log/transport/file_transport.hpp"
 #include "lunar_log/transport/stdout_transport.hpp"

@@ -20,7 +20,7 @@ protected:
         std::vector<std::string> filesToRemove = {
             "test_log.txt", "level_test_log.txt", "rate_limit_test_log.txt",
             "escaped_brackets_test.txt", "test_log1.txt", "test_log2.txt",
-            "validation_test_log.txt", "custom_formatter_log.txt", "json_formatter_log.txt"
+            "validation_test_log.txt", "custom_formatter_log.txt", "json_formatter_log.txt", "xml_formatter_log.txt"
         };
 
         for (const auto &filename: filesToRemove) {
@@ -200,4 +200,20 @@ TEST_F(LunarLogTest, JsonFormatter) {
     EXPECT_EQ(logContent.front(), '{');
     EXPECT_EQ(logContent.back(), '}');
     EXPECT_EQ(std::count(logContent.begin(), logContent.end(), '"'), 20);
+}
+
+TEST_F(LunarLogTest, XmlFormatter) {
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    logger.addSink<minta::FileSink, minta::XmlFormatter>("xml_formatter_log.txt");
+
+    logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
+
+    waitForFileContent("xml_formatter_log.txt");
+    std::string logContent = readLogFile("xml_formatter_log.txt");
+
+    EXPECT_TRUE(logContent.find("<level>INFO</level>") != std::string::npos);
+    EXPECT_TRUE(logContent.find("<message>User alice logged in from 192.168.1.1</message>") != std::string::npos);
+    EXPECT_TRUE(logContent.find("<timestamp>2024-07-18") != std::string::npos);
+    EXPECT_TRUE(logContent.find("<argument name=\"username\">alice") != std::string::npos);
+    EXPECT_TRUE(logContent.find("<argument name=\"ip\">192.168.1.1") != std::string::npos);
 }

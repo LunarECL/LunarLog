@@ -15,6 +15,7 @@ int main() {
 
     // Add a file sink with built-in JSON formatter
     logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
+    logger.addSink<minta::FileSink, minta::XmlFormatter>("app.xml.log");
 
     // Basic logging with named placeholders
     logger.trace("This is a trace message");

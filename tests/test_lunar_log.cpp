@@ -201,3 +201,27 @@ TEST_F(LunarLogTest, JsonFormatter) {
     EXPECT_EQ(logContent.back(), '}');
     EXPECT_EQ(std::count(logContent.begin(), logContent.end(), '"'), 20);
 }
+
+TEST_F(LunarLogTest, XmlFormatter) {
+    minta::LunarLog logger(minta::LogLevel::INFO);
+    logger.addSink<minta::FileSink, minta::XmlFormatter>("json_formatter_log.txt");
+
+    logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
+
+    waitForFileContent("json_formatter_log.txt");
+    std::string logContent = readLogFile("json_formatter_log.txt");
+
+    if (!logContent.empty() && logContent.back() == '\n') {
+        logContent.pop_back();
+    }
+
+    EXPECT_TRUE(logContent.find(R"("level":"INFO")") != std::string::npos);
+    EXPECT_TRUE(logContent.find(R"("message":"User alice logged in from 192.168.1.1")") != std::string::npos);
+    EXPECT_TRUE(logContent.find(R"("timestamp":"2024-07-18)") != std::string::npos);  // Check for date part
+    EXPECT_TRUE(logContent.find(R"("username":"alice")") != std::string::npos);
+    EXPECT_TRUE(logContent.find(R"("ip":"192.168.1.1")") != std::string::npos);
+
+    EXPECT_EQ(logContent.front(), '{');
+    EXPECT_EQ(logContent.back(), '}');
+    EXPECT_EQ(std::count(logContent.begin(), logContent.end(), '"'), 20);
+}

@@ -188,12 +188,14 @@ TEST_F(LunarLogTest, JsonFormatter) {
     std::string logContent = readLogFile("json_formatter_log.txt");
 
     if (!logContent.empty() && logContent.back() == '\n') {
-    logContent.pop_back();
+        logContent.pop_back();
     }
+
+    std::regex timestampRegex(R"("timestamp":"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}")");
 
     EXPECT_TRUE(logContent.find(R"("level":"INFO")") != std::string::npos);
     EXPECT_TRUE(logContent.find(R"("message":"User alice logged in from 192.168.1.1")") != std::string::npos);
-    EXPECT_TRUE(logContent.find(R"("timestamp":"2024-07-18)") != std::string::npos);  // Check for date part
+    EXPECT_TRUE(std::regex_search(logContent, timestampRegex));
     EXPECT_TRUE(logContent.find(R"("username":"alice")") != std::string::npos);
     EXPECT_TRUE(logContent.find(R"("ip":"192.168.1.1")") != std::string::npos);
 
@@ -211,9 +213,11 @@ TEST_F(LunarLogTest, XmlFormatter) {
     waitForFileContent("xml_formatter_log.txt");
     std::string logContent = readLogFile("xml_formatter_log.txt");
 
+    std::regex timestampRegex(R"(<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}</timestamp>)");
+
     EXPECT_TRUE(logContent.find("<level>INFO</level>") != std::string::npos);
     EXPECT_TRUE(logContent.find("<message>User alice logged in from 192.168.1.1</message>") != std::string::npos);
-    EXPECT_TRUE(logContent.find("<timestamp>2024-07-18") != std::string::npos);
+    EXPECT_TRUE(std::regex_search(logContent, timestampRegex));
     EXPECT_TRUE(logContent.find("<argument name=\"username\">alice") != std::string::npos);
     EXPECT_TRUE(logContent.find("<argument name=\"ip\">192.168.1.1") != std::string::npos);
 }

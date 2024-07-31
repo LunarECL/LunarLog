@@ -1,17 +1,19 @@
 # LunarLog
 
-LunarLog is a flexible, high-performance C++17 logging library designed for modern applications. It offers a range of features to meet various logging needs, from basic console output to structured JSON logging.
+LunarLog is a flexible, high-performance C++ logging library designed for modern applications. It offers a range of features to meet various logging needs, from basic console output to structured JSON and XML logging.
 
 ## Features
 
 - Multiple log levels (TRACE, DEBUG, INFO, WARN, ERROR, FATAL)
 - Support for [Message Templates](https://messagetemplates.org/) specification
-- Customizable formatters, including built-in JSON formatter
+- Customizable formatters, including built-in JSON and XML formatters
 - Multiple transport options (file, console)
 - Thread-safe design
 - Rate limiting to prevent log flooding
 - Placeholder validation for improved debugging
 - Escaped brackets support for literal curly braces in log messages
+- Context capture for enriched logging
+- Compatible with C++11, C++14, and C++17
 
 ## Requirements
 
@@ -26,7 +28,7 @@ LunarLog is a flexible, high-performance C++17 logging library designed for mode
 ```
 
 2. Ensure all component headers are in your include path.
-3. Configure your build system to use C++11 (e.g., `-std=c++11` for GCC/Clang).
+3. Configure your build system to use C++11 or later (e.g., `-std=c++11`, `-std=c++14`, or `-std=c++17` for GCC/Clang).
 
 ## Basic Usage
 
@@ -48,6 +50,9 @@ int main() {
 
     // Add a file sink with built-in JSON formatter
     logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
+
+    // Add a file sink with built-in XML formatter
+    logger.addSink<minta::FileSink, minta::XmlFormatter>("app.xml.log");
 
     // Basic logging with named placeholders
     logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
@@ -98,14 +103,40 @@ logger.info("Too few values: {placeholder1} and {placeholder2}", "value");
 logger.info("Too many values: {placeholder}", "value1", "value2");
 ```
 
+### Context Capture
+
+Enrich your logs with contextual information:
+
+```cpp
+logger.setCaptureContext(true);
+logger.setContext("session_id", "abc123");
+logger.info("Log with global context");
+
+{
+    minta::ContextScope scope(logger, "request_id", "req456");
+    logger.info("Log within scoped context");
+}
+
+logger.clearAllContext();
+
+// Advanced usage with manual context specification
+logger.logWithContext(minta::LogLevel::INFO, LUNAR_LOG_CONTEXT, "Manual context specification");
+
+```
+
 ## Best Practices
 
 1. Use named placeholders for better readability and maintainability.
 2. Set an appropriate log level for production environments.
-3. Implement multiple sinks for different logging needs.
-4. Use JSON logging for easier log parsing and analysis.
+3. Implement multiple sinks for different logging needs (e.g., console, file, structured formats).
+4. Use JSON or XML logging for easier log parsing and analysis.
 5. Utilize custom formatters for specialized logging requirements.
 6. Be aware of rate limiting when logging high-frequency events.
+7. Use context capture to add rich, structured data to your logs.
+
+## Compatibility
+
+LunarLog is designed to work with C++11, C++14, and C++17. When compiling, specify the appropriate standard for your project.
 
 ## License
 

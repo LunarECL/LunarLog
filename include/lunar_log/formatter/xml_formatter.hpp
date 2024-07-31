@@ -16,9 +16,20 @@ namespace minta {
             xml << "<timestamp>" << formatTimestamp(entry.timestamp) << "</timestamp>";
             xml << "<message>" << escapeXmlString(entry.message) << "</message>";
 
-            for (const auto &arg : entry.arguments) {
-                xml << "<argument name=\"" << escapeXmlString(arg.first) << "\">";
-                xml << escapeXmlString(arg.second) << "</argument>";
+            if (!entry.file.empty()) {
+                xml << "<file>" << escapeXmlString(entry.file) << "</file>";
+                xml << "<line>" << entry.line << "</line>";
+                xml << "<function>" << escapeXmlString(entry.function) << "</function>";
+            }
+
+            if (!entry.customContext.empty()) {
+                xml << "<context>";
+                for (const auto &ctx : entry.customContext) {
+                    xml << "<" << escapeXmlString(ctx.first) << ">";
+                    xml << escapeXmlString(ctx.second);
+                    xml << "</" << escapeXmlString(ctx.first) << ">";
+                }
+                xml << "</context>";
             }
 
             xml << "</log_entry>";

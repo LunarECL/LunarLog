@@ -30,10 +30,23 @@ target_link_libraries(BasicUsage PRIVATE LunarLog)
 
 # Tests
 enable_testing()
-add_executable(TestLunarLog
-        tests/test_lunar_log.cpp
-        tests/test_main.cpp
+
+set(TEST_SOURCES
+        test/test_main.cpp
+        test/tests/test_basic_logging.cpp
+        test/tests/test_log_levels.cpp
+        test/tests/test_rate_limiting.cpp
+        test/tests/test_placeholder_validation.cpp
+        test/tests/test_escaped_brackets.cpp
+        test/tests/test_multiple_sinks.cpp
+        test/tests/test_custom_formatter.cpp
+        test/tests/test_json_formatter.cpp
+        test/tests/test_xml_formatter.cpp
+        test/tests/test_context_capture.cpp
+        test/tests/utils/test_utils.cpp
 )
+
+add_executable(TestLunarLog ${TEST_SOURCES})
 target_link_libraries(TestLunarLog PRIVATE
         LunarLog
         gtest
@@ -41,7 +54,17 @@ target_link_libraries(TestLunarLog PRIVATE
         pthread
 )
 
-target_include_directories(TestLunarLog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(TestLunarLog PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test
+)
+
+# Set C++ standard for TestLunarLog
+set_target_properties(TestLunarLog PROPERTIES
+        CXX_STANDARD ${LUNARLOG_CXX_STANDARD}
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+)
 
 include(GoogleTest)
 gtest_discover_tests(TestLunarLog)

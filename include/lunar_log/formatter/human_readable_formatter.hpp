@@ -11,8 +11,22 @@ namespace minta {
         std::string format(const LogEntry &entry) const override {
             std::ostringstream oss;
             oss << formatTimestamp(entry.timestamp) << " "
-                    << "[" << getLevelString(entry.level) << "] "
-                    << entry.message;
+                << "[" << getLevelString(entry.level) << "] "
+                << entry.message;
+
+            if (!entry.file.empty()) {
+                oss << " [" << entry.file << ":" << entry.line << " " << entry.function << "]";
+            }
+
+            if (!entry.customContext.empty()) {
+                oss << " {";
+                for (const auto &ctx : entry.customContext) {
+                    oss << ctx.first << "=" << ctx.second << ", ";
+                }
+                oss.seekp(-2, std::ios_base::end);
+                oss << "}";
+            }
+
             return oss.str();
         }
     };

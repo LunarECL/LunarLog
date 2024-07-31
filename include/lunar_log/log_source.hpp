@@ -13,16 +13,17 @@
 #include <regex>
 #include <type_traits>
 #include <set>
+#include <map>
 
 namespace minta {
     class LunarLog {
     public:
         LunarLog(LogLevel minLevel = LogLevel::INFO)
             : m_minLevel(minLevel)
-              , m_isRunning(true)
-              , m_lastLogTime(std::chrono::steady_clock::now())
-              , m_logCount(0) {
-            // Default configuration
+            , m_isRunning(true)
+            , m_lastLogTime(std::chrono::steady_clock::now())
+            , m_logCount(0)
+            , m_captureContext(false) {
             addSink<ConsoleSink>();
             m_logThread = std::thread(&LunarLog::processLogQueue, this);
         }
@@ -36,11 +37,8 @@ namespace minta {
         }
 
         LunarLog(const LunarLog &) = delete;
-
         LunarLog &operator=(const LunarLog &) = delete;
-
         LunarLog(LunarLog &&) = delete;
-
         LunarLog &operator=(LunarLog &&) = delete;
 
         void setMinLevel(LogLevel level) {
@@ -49,6 +47,14 @@ namespace minta {
 
         LogLevel getMinLevel() const {
             return m_minLevel;
+        }
+
+        void setCaptureContext(bool capture) {
+            m_captureContext = capture;
+        }
+
+        bool getCaptureContext() const {
+            return m_captureContext;
         }
 
         template<typename SinkType, typename... Args>
@@ -60,8 +66,7 @@ namespace minta {
         }
 
         template<typename SinkType, typename FormatterType, typename... Args>
-        typename std::enable_if<std::is_base_of<ISink, SinkType>::value && std::is_base_of<IFormatter,
-                                    FormatterType>::value>::type
+        typename std::enable_if<std::is_base_of<ISink, SinkType>::value && std::is_base_of<IFormatter, FormatterType>::value>::type
         addSink(Args &&... args) {
             auto sink = make_unique<SinkType>(std::forward<Args>(args)...);
             sink->setFormatter(make_unique<FormatterType>());
@@ -74,28 +79,12 @@ namespace minta {
 
         template<typename... Args>
         void log(LogLevel level, const std::string &messageTemplate, const Args &... args) {
-            if (level < m_minLevel) return;
-            if (!rateLimitCheck()) return;
+            logInternal(level, "", 0, "", messageTemplate, args...);
+        }
 
-            auto validationResult = validatePlaceholders(messageTemplate, args...);
-            std::string validatedTemplate = validationResult.first;
-            std::vector<std::string> warnings = validationResult.second;
-
-            auto now = std::chrono::system_clock::now();
-            std::string message = formatMessage(validatedTemplate, args...);
-            auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
-
-            std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, validatedTemplate, std::move(argumentPairs)
-            });
-
-            for (const auto &warning: warnings) {
-                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {}});
-            }
-
-            lock.unlock();
-            m_logCV.notify_one();
+        template<typename... Args>
+        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            logInternal(level, file, line, function, messageTemplate, args...);
         }
 
         template<typename... Args>
@@ -128,16 +117,68 @@ namespace minta {
             log(LogLevel::FATAL, messageTemplate, args...);
         }
 
+        void setContext(const std::string& key, const std::string& value) {
+            std::lock_guard<std::mutex> lock(m_contextMutex);
+            m_customContext[key] = value;
+        }
+
+        void clearContext(const std::string& key) {
+            std::lock_guard<std::mutex> lock(m_contextMutex);
+            m_customContext.erase(key);
+        }
+
+        void clearAllContext() {
+            std::lock_guard<std::mutex> lock(m_contextMutex);
+            m_customContext.clear();
+        }
+
     private:
         LogLevel m_minLevel;
         std::atomic<bool> m_isRunning;
         std::chrono::steady_clock::time_point m_lastLogTime;
         std::atomic<size_t> m_logCount;
         std::mutex m_queueMutex;
+        std::mutex m_contextMutex;
         std::condition_variable m_logCV;
         std::queue<LogEntry> m_logQueue;
         std::thread m_logThread;
         LogManager m_logManager;
+        std::map<std::string, std::string> m_customContext;
+        bool m_captureContext;
+
+        template<typename... Args>
+        void logInternal(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            if (level < m_minLevel) return;
+            if (!rateLimitCheck()) return;
+
+            auto validationResult = validatePlaceholders(messageTemplate, args...);
+            std::string validatedTemplate = validationResult.first;
+            std::vector<std::string> warnings = validationResult.second;
+
+            auto now = std::chrono::system_clock::now();
+            std::string message = formatMessage(validatedTemplate, args...);
+            auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
+
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            std::map<std::string, std::string> contextCopy;
+            {
+                std::lock_guard<std::mutex> contextLock(m_contextMutex);
+                contextCopy = m_customContext;
+            }
+
+            m_logQueue.emplace(LogEntry{
+                level, std::move(message), now, validatedTemplate, std::move(argumentPairs),
+                m_captureContext ? file : "", m_captureContext ? line : 0, m_captureContext ? function : "", std::move(contextCopy)
+            });
+
+            for (const auto& warning : warnings) {
+                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {},
+                                            m_captureContext ? file : "", m_captureContext ? line : 0, m_captureContext ? function : "", {}});
+            }
+
+            lock.unlock();
+            m_logCV.notify_one();
+        }
 
         void processLogQueue() {
             while (m_isRunning) {
@@ -172,7 +213,7 @@ namespace minta {
         }
 
         template<typename... Args>
-        static std::pair<std::string, std::vector<std::string> > validatePlaceholders(
+        static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
             const std::string &messageTemplate, const Args &... args) {
             std::vector<std::string> warnings;
             std::vector<std::string> placeholders;
@@ -256,9 +297,9 @@ namespace minta {
         }
 
         template<typename... Args>
-        static std::vector<std::pair<std::string, std::string> > mapArgumentsToPlaceholders(
+        static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(
             const std::string &messageTemplate, const Args &... args) {
-            std::vector<std::pair<std::string, std::string> > argumentPairs;
+            std::vector<std::pair<std::string, std::string>> argumentPairs;
             std::vector<std::string> values{toString(args)...};
 
             std::regex placeholderRegex(R"(\{([^{}]*)\})");
@@ -280,6 +321,22 @@ namespace minta {
 
             return argumentPairs;
         }
+    };
+
+    class ContextScope {
+    public:
+        ContextScope(LunarLog& logger, const std::string& key, const std::string& value)
+            : m_logger(logger), m_key(key) {
+            m_logger.setContext(key, value);
+        }
+
+        ~ContextScope() {
+            m_logger.clearContext(m_key);
+        }
+
+    private:
+        LunarLog& m_logger;
+        std::string m_key;
     };
 } // namespace minta
 

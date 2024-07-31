@@ -17,8 +17,19 @@ namespace minta {
             json << R"("timestamp":")" << formatTimestamp(entry.timestamp) << R"(",)";
             json << R"("message":")" << escapeJsonString(entry.message) << R"(")";
 
-            for (const auto &arg : entry.arguments) {
-                json << R"(,")" << escapeJsonString(arg.first) << R"(":")" << escapeJsonString(arg.second) << R"(")";
+            if (!entry.file.empty()) {
+                json << R"(,"file":")" << escapeJsonString(entry.file) << R"(",)";
+                json << R"("line":)" << entry.line << R"(,)";
+                json << R"("function":")" << escapeJsonString(entry.function) << R"(")";
+            }
+
+            if (!entry.customContext.empty()) {
+                json << R"(,"context":{)";
+                for (const auto &ctx : entry.customContext) {
+                    json << R"(")" << escapeJsonString(ctx.first) << R"(":")" << escapeJsonString(ctx.second) << R"(",)";
+                }
+                json.seekp(-1, std::ios_base::end);
+                json << "}";
             }
 
             json << R"(})";

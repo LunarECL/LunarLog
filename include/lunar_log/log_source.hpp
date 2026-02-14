@@ -60,16 +60,16 @@ namespace minta {
         template<typename SinkType, typename... Args>
         typename std::enable_if<std::is_base_of<ISink, SinkType>::value>::type
         addSink(Args &&... args) {
-            auto sink = make_unique<SinkType>(std::forward<Args>(args)...);
-            sink->setFormatter(make_unique<HumanReadableFormatter>());
+            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
+            sink->setFormatter(detail::make_unique<HumanReadableFormatter>());
             m_logManager.addSink(std::move(sink));
         }
 
         template<typename SinkType, typename FormatterType, typename... Args>
         typename std::enable_if<std::is_base_of<ISink, SinkType>::value && std::is_base_of<IFormatter, FormatterType>::value>::type
         addSink(Args &&... args) {
-            auto sink = make_unique<SinkType>(std::forward<Args>(args)...);
-            sink->setFormatter(make_unique<FormatterType>());
+            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
+            sink->setFormatter(detail::make_unique<FormatterType>());
             m_logManager.addSink(std::move(sink));
         }
 

@@ -9,8 +9,8 @@ namespace minta {
     class ConsoleSink : public ISink {
     public:
         ConsoleSink() {
-            setFormatter(make_unique<HumanReadableFormatter>());
-            setTransport(make_unique<StdoutTransport>());
+            setFormatter(detail::make_unique<HumanReadableFormatter>());
+            setTransport(detail::make_unique<StdoutTransport>());
         }
 
         void write(const LogEntry &entry) override {

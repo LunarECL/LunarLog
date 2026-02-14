@@ -9,14 +9,16 @@
 #include <memory>
 
 namespace minta {
-#if __cplusplus < 201402L
+namespace detail {
     template<typename T, typename... Args>
-    std::unique_ptr<T> make_unique(Args&&... args) {
-        return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
-    }
+    inline std::unique_ptr<T> make_unique(Args&&... args) {
+#if (__cplusplus >= 201402L) || (defined(_MSVC_LANG) && _MSVC_LANG >= 201402L)
+        return std::make_unique<T>(std::forward<Args>(args)...);
 #else
-    using std::make_unique;
+        return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 #endif
+    }
+} // namespace detail
 
     inline std::string formatTimestamp(const std::chrono::system_clock::time_point &time) {
         auto nowTime = std::chrono::system_clock::to_time_t(time);

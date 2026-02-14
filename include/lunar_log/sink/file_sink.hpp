@@ -9,8 +9,8 @@ namespace minta {
     class FileSink : public ISink {
     public:
         explicit FileSink(const std::string &filename) {
-            setFormatter(make_unique<HumanReadableFormatter>());
-            setTransport(make_unique<FileTransport>(filename));
+            setFormatter(detail::make_unique<HumanReadableFormatter>());
+            setTransport(detail::make_unique<FileTransport>(filename));
         }
 
         void write(const LogEntry &entry) override {

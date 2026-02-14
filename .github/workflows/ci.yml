@@ -1,20 +1,133 @@
 name: CI
 
-on: [ push, pull_request ]
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master]
 
 jobs:
-  build_and_test:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }} / C++${{ matrix.cpp_standard }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  compiler: gcc,         cc: gcc,   cxx: g++,      cpp_standard: 11 }
+          - { os: ubuntu-latest,  compiler: gcc,         cc: gcc,   cxx: g++,      cpp_standard: 14 }
+          - { os: ubuntu-latest,  compiler: gcc,         cc: gcc,   cxx: g++,      cpp_standard: 17 }
+          - { os: ubuntu-latest,  compiler: clang,       cc: clang, cxx: clang++,  cpp_standard: 17 }
+          - { os: macos-latest,   compiler: appleclang,  cc: clang, cxx: clang++,  cpp_standard: 17 }
+          - { os: windows-latest, compiler: msvc,        cpp_standard: 17 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache FetchContent downloads
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Set compiler
+        if: matrix.cc
+        shell: bash
+        run: |
+          echo "CC=${{ matrix.cc }}" >> $GITHUB_ENV
+          echo "CXX=${{ matrix.cxx }}" >> $GITHUB_ENV
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DLUNARLOG_CXX_STANDARD=${{ matrix.cpp_standard }}
+
+      - name: Build
+        run: cmake --build build --config Debug
+
+      - name: Test
+        working-directory: build
+        run: ctest -C Debug --output-on-failure
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+
+      - name: Cache FetchContent downloads
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-ubuntu-latest-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure with coverage flags
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug \
+            -DLUNARLOG_CXX_STANDARD=17 \
+            -DCMAKE_CXX_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Generate coverage report
+        run: |
+          lcov --capture --directory build --output-file coverage.info \
+            --ignore-errors mismatch
+          lcov --remove coverage.info \
+            '/usr/*' \
+            '*/build/_deps/*' \
+            '*/test/*' \
+            --output-file coverage.info
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          lcov --list coverage.info >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate HTML report
+        run: genhtml coverage.info --output-directory coverage-html --title "LunarLog Coverage"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-html/
+
+  static-analysis:
+    name: Static Analysis
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Configure CMake
-        run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Debug
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tidy
 
-      - name: Build
-        run: cmake --build ${{github.workspace}}/build
+      - name: Run cppcheck
+        run: |
+          cppcheck \
+            --enable=warning,performance,portability \
+            --suppress=missingIncludeSystem \
+            --suppress=useStlAlgorithm \
+            --std=c++11 \
+            --error-exitcode=1 \
+            -I include \
+            $(find include -name '*.hpp')
 
-      - name: Test
-        working-directory: ${{github.workspace}}/build
-        run: ctest -C Debug --output-on-failure
+      - name: Configure CMake (for compile_commands.json)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Run clang-tidy
+        continue-on-error: true
+        run: |
+          clang-tidy \
+            -p build \
+            --checks='-*,bugprone-*,performance-*,portability-*' \
+            examples/basic_usage.cpp

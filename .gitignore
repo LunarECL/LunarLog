@@ -41,5 +41,6 @@
 /dataSources.local.xml
 
 /cmake-build-*
+/build/
 
 .idea/

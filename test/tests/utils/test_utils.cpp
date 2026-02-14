@@ -4,7 +4,8 @@
 #include <thread>
 #include <chrono>
 
-#if __cplusplus >= 201703L
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+#define LUNARLOG_USE_FILESYSTEM
 #include <filesystem>
 namespace fs = std::filesystem;
 #else
@@ -46,7 +47,7 @@ void TestUtils::cleanupLogFiles() {
 }
 
 bool TestUtils::fileExists(const std::string &filename) {
-#if __cplusplus >= 201703L
+#ifdef LUNARLOG_USE_FILESYSTEM
     return fs::exists(filename);
 #else
     struct stat buffer;
@@ -55,7 +56,7 @@ bool TestUtils::fileExists(const std::string &filename) {
 }
 
 std::uintmax_t TestUtils::getFileSize(const std::string &filename) {
-#if __cplusplus >= 201703L
+#ifdef LUNARLOG_USE_FILESYSTEM
     return fs::file_size(filename);
 #else
     struct stat buffer;
@@ -67,7 +68,7 @@ std::uintmax_t TestUtils::getFileSize(const std::string &filename) {
 }
 
 void TestUtils::removeFile(const std::string &filename) {
-#if __cplusplus >= 201703L
+#ifdef LUNARLOG_USE_FILESYSTEM
     fs::remove(filename);
 #else
     std::remove(filename.c_str());

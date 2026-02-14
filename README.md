@@ -1,151 +1,105 @@
 # LunarLog
 
-LunarLog is a flexible, high-performance C++ logging library designed for modern applications. It offers a range of features to meet various logging needs, from basic console output to structured JSON and XML logging.
+Header-only C++ logging library with pluggable formatters, sinks, and transports. Works with C++11/14/17.
+
+[![CI](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml)
 
 ## Features
 
-- Multiple log levels (TRACE, DEBUG, INFO, WARN, ERROR, FATAL)
-- Support for [Message Templates](https://messagetemplates.org/) specification
-- Customizable formatters, including built-in JSON and XML formatters
-- Multiple transport options (file, console)
-- Thread-safe design
+- Log levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
+- [Message Templates](https://messagetemplates.org/) with named placeholders
+- Built-in formatters: human-readable, JSON, XML
+- Multiple sinks (console, file) with independent formatters
+- Thread-safe logging with atomic operations
 - Rate limiting to prevent log flooding
-- Placeholder validation for improved debugging
-- Escaped brackets support for literal curly braces in log messages
-- Context capture for enriched logging
-- Compatible with C++11, C++14, and C++17
+- Context capture (global + scoped)
+- Escaped brackets (`{{like this}}`)
 
-## Requirements
-
-- C++11 or later compatible compiler
-
-## Installation
-
-1. Include the LunarLog headers in your project:
+## Quick Start
 
 ```cpp
 #include "lunar_log.hpp"
-```
-
-2. Ensure all component headers are in your include path.
-3. Configure your build system to use C++11 or later (e.g., `-std=c++11`, `-std=c++14`, or `-std=c++17` for GCC/Clang).
-
-## Basic Usage
-
-```cpp
-#include "lunar_log.hpp"
-#include <iostream>
-#include <thread>
-#include <chrono>
 
 int main() {
-    // Create a logger with minimum level set to TRACE
     minta::LunarLog logger(minta::LogLevel::TRACE);
 
-    // Add a console sink with default formatter
     logger.addSink<minta::ConsoleSink>();
-
-    // Add a file sink with default formatter
     logger.addSink<minta::FileSink>("app.log");
-
-    // Add a file sink with built-in JSON formatter
     logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
-
-    // Add a file sink with built-in XML formatter
     logger.addSink<minta::FileSink, minta::XmlFormatter>("app.xml.log");
 
-    // Basic logging with named placeholders
     logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
-
-    // Demonstrating escaped brackets
-    logger.info("Escaped brackets example: {{escaped}} {notEscaped}", "value");
+    logger.info("Escaped: {{literal braces}} {placeholder}", "value");
 
     return 0;
 }
 ```
 
-## Advanced Features
+## Installation
 
-### Custom Formatters
+Header-only — just add `include/` to your include path:
 
-Create custom formatters by implementing the `IFormatter` interface:
+```cmake
+add_subdirectory(LunarLog)
+target_link_libraries(YourTarget PRIVATE LunarLog)
+```
+
+Or copy the headers directly:
+```
+include/
+└── lunar_log/
+    ├── core/          # log entries, common utilities
+    ├── formatter/     # human-readable, JSON, XML
+    ├── sink/          # console, file
+    ├── transport/     # stdout, file I/O
+    ├── log_manager.hpp
+    └── log_source.hpp
+```
+
+## Custom Formatters
 
 ```cpp
-class CustomFormatter : public minta::IFormatter {
+class MyFormatter : public minta::IFormatter {
 public:
     std::string format(const minta::LogEntry &entry) const override {
-        return "CUSTOM: " + entry.message;
+        return "[" + entry.levelStr + "] " + entry.message + "\n";
     }
 };
 
-// Usage
-logger.addSink<minta::FileSink, CustomFormatter>("custom_log.txt");
+logger.addSink<minta::FileSink, MyFormatter>("custom.log");
 ```
 
-### Rate Limiting
-
-LunarLog automatically applies rate limiting to prevent log flooding:
-
-```cpp
-for (int i = 0; i < 2000; ++i) {
-    logger.info("Rate limit test message {index}", i);
-}
-```
-
-### Placeholder Validation
-
-LunarLog provides warnings for common placeholder issues:
-
-```cpp
-logger.info("Empty placeholder: {}", "value");
-logger.info("Repeated placeholder: {placeholder} and {placeholder}", "value1", "value2");
-logger.info("Too few values: {placeholder1} and {placeholder2}", "value");
-logger.info("Too many values: {placeholder}", "value1", "value2");
-```
-
-### Context Capture
-
-Enrich your logs with contextual information:
+## Context Capture
 
 ```cpp
 logger.setCaptureContext(true);
 logger.setContext("session_id", "abc123");
-logger.info("Log with global context");
+logger.info("request received");
 
 {
-    minta::ContextScope scope(logger, "request_id", "req456");
-    logger.info("Log within scoped context");
+    minta::ContextScope scope(logger, "request_id", "req-456");
+    logger.info("processing within scope");
 }
-
-logger.clearAllContext();
-
-// Advanced usage with manual context specification
-logger.logWithContext(minta::LogLevel::INFO, LUNAR_LOG_CONTEXT, "Manual context specification");
-
+// scope context automatically removed
 ```
 
-## Best Practices
+## Building & Testing
 
-1. Use named placeholders for better readability and maintainability.
-2. Set an appropriate log level for production environments.
-3. Implement multiple sinks for different logging needs (e.g., console, file, structured formats).
-4. Use JSON or XML logging for easier log parsing and analysis.
-5. Utilize custom formatters for specialized logging requirements.
-6. Be aware of rate limiting when logging high-frequency events.
-7. Use context capture to add rich, structured data to your logs.
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DLUNARLOG_CXX_STANDARD=17
+cmake --build build
+cd build && ctest --output-on-failure
+```
 
-## Compatibility
+Supported compilers:
+- GCC (C++11, 14, 17)
+- Clang / AppleClang (C++17)
+- MSVC (C++17)
 
-LunarLog is designed to work with C++11, C++14, and C++17. When compiling, specify the appropriate standard for your project.
+## CI
+
+Runs on every push — build matrix across GCC/Clang/MSVC, plus static analysis (cppcheck, clang-tidy) and test coverage.
 
 ## License
 
-LunarLog is released under the MIT License. See the LICENSE file for details.
-
-## Contributing
-
-Contributions to LunarLog are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-If you encounter any issues or have questions about using LunarLog, please file an issue on the project's GitHub page.
+MIT — see [LICENSE](LICENSE).

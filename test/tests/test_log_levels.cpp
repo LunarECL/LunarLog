@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "lunar_log.hpp"
-#include "./utils/test_utils.hpp"
+#include "utils/test_utils.hpp"
 
 class LogLevelsTest : public ::testing::Test {
 protected:

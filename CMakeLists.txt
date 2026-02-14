@@ -4,6 +4,9 @@ project(LunarLog VERSION 1.0.0 LANGUAGES CXX)
 set(LUNARLOG_CXX_STANDARD "11" CACHE STRING "C++ standard to use (11, 14, or 17)")
 set_property(CACHE LUNARLOG_CXX_STANDARD PROPERTY STRINGS 11 14 17)
 
+# Allow old cmake_minimum_required in fetched dependencies (CMake 4.x compat)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 # Add Google Test
 include(FetchContent)
 FetchContent_Declare(
@@ -14,6 +17,8 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(googletest)
+
+find_package(Threads REQUIRED)
 
 add_library(LunarLog INTERFACE)
 target_include_directories(LunarLog INTERFACE
@@ -27,6 +32,11 @@ endif ()
 # Examples
 add_executable(BasicUsage examples/basic_usage.cpp)
 target_link_libraries(BasicUsage PRIVATE LunarLog)
+set_target_properties(BasicUsage PROPERTIES
+        CXX_STANDARD ${LUNARLOG_CXX_STANDARD}
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+)
 
 # Tests
 enable_testing()
@@ -51,7 +61,7 @@ target_link_libraries(TestLunarLog PRIVATE
         LunarLog
         gtest
         gtest_main
-        pthread
+        Threads::Threads
 )
 
 target_include_directories(TestLunarLog PRIVATE

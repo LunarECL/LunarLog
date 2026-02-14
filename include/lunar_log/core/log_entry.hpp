@@ -21,4 +21,4 @@ namespace minta {
     };
 } // namespace minta
 
-#endif // LUNAR_LOG_ENTRY
+#endif // LUNAR_LOG_ENTRY_HPP

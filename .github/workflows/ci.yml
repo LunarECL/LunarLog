@@ -118,8 +118,8 @@ jobs:
             --suppress=useStlAlgorithm \
             --std=c++11 \
             --error-exitcode=1 \
-            -I ${{ github.workspace }}/include \
-            ${{ github.workspace }}/include/
+            -I include \
+            $(find include -name '*.hpp')
 
       - name: Configure CMake (for compile_commands.json)
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

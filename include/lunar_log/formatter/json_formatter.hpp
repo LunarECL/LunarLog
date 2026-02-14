@@ -25,10 +25,12 @@ namespace minta {
 
             if (!entry.customContext.empty()) {
                 json << R"(,"context":{)";
+                bool first = true;
                 for (const auto &ctx : entry.customContext) {
-                    json << R"(")" << escapeJsonString(ctx.first) << R"(":")" << escapeJsonString(ctx.second) << R"(",)";
+                    if (!first) json << ",";
+                    json << R"(")" << escapeJsonString(ctx.first) << R"(":")" << escapeJsonString(ctx.second) << R"(")";
+                    first = false;
                 }
-                json.seekp(-1, std::ios_base::end);
                 json << "}";
             }
 

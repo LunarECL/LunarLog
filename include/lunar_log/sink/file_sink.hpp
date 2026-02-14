@@ -8,7 +8,7 @@
 namespace minta {
     class FileSink : public ISink {
     public:
-        FileSink(const std::string &filename) {
+        explicit FileSink(const std::string &filename) {
             setFormatter(make_unique<HumanReadableFormatter>());
             setTransport(make_unique<FileTransport>(filename));
         }

@@ -4,18 +4,24 @@
 #include "transport_interface.hpp"
 #include <fstream>
 #include <mutex>
+#include <stdexcept>
 
 namespace minta {
     class FileTransport : public ITransport {
     public:
-        FileTransport(const std::string &filename) : m_filename(filename) {
+        explicit FileTransport(const std::string &filename) : m_filename(filename) {
             m_file.open(filename, std::ios::app);
+            if (!m_file.is_open()) {
+                throw std::runtime_error("FileTransport: failed to open file: " + filename);
+            }
         }
 
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_file.good()) {
+                return;
+            }
             m_file << formattedEntry << std::endl;
-            m_file.flush();
         }
 
     private:

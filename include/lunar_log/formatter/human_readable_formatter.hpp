@@ -20,10 +20,12 @@ namespace minta {
 
             if (!entry.customContext.empty()) {
                 oss << " {";
+                bool first = true;
                 for (const auto &ctx : entry.customContext) {
-                    oss << ctx.first << "=" << ctx.second << ", ";
+                    if (!first) oss << ", ";
+                    oss << ctx.first << "=" << ctx.second;
+                    first = false;
                 }
-                oss.seekp(-2, std::ios_base::end);
                 oss << "}";
             }
 

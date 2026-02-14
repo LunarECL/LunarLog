@@ -44,7 +44,14 @@ add_subdirectory(LunarLog)
 target_link_libraries(YourTarget PRIVATE LunarLog)
 ```
 
-Or copy the headers directly:
+**Single header** — drop `single_include/lunar_log.hpp` into your project:
+```cpp
+#include "lunar_log.hpp"
+```
+
+To regenerate: `python3 tools/generate_single_header.py`
+
+**Multi-file** — or use the full `include/` tree:
 ```
 include/
 └── lunar_log/

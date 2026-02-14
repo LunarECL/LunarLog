@@ -652,12 +652,14 @@ namespace minta {
                     }
                 }
 
+                auto parts = splitPlaceholder(placeholder);
+                std::string name = parts.first;
                 placeholders.push_back(placeholder);
 
-                if (placeholder.empty()) {
+                if (name.empty()) {
                     warnings.push_back("Warning: Empty placeholder found");
-                } else if (!uniquePlaceholders.insert(placeholder).second) {
-                    warnings.push_back("Warning: Repeated placeholder name: " + placeholder);
+                } else if (!uniquePlaceholders.insert(name).second) {
+                    warnings.push_back("Warning: Repeated placeholder name: " + name);
                 }
             }
 
@@ -677,6 +679,143 @@ namespace minta {
             return oss.str();
         }
 
+        static std::string toString(double value) {
+            std::ostringstream oss;
+            oss << std::setprecision(15) << value;
+            return oss.str();
+        }
+
+        static std::string toString(float value) {
+            std::ostringstream oss;
+            oss << std::setprecision(9) << value;
+            return oss.str();
+        }
+
+        /// Safely parse an integer from a string. Returns fallback on failure.
+        static int safeStoi(const std::string &s, int fallback = 0) {
+            if (s.empty()) return fallback;
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(s[i]))) return fallback;
+            }
+            try { return std::stoi(s); } catch (...) { return fallback; }
+        }
+
+        /// Apply a format spec to a stringified value.
+        /// Supported specs: .Nf, Nf, C/c, X/x, E/e, P/p, 0N.
+        /// Non-numeric values or unknown specs pass through unchanged.
+        static std::string applyFormat(const std::string &value, const std::string &spec) {
+            if (spec.empty()) return value;
+
+            double numVal = 0;
+            bool isNumeric = false;
+            try {
+                size_t pos = 0;
+                numVal = std::stod(value, &pos);
+                isNumeric = (pos == value.size());
+            } catch (...) {
+                isNumeric = false;
+            }
+
+            std::ostringstream oss;
+
+            // Fixed-point: .Nf (e.g. ".2f", ".4f")
+            if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
+                if (isNumeric) {
+                    std::string digits = spec.substr(1, spec.size() - 2);
+                    int precision = safeStoi(digits, 6);
+                    oss << std::fixed << std::setprecision(precision) << numVal;
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Fixed-point shorthand: Nf (e.g. "2f", "4f")
+            if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
+                if (isNumeric) {
+                    int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
+                    oss << std::fixed << std::setprecision(precision) << numVal;
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Currency: C or c
+            if (spec == "C" || spec == "c") {
+                if (isNumeric) {
+                    if (numVal < 0) {
+                        oss << "-$" << std::fixed << std::setprecision(2) << -numVal;
+                    } else {
+                        oss << "$" << std::fixed << std::setprecision(2) << numVal;
+                    }
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Hex: X (upper) or x (lower)
+            if (spec == "X" || spec == "x") {
+                if (isNumeric) {
+                    long long intVal = static_cast<long long>(numVal);
+                    if (intVal < 0) {
+                        oss << "-";
+                        intVal = -intVal;
+                    }
+                    if (spec == "X") {
+                        oss << std::uppercase << std::hex << intVal;
+                    } else {
+                        oss << std::hex << intVal;
+                    }
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Scientific: E (upper) or e (lower)
+            if (spec == "E" || spec == "e") {
+                if (isNumeric) {
+                    if (spec == "E") {
+                        oss << std::uppercase << std::scientific << numVal;
+                    } else {
+                        oss << std::scientific << numVal;
+                    }
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Percentage: P or p
+            if (spec == "P" || spec == "p") {
+                if (isNumeric) {
+                    oss << std::fixed << std::setprecision(2) << (numVal * 100.0) << "%";
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Zero-padded integer: 0N (e.g. "04", "08")
+            if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+                if (isNumeric) {
+                    int width = safeStoi(spec.substr(1), 1);
+                    long long intVal = static_cast<long long>(numVal);
+                    oss << std::setfill('0') << std::setw(width) << intVal;
+                    return oss.str();
+                }
+                return value;
+            }
+
+            // Unknown spec — return value as-is
+            return value;
+        }
+
+        /// Split "name:spec" into (name, spec). Returns (placeholder, "") if no colon.
+        static std::pair<std::string, std::string> splitPlaceholder(const std::string &placeholder) {
+            size_t colonPos = placeholder.find(':');
+            if (colonPos == std::string::npos) {
+                return std::make_pair(placeholder, std::string());
+            }
+            return std::make_pair(placeholder.substr(0, colonPos), placeholder.substr(colonPos + 1));
+        }
+
         template<typename... Args>
         static std::string formatMessage(const std::string &messageTemplate, const Args &... args) {
             std::vector<std::string> values{toString(args)...};
@@ -694,7 +833,9 @@ namespace minta {
                         if (endPos == std::string::npos) {
                             result += messageTemplate[i];
                         } else if (valueIndex < values.size()) {
-                            result += values[valueIndex++];
+                            std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
+                            auto parts = splitPlaceholder(content);
+                            result += applyFormat(values[valueIndex++], parts.second);
                             i = endPos;
                         } else {
                             result += messageTemplate.substr(i, endPos - i + 1);
@@ -737,7 +878,8 @@ namespace minta {
                     }
                 }
 
-                argumentPairs.emplace_back(placeholder, values[valueIndex++]);
+                auto parts = splitPlaceholder(placeholder);
+                argumentPairs.emplace_back(parts.first, values[valueIndex++]);
             }
 
             return argumentPairs;

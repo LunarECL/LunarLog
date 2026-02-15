@@ -14,6 +14,31 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - Rate limiting to prevent log flooding
 - Context capture (global + scoped)
 - Escaped brackets (`{{like this}}`)
+- Format specifiers: `{val:.2f}`, `{x:X}`, `{amt:C}`, `{rate:P}`, `{id:04}`, `{v:e}`
+
+## Format Specifiers
+
+Append a format spec after a colon in any placeholder:
+
+```cpp
+logger.info("Price: {amount:.2f}", 3.14159);   // Price: 3.14
+logger.info("Hex: {val:X}", 255);               // Hex: FF
+logger.info("Cost: {price:C}", 9.99);           // Cost: $9.99
+logger.info("Rate: {r:P}", 0.856);              // Rate: 85.60%
+logger.info("ID: {id:04}", 42);                 // ID: 0042
+logger.info("Sci: {v:e}", 1500.0);              // Sci: 1.500000e+03
+```
+
+| Spec | Description | Example |
+|---|---|---|
+| `.Nf` | Fixed-point with N decimals | `{:.2f}` → `3.14` |
+| `X` / `x` | Uppercase / lowercase hex | `{:X}` → `FF` |
+| `C` / `c` | Currency ($) | `{:C}` → `$9.99` |
+| `P` / `p` | Percentage (×100) | `{:P}` → `85.60%` |
+| `E` / `e` | Scientific notation | `{:e}` → `1.5e+03` |
+| `0N` | Zero-padded integer | `{:04}` → `0042` |
+
+Namespaced names work — the spec splits on the last colon: `{ns:key:.2f}`.
 
 ## Quick Start
 

@@ -13,6 +13,7 @@ add_library(LunarLog INTERFACE)
 target_include_directories(LunarLog INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+target_compile_features(LunarLog INTERFACE cxx_std_11)
 
 if(LUNARLOG_BUILD_EXAMPLES)
     add_executable(BasicUsage examples/basic_usage.cpp)
@@ -22,6 +23,11 @@ if(LUNARLOG_BUILD_EXAMPLES)
             CXX_STANDARD_REQUIRED ON
             CXX_EXTENSIONS OFF
     )
+    if(MSVC)
+        target_compile_options(BasicUsage PRIVATE /W4)
+    else()
+        target_compile_options(BasicUsage PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 if(LUNARLOG_BUILD_TESTS)
@@ -72,6 +78,12 @@ if(LUNARLOG_BUILD_TESTS)
             CXX_STANDARD_REQUIRED ON
             CXX_EXTENSIONS OFF
     )
+
+    if(MSVC)
+        target_compile_options(TestLunarLog PRIVATE /W4)
+    else()
+        target_compile_options(TestLunarLog PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 
     include(GoogleTest)
     gtest_discover_tests(TestLunarLog)

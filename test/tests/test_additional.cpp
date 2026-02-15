@@ -106,13 +106,15 @@ TEST_F(AdditionalTest, NaNWithFormatSpec) {
     TestUtils::waitForFileContent("test_log.txt");
     std::string logContent = TestUtils::readLogFile("test_log.txt");
 
-    // clampForLongLong maps NaN to 0 for hex/pad; fixed-point passes through to snprintf
-    EXPECT_TRUE(logContent.find("NaN hex: 0") != std::string::npos);
-    EXPECT_TRUE(logContent.find("NaN pad: 0000") != std::string::npos);
-    // Fixed-point NaN: snprintf produces platform-specific nan/NaN string
+    // isNumericString returns false for NaN, so format specs are ignored
+    // and the raw toString(double) representation is passed through as-is
     EXPECT_TRUE(logContent.find("NaN fixed: nan") != std::string::npos ||
                 logContent.find("NaN fixed: -nan") != std::string::npos ||
                 logContent.find("NaN fixed: NaN") != std::string::npos);
+    EXPECT_TRUE(logContent.find("NaN hex: nan") != std::string::npos ||
+                logContent.find("NaN hex: NaN") != std::string::npos);
+    EXPECT_TRUE(logContent.find("NaN pad: nan") != std::string::npos ||
+                logContent.find("NaN pad: NaN") != std::string::npos);
 }
 
 TEST_F(AdditionalTest, InfWithFormatSpec) {
@@ -232,6 +234,60 @@ TEST_F(AdditionalTest, ZeroWithAllFormatSpecs) {
                 logContent.find("e:0.000000e+000") != std::string::npos);
     EXPECT_TRUE(logContent.find("p:0.00%") != std::string::npos);
     EXPECT_TRUE(logContent.find("z:0000") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ToStringFloat) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    float pi = 3.14f;
+    logger.info("Float: {v}", pi);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("Float: 3.14") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ToStringNullptr) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.info("Null: {v}", nullptr);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("Null: (null)") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ToStringNullConstCharPtr) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    const char* nullStr = nullptr;
+    logger.info("NullStr: {v}", nullStr);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("NullStr: (null)") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, FileTransportAutoFlushFalse) {
+    {
+        minta::FileTransport transport("test_log.txt", false);
+        transport.write("line one");
+        transport.write("line two");
+    }
+
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("line one") != std::string::npos);
+    EXPECT_TRUE(logContent.find("line two") != std::string::npos);
 }
 
 TEST_F(AdditionalTest, ValuesNearLLONGMAXWithHex) {

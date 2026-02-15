@@ -35,7 +35,7 @@ namespace detail {
             buf[0] = '\0';
             pos = 0;
         }
-        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>(nowMs.count()));
+        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>(((nowMs.count() % 1000) + 1000) % 1000));
         return std::string(buf);
     }
 } // namespace detail

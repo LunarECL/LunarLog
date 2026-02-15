@@ -3,38 +3,53 @@
 
 #include "formatter_interface.hpp"
 #include "../core/log_common.hpp"
-#include <sstream>
-#include <iomanip>
+#include <string>
 
 namespace minta {
     class XmlFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
-            std::ostringstream xml;
-            xml << "<log_entry>";
-            xml << "<level>" << getLevelString(entry.level) << "</level>";
-            xml << "<timestamp>" << detail::formatTimestamp(entry.timestamp) << "</timestamp>";
-            xml << "<message>" << escapeXmlString(entry.message) << "</message>";
+            std::string xml;
+            xml += "<log_entry>";
+            xml += "<level>";
+            xml += getLevelString(entry.level);
+            xml += "</level>";
+            xml += "<timestamp>";
+            xml += detail::formatTimestamp(entry.timestamp);
+            xml += "</timestamp>";
+            xml += "<message>";
+            xml += escapeXmlString(entry.message);
+            xml += "</message>";
 
             if (!entry.file.empty()) {
-                xml << "<file>" << escapeXmlString(entry.file) << "</file>";
-                xml << "<line>" << entry.line << "</line>";
-                xml << "<function>" << escapeXmlString(entry.function) << "</function>";
+                xml += "<file>";
+                xml += escapeXmlString(entry.file);
+                xml += "</file>";
+                xml += "<line>";
+                xml += std::to_string(entry.line);
+                xml += "</line>";
+                xml += "<function>";
+                xml += escapeXmlString(entry.function);
+                xml += "</function>";
             }
 
             if (!entry.customContext.empty()) {
-                xml << "<context>";
+                xml += "<context>";
                 for (const auto &ctx : entry.customContext) {
                     std::string safeName = sanitizeXmlName(ctx.first);
-                    xml << "<" << safeName << ">";
-                    xml << escapeXmlString(ctx.second);
-                    xml << "</" << safeName << ">";
+                    xml += "<";
+                    xml += safeName;
+                    xml += ">";
+                    xml += escapeXmlString(ctx.second);
+                    xml += "</";
+                    xml += safeName;
+                    xml += ">";
                 }
-                xml << "</context>";
+                xml += "</context>";
             }
 
-            xml << "</log_entry>";
-            return xml.str();
+            xml += "</log_entry>";
+            return xml;
         }
 
     private:

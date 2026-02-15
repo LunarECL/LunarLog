@@ -19,8 +19,6 @@
 #include <cstdio>
 #include <climits>
 #include <cmath>
-#include <iomanip>
-#include <sstream>
 
 namespace minta {
     class LunarLog {
@@ -81,6 +79,9 @@ namespace minta {
             return getCaptureSourceLocation();
         }
 
+        /// @warning Do not call flush() from within a sink write() implementation.
+        ///          flush() acquires the queue mutex and waits for sink writes to
+        ///          complete, so calling it from inside write() will deadlock.
         void flush() {
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_flushCV.wait(lock, [this] {
@@ -361,7 +362,12 @@ namespace minta {
         }
 
         static std::string toString(const char *value) {
+            if (!value) return "(null)";
             return std::string(value);
+        }
+
+        static std::string toString(std::nullptr_t) {
+            return "(null)";
         }
 
         static std::string toString(int value) {
@@ -393,15 +399,15 @@ namespace minta {
         }
 
         static std::string toString(double value) {
-            std::ostringstream oss;
-            oss << std::setprecision(15) << value;
-            return oss.str();
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.15g", value);
+            return std::string(buf);
         }
 
         static std::string toString(float value) {
-            std::ostringstream oss;
-            oss << std::setprecision(9) << value;
-            return oss.str();
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(value));
+            return std::string(buf);
         }
 
         /// Safely parse an integer from a string. Returns fallback on failure.
@@ -432,9 +438,10 @@ namespace minta {
             const char* start = s.c_str();
             char* end = nullptr;
             errno = 0;
-            std::strtod(start, &end);
+            double val = std::strtod(start, &end);
             bool ok = (errno == 0 && end != start && static_cast<size_t>(end - start) == s.size());
             errno = 0;
+            if (ok && (std::isinf(val) || std::isnan(val))) return false;
             return ok;
         }
 
@@ -447,19 +454,10 @@ namespace minta {
             return val;
         }
 
-        /// Format a double into a string using the given printf format.
-        /// Uses a stack buffer for small results; falls back to heap for large ones.
         static std::string snprintfDouble(const char* fmt, double val) {
-            int needed = std::snprintf(nullptr, 0, fmt, val);
-            if (needed < 0) return std::string();
-            if (static_cast<size_t>(needed) < 256) {
-                char stackBuf[256];
-                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
-                return std::string(stackBuf);
-            }
-            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
-            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
-            return std::string(heapBuf.data());
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), fmt, val);
+            return std::string(buf);
         }
 
         /// Format a double with precision into a string using the given printf format.
@@ -504,6 +502,7 @@ namespace minta {
                 double numVal = parseDouble(value);
                 if (numVal < 0) {
                     std::string formatted = snprintfDouble("%.2f", -numVal);
+                    if (formatted == "0.00") return "$0.00";
                     return "-$" + formatted;
                 } else {
                     std::string formatted = snprintfDouble("%.2f", numVal);

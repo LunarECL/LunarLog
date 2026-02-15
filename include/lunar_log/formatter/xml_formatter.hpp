@@ -57,18 +57,24 @@ namespace minta {
         }
 
         static std::string escapeXmlString(const std::string &input) {
-            std::ostringstream result;
+            std::string result;
+            result.reserve(input.size());
             for (char c : input) {
+                unsigned char uc = static_cast<unsigned char>(c);
+                if (uc < 0x20 && uc != 0x09 && uc != 0x0A && uc != 0x0D) {
+                    result += ' ';
+                    continue;
+                }
                 switch (c) {
-                    case '<': result << "&lt;"; break;
-                    case '>': result << "&gt;"; break;
-                    case '&': result << "&amp;"; break;
-                    case '\'': result << "&apos;"; break;
-                    case '"': result << "&quot;"; break;
-                    default: result << c; break;
+                    case '<': result += "&lt;"; break;
+                    case '>': result += "&gt;"; break;
+                    case '&': result += "&amp;"; break;
+                    case '\'': result += "&apos;"; break;
+                    case '"': result += "&quot;"; break;
+                    default: result += c; break;
                 }
             }
-            return result.str();
+            return result;
         }
     };
 } // namespace minta

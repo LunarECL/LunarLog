@@ -3,9 +3,8 @@
 
 #include <string>
 #include <chrono>
-#include <sstream>
-#include <iomanip>
 #include <ctime>
+#include <cstdio>
 #include <memory>
 
 namespace minta {
@@ -30,10 +29,10 @@ namespace detail {
         localtime_r(&nowTime, &tmBuf);
 #endif
 
-        std::ostringstream oss;
-        oss << std::put_time(&tmBuf, "%Y-%m-%d %H:%M:%S");
-        oss << '.' << std::setfill('0') << std::setw(3) << nowMs.count();
-        return oss.str();
+        char buf[32];
+        size_t pos = std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmBuf);
+        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>(nowMs.count()));
+        return std::string(buf);
     }
 } // namespace detail
 } // namespace minta

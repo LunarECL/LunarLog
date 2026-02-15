@@ -7,8 +7,6 @@ set_property(CACHE LUNARLOG_CXX_STANDARD PROPERTY STRINGS 11 14 17)
 option(LUNARLOG_BUILD_TESTS "Build LunarLog tests" ON)
 option(LUNARLOG_BUILD_EXAMPLES "Build LunarLog examples" ON)
 
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-
 find_package(Threads REQUIRED)
 
 add_library(LunarLog INTERFACE)
@@ -18,7 +16,7 @@ target_include_directories(LunarLog INTERFACE
 
 if(LUNARLOG_BUILD_EXAMPLES)
     add_executable(BasicUsage examples/basic_usage.cpp)
-    target_link_libraries(BasicUsage PRIVATE LunarLog)
+    target_link_libraries(BasicUsage PRIVATE LunarLog Threads::Threads)
     set_target_properties(BasicUsage PROPERTIES
             CXX_STANDARD ${LUNARLOG_CXX_STANDARD}
             CXX_STANDARD_REQUIRED ON

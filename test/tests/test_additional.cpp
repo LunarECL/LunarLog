@@ -106,9 +106,13 @@ TEST_F(AdditionalTest, NaNWithFormatSpec) {
     TestUtils::waitForFileContent("test_log.txt");
     std::string logContent = TestUtils::readLogFile("test_log.txt");
 
-    EXPECT_TRUE(logContent.find("NaN fixed:") != std::string::npos);
-    EXPECT_TRUE(logContent.find("NaN hex:") != std::string::npos);
-    EXPECT_TRUE(logContent.find("NaN pad:") != std::string::npos);
+    // clampForLongLong maps NaN to 0 for hex/pad; fixed-point passes through to snprintf
+    EXPECT_TRUE(logContent.find("NaN hex: 0") != std::string::npos);
+    EXPECT_TRUE(logContent.find("NaN pad: 0000") != std::string::npos);
+    // Fixed-point NaN: snprintf produces platform-specific nan/NaN string
+    EXPECT_TRUE(logContent.find("NaN fixed: nan") != std::string::npos ||
+                logContent.find("NaN fixed: -nan") != std::string::npos ||
+                logContent.find("NaN fixed: NaN") != std::string::npos);
 }
 
 TEST_F(AdditionalTest, InfWithFormatSpec) {
@@ -123,8 +127,12 @@ TEST_F(AdditionalTest, InfWithFormatSpec) {
     TestUtils::waitForFileContent("test_log.txt");
     std::string logContent = TestUtils::readLogFile("test_log.txt");
 
-    EXPECT_TRUE(logContent.find("Inf fixed:") != std::string::npos);
-    EXPECT_TRUE(logContent.find("Inf sci:") != std::string::npos);
+    EXPECT_TRUE(logContent.find("Inf fixed: inf") != std::string::npos ||
+                logContent.find("Inf fixed: Inf") != std::string::npos ||
+                logContent.find("Inf fixed: INF") != std::string::npos);
+    EXPECT_TRUE(logContent.find("Inf sci: inf") != std::string::npos ||
+                logContent.find("Inf sci: Inf") != std::string::npos ||
+                logContent.find("Inf sci: INF") != std::string::npos);
 }
 
 TEST_F(AdditionalTest, MultipleColonsInPlaceholderName) {
@@ -165,4 +173,79 @@ TEST_F(AdditionalTest, DeprecatedLogWithContextStillWorks) {
     std::string logContent = TestUtils::readLogFile("source_loc_test.txt");
 
     EXPECT_TRUE(logContent.find("deprecated call 99") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, UnsignedIntArgs) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    unsigned int ui = 42u;
+    unsigned long ul = 123456UL;
+    unsigned long long ull = 9876543210ULL;
+    logger.info("ui={a} ul={b} ull={c}", ui, ul, ull);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("ui=42 ul=123456 ull=9876543210") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, FlushWithNoMessages) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    auto sink = minta::detail::make_unique<TestSink>();
+    TestSink* sinkPtr = sink.get();
+    logger.addCustomSink(std::move(sink));
+
+    logger.flush();
+
+    EXPECT_TRUE(sinkPtr->getOutput().empty());
+}
+
+TEST_F(AdditionalTest, NegativePercentage) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.info("pct: {v:P}", -0.25);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("pct: -25.00%") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ZeroWithAllFormatSpecs) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.info("f:{a:.2f} c:{b:C} x:{c:X} e:{d:e} p:{e:P} z:{f:04}", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("f:0.00") != std::string::npos);
+    EXPECT_TRUE(logContent.find("c:$0.00") != std::string::npos);
+    EXPECT_TRUE(logContent.find("x:0") != std::string::npos);
+    EXPECT_TRUE(logContent.find("e:0.000000e+00") != std::string::npos ||
+                logContent.find("e:0.000000e+000") != std::string::npos);
+    EXPECT_TRUE(logContent.find("p:0.00%") != std::string::npos);
+    EXPECT_TRUE(logContent.find("z:0000") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ValuesNearLLONGMAXWithHex) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    long long nearMax = LLONG_MAX;
+    logger.info("hex: {v:X}", nearMax);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    // LLONG_MAX as string -> double -> clamp -> long long loses precision due to
+    // double's 53-bit mantissa; the clamped value is 7FFFFFFFFFFFFC00
+    EXPECT_TRUE(logContent.find("hex: 7FFFFFFFFFFFFC00") != std::string::npos);
 }

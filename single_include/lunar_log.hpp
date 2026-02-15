@@ -37,9 +37,8 @@ namespace minta {
 
 #include <string>
 #include <chrono>
-#include <sstream>
-#include <iomanip>
 #include <ctime>
+#include <cstdio>
 #include <memory>
 
 namespace minta {
@@ -64,10 +63,10 @@ namespace detail {
         localtime_r(&nowTime, &tmBuf);
 #endif
 
-        std::ostringstream oss;
-        oss << std::put_time(&tmBuf, "%Y-%m-%d %H:%M:%S");
-        oss << '.' << std::setfill('0') << std::setw(3) << nowMs.count();
-        return oss.str();
+        char buf[32];
+        size_t pos = std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmBuf);
+        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>(nowMs.count()));
+        return std::string(buf);
     }
 } // namespace detail
 } // namespace minta
@@ -111,33 +110,43 @@ namespace minta {
 
 // --- lunar_log/formatter/human_readable_formatter.hpp ---
 
-#include <sstream>
+#include <string>
 
 namespace minta {
     class HumanReadableFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
-            std::ostringstream oss;
-            oss << detail::formatTimestamp(entry.timestamp) << " "
-                << "[" << getLevelString(entry.level) << "] "
-                << entry.message;
+            std::string result;
+            result += detail::formatTimestamp(entry.timestamp);
+            result += " [";
+            result += getLevelString(entry.level);
+            result += "] ";
+            result += entry.message;
 
             if (!entry.file.empty()) {
-                oss << " [" << entry.file << ":" << entry.line << " " << entry.function << "]";
+                result += " [";
+                result += entry.file;
+                result += ':';
+                result += std::to_string(entry.line);
+                result += ' ';
+                result += entry.function;
+                result += ']';
             }
 
             if (!entry.customContext.empty()) {
-                oss << " {";
+                result += " {";
                 bool first = true;
                 for (const auto &ctx : entry.customContext) {
-                    if (!first) oss << ", ";
-                    oss << ctx.first << "=" << ctx.second;
+                    if (!first) result += ", ";
+                    result += ctx.first;
+                    result += '=';
+                    result += ctx.second;
                     first = false;
                 }
-                oss << "}";
+                result += '}';
             }
 
-            return oss.str();
+            return result;
         }
     };
 } // namespace minta
@@ -262,18 +271,24 @@ namespace minta {
         }
 
         static std::string escapeXmlString(const std::string &input) {
-            std::ostringstream result;
+            std::string result;
+            result.reserve(input.size());
             for (char c : input) {
+                unsigned char uc = static_cast<unsigned char>(c);
+                if (uc < 0x20 && uc != 0x09 && uc != 0x0A && uc != 0x0D) {
+                    result += ' ';
+                    continue;
+                }
                 switch (c) {
-                    case '<': result << "&lt;"; break;
-                    case '>': result << "&gt;"; break;
-                    case '&': result << "&amp;"; break;
-                    case '\'': result << "&apos;"; break;
-                    case '"': result << "&quot;"; break;
-                    default: result << c; break;
+                    case '<': result += "&lt;"; break;
+                    case '>': result += "&gt;"; break;
+                    case '&': result += "&amp;"; break;
+                    case '\'': result += "&apos;"; break;
+                    case '"': result += "&quot;"; break;
+                    default: result += c; break;
                 }
             }
-            return result.str();
+            return result;
         }
     };
 } // namespace minta
@@ -691,7 +706,7 @@ namespace minta {
 
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
-            if (captureCtx || m_hasCustomContext.load(std::memory_order_acquire)) {
+            if (m_hasCustomContext.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
             }
@@ -749,6 +764,9 @@ namespace minta {
             }
         }
 
+        // Rate limiting is best-effort under concurrent access. The window reset
+        // and count increment are not atomic together, so racing threads may
+        // slightly exceed or undercount the 1000-message-per-second limit.
         bool rateLimitCheck() {
             auto now = std::chrono::steady_clock::now();
             long long nowNs = now.time_since_epoch().count();
@@ -821,6 +839,18 @@ namespace minta {
             return std::to_string(value);
         }
 
+        static std::string toString(unsigned int value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned long long value) {
+            return std::to_string(value);
+        }
+
         static std::string toString(bool value) {
             return value ? "true" : "false";
         }
@@ -874,10 +904,39 @@ namespace minta {
         static double clampForLongLong(double val) {
             if (val != val) return 0.0;
             static const double kMinLL = static_cast<double>(LLONG_MIN + 1);
-            static const double kMaxLL = static_cast<double>(LLONG_MAX);
+            static const double kMaxLL = std::nextafter(static_cast<double>(LLONG_MAX), 0.0);
             if (val < kMinLL) return kMinLL;
             if (val > kMaxLL) return kMaxLL;
             return val;
+        }
+
+        /// Format a double into a string using the given printf format.
+        /// Uses a stack buffer for small results; falls back to heap for large ones.
+        static std::string snprintfDouble(const char* fmt, double val) {
+            int needed = std::snprintf(nullptr, 0, fmt, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
+            return std::string(heapBuf.data());
+        }
+
+        /// Format a double with precision into a string using the given printf format.
+        static std::string snprintfDoublePrecision(const char* fmt, int precision, double val) {
+            int needed = std::snprintf(nullptr, 0, fmt, precision, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, precision, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, precision, val);
+            return std::string(heapBuf.data());
         }
 
         static std::string applyFormat(const std::string &value, const std::string &spec) {
@@ -892,8 +951,7 @@ namespace minta {
                 std::string digits = spec.substr(1, spec.size() - 2);
                 int precision = safeStoi(digits, 6);
                 if (precision > 50) precision = 50;
-                std::snprintf(buf, sizeof(buf), "%.*f", precision, numVal);
-                return std::string(buf);
+                return snprintfDoublePrecision("%.*f", precision, numVal);
             }
 
             // Fixed-point shorthand: Nf (e.g. "2f", "4f")
@@ -902,8 +960,7 @@ namespace minta {
                 double numVal = parseDouble(value);
                 int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
                 if (precision > 50) precision = 50;
-                std::snprintf(buf, sizeof(buf), "%.*f", precision, numVal);
-                return std::string(buf);
+                return snprintfDoublePrecision("%.*f", precision, numVal);
             }
 
             // Currency: C or c
@@ -911,11 +968,12 @@ namespace minta {
                 if (!isNumericString(value)) return value;
                 double numVal = parseDouble(value);
                 if (numVal < 0) {
-                    std::snprintf(buf, sizeof(buf), "-$%.2f", -numVal);
+                    std::string formatted = snprintfDouble("%.2f", -numVal);
+                    return "-$" + formatted;
                 } else {
-                    std::snprintf(buf, sizeof(buf), "$%.2f", numVal);
+                    std::string formatted = snprintfDouble("%.2f", numVal);
+                    return "$" + formatted;
                 }
-                return std::string(buf);
             }
 
             // Hex: X (upper) or x (lower)
@@ -956,8 +1014,7 @@ namespace minta {
             if (spec == "P" || spec == "p") {
                 if (!isNumericString(value)) return value;
                 double numVal = parseDouble(value);
-                std::snprintf(buf, sizeof(buf), "%.2f%%", numVal * 100.0);
-                return std::string(buf);
+                return snprintfDouble("%.2f", numVal * 100.0) + "%";
             }
 
             // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately

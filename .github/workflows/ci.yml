@@ -68,7 +68,7 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug \
             -DLUNARLOG_CXX_STANDARD=17 \
-            -DCMAKE_CXX_FLAGS="--coverage"
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-update=atomic"
 
       - name: Build
         run: cmake --build build

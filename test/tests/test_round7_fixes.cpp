@@ -93,7 +93,7 @@ TEST_F(Round7FixTest, ColonInPlaceholderNameUsesLastColon) {
 
 // L6: Validation warnings should not consume rate limit budget
 TEST_F(Round7FixTest, WarningsDontConsumeRateLimit) {
-    minta::LunarLog logger(minta::LogLevel::TRACE);
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
     logger.addSink<minta::FileSink>("test_log.txt");
 
     // Log many messages with mismatched placeholders — warnings should be exempt

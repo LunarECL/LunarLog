@@ -630,7 +630,7 @@ namespace minta {
         void flush() {
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_flushCV.wait(lock, [this] {
-                return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_acquire);
+                return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
             });
         }
 
@@ -812,7 +812,7 @@ namespace minta {
                 while (!m_logQueue.empty()) {
                     auto entry = std::move(m_logQueue.front());
                     m_logQueue.pop();
-                    m_sinkWriteInProgress.store(true, std::memory_order_release);
+                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
 
                     try {
@@ -820,12 +820,15 @@ namespace minta {
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }
-                    m_sinkWriteInProgress.store(false, std::memory_order_release);
-                    // Notify after every individual write so that flush() wakes up
-                    // promptly even when producers keep adding messages.
-                    m_flushCV.notify_all();
 
+                    // Re-acquire lock BEFORE clearing sinkWriteInProgress and
+                    // notifying, so that flush() cannot miss the state change.
+                    // Without this, flush() can check the predicate (seeing
+                    // sinkWriteInProgress==true), then we set it to false and
+                    // notify, and THEN flush() enters wait — a classic lost wakeup.
                     lock.lock();
+                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
+                    m_flushCV.notify_all();
                 }
             }
 
@@ -834,16 +837,16 @@ namespace minta {
                 while (!m_logQueue.empty()) {
                     auto entry = std::move(m_logQueue.front());
                     m_logQueue.pop();
-                    m_sinkWriteInProgress.store(true, std::memory_order_release);
+                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
                     try {
                         m_logManager.log(entry);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }
-                    m_sinkWriteInProgress.store(false, std::memory_order_release);
-                    m_flushCV.notify_all();
                     lock.lock();
+                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
+                    m_flushCV.notify_all();
                 }
             }
         }

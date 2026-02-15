@@ -53,6 +53,7 @@ set(TEST_SOURCES
         test/tests/test_context_capture.cpp
         test/tests/test_suffix_formatting.cpp
         test/tests/test_thread_safety.cpp
+        test/tests/test_edge_cases.cpp
         test/tests/utils/test_utils.cpp
 )
 

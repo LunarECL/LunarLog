@@ -21,9 +21,9 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 #include "lunar_log.hpp"
 
 int main() {
+    // Constructor adds a ConsoleSink by default; no need to add one manually.
     minta::LunarLog logger(minta::LogLevel::TRACE);
 
-    logger.addSink<minta::ConsoleSink>();
     logger.addSink<minta::FileSink>("app.log");
     logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
     logger.addSink<minta::FileSink, minta::XmlFormatter>("app.xml.log");

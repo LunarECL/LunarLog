@@ -18,7 +18,6 @@ namespace detail {
         return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 #endif
     }
-} // namespace detail
 
     inline std::string formatTimestamp(const std::chrono::system_clock::time_point &time) {
         auto nowTime = std::chrono::system_clock::to_time_t(time);
@@ -36,6 +35,9 @@ namespace detail {
         oss << '.' << std::setfill('0') << std::setw(3) << nowMs.count();
         return oss.str();
     }
+} // namespace detail
+
+    using detail::formatTimestamp;
 } // namespace minta
 
 #endif // LUNAR_LOG_COMMON_HPP

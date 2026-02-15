@@ -22,13 +22,17 @@
 namespace minta {
     class LunarLog {
     public:
-        explicit LunarLog(LogLevel minLevel = LogLevel::INFO)
+        explicit LunarLog(LogLevel minLevel = LogLevel::INFO, bool addDefaultConsoleSink = true)
             : m_minLevel(minLevel)
             , m_isRunning(true)
             , m_rateLimitWindowStart(std::chrono::steady_clock::now().time_since_epoch().count())
             , m_logCount(0)
-            , m_captureContext(false) {
-            addSink<ConsoleSink>();
+            , m_captureSourceLocation(false)
+            , m_hasCustomContext(false)
+            , m_sinkWriteInProgress(false) {
+            if (addDefaultConsoleSink) {
+                addSink<ConsoleSink>();
+            }
             m_logThread = std::thread(&LunarLog::processLogQueue, this);
         }
 
@@ -55,11 +59,11 @@ namespace minta {
         }
 
         void setCaptureSourceLocation(bool capture) {
-            m_captureContext.store(capture, std::memory_order_relaxed);
+            m_captureSourceLocation.store(capture, std::memory_order_relaxed);
         }
 
         bool getCaptureSourceLocation() const {
-            return m_captureContext.load(std::memory_order_relaxed);
+            return m_captureSourceLocation.load(std::memory_order_relaxed);
         }
 
         /// @deprecated Use setCaptureSourceLocation instead.
@@ -74,7 +78,9 @@ namespace minta {
 
         void flush() {
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_flushCV.wait(lock, [this] { return m_logQueue.empty(); });
+            m_flushCV.wait(lock, [this] {
+                return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_acquire);
+            });
         }
 
         template<typename SinkType, typename... Args>
@@ -139,16 +145,19 @@ namespace minta {
         void setContext(const std::string& key, const std::string& value) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext[key] = value;
+            m_hasCustomContext.store(true, std::memory_order_release);
         }
 
         void clearContext(const std::string& key) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext.erase(key);
+            m_hasCustomContext.store(!m_customContext.empty(), std::memory_order_release);
         }
 
         void clearAllContext() {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext.clear();
+            m_hasCustomContext.store(false, std::memory_order_release);
         }
 
     private:
@@ -167,11 +176,14 @@ namespace minta {
         std::thread m_logThread;
         LogManager m_logManager;
         std::map<std::string, std::string> m_customContext;
-        std::atomic<bool> m_captureContext;
+        std::atomic<bool> m_captureSourceLocation;
+        std::atomic<bool> m_hasCustomContext;
+        std::atomic<bool> m_sinkWriteInProgress;
 
         struct PlaceholderInfo {
             std::string name;
             std::string fullContent;
+            std::string spec;
             size_t startPos;
             size_t endPos;
         };
@@ -188,7 +200,7 @@ namespace minta {
                     if (endPos == std::string::npos) break;
                     std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
                     auto parts = splitPlaceholder(content);
-                    placeholders.push_back({parts.first, content, i, endPos});
+                    placeholders.push_back({parts.first, content, parts.second, i, endPos});
                     i = endPos;
                 } else if (messageTemplate[i] == '}') {
                     if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
@@ -213,9 +225,9 @@ namespace minta {
             std::string message = formatMessage(validatedTemplate, placeholders, args...);
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, args...);
 
-            bool captureCtx = m_captureContext.load(std::memory_order_relaxed);
+            bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
-            if (captureCtx || !m_customContext.empty()) {
+            if (captureCtx || m_hasCustomContext.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
             }
@@ -249,9 +261,11 @@ namespace minta {
                 while (!m_logQueue.empty()) {
                     auto entry = std::move(m_logQueue.front());
                     m_logQueue.pop();
+                    m_sinkWriteInProgress.store(true, std::memory_order_release);
                     lock.unlock();
 
                     m_logManager.log(entry);
+                    m_sinkWriteInProgress.store(false, std::memory_order_release);
 
                     lock.lock();
                 }
@@ -265,8 +279,10 @@ namespace minta {
                 while (!m_logQueue.empty()) {
                     auto entry = std::move(m_logQueue.front());
                     m_logQueue.pop();
+                    m_sinkWriteInProgress.store(true, std::memory_order_release);
                     lock.unlock();
                     m_logManager.log(entry);
+                    m_sinkWriteInProgress.store(false, std::memory_order_release);
                     lock.lock();
                 }
                 lock.unlock();
@@ -323,6 +339,26 @@ namespace minta {
             return oss.str();
         }
 
+        static std::string toString(const std::string &value) {
+            return value;
+        }
+
+        static std::string toString(const char *value) {
+            return std::string(value);
+        }
+
+        static std::string toString(int value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(long long value) {
+            return std::to_string(value);
+        }
+
         static std::string toString(bool value) {
             return value ? "true" : "false";
         }
@@ -376,104 +412,95 @@ namespace minta {
         static std::string applyFormat(const std::string &value, const std::string &spec) {
             if (spec.empty()) return value;
 
-            double numVal = 0;
-            bool isNumeric = isNumericString(value);
-            if (isNumeric) {
-                numVal = parseDouble(value);
-            }
-
             std::ostringstream oss;
 
             // Fixed-point: .Nf (e.g. ".2f", ".4f")
             if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
-                if (isNumeric) {
-                    std::string digits = spec.substr(1, spec.size() - 2);
-                    int precision = safeStoi(digits, 6);
-                    if (precision > 50) precision = 50;
-                    oss << std::fixed << std::setprecision(precision) << numVal;
-                    return oss.str();
-                }
-                return value;
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                std::string digits = spec.substr(1, spec.size() - 2);
+                int precision = safeStoi(digits, 6);
+                if (precision > 50) precision = 50;
+                oss << std::fixed << std::setprecision(precision) << numVal;
+                return oss.str();
             }
 
             // Fixed-point shorthand: Nf (e.g. "2f", "4f")
             if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
-                if (isNumeric) {
-                    int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
-                    if (precision > 50) precision = 50;
-                    oss << std::fixed << std::setprecision(precision) << numVal;
-                    return oss.str();
-                }
-                return value;
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
+                if (precision > 50) precision = 50;
+                oss << std::fixed << std::setprecision(precision) << numVal;
+                return oss.str();
             }
 
             // Currency: C or c
             if (spec == "C" || spec == "c") {
-                if (isNumeric) {
-                    if (numVal < 0) {
-                        oss << "-$" << std::fixed << std::setprecision(2) << -numVal;
-                    } else {
-                        oss << "$" << std::fixed << std::setprecision(2) << numVal;
-                    }
-                    return oss.str();
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                if (numVal < 0) {
+                    oss << "-$" << std::fixed << std::setprecision(2) << -numVal;
+                } else {
+                    oss << "$" << std::fixed << std::setprecision(2) << numVal;
                 }
-                return value;
+                return oss.str();
             }
 
             // Hex: X (upper) or x (lower)
             if (spec == "X" || spec == "x") {
-                if (isNumeric) {
-                    long long intVal = static_cast<long long>(numVal);
-                    unsigned long long uval;
-                    if (intVal < 0) {
-                        oss << "-";
-                        // Unsigned negation avoids UB when intVal == LLONG_MIN
-                        uval = 0ULL - static_cast<unsigned long long>(intVal);
-                    } else {
-                        uval = static_cast<unsigned long long>(intVal);
-                    }
-                    if (spec == "X") {
-                        oss << std::uppercase << std::hex << uval;
-                    } else {
-                        oss << std::hex << uval;
-                    }
-                    return oss.str();
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                long long intVal = static_cast<long long>(numVal);
+                unsigned long long uval;
+                if (intVal < 0) {
+                    oss << "-";
+                    uval = 0ULL - static_cast<unsigned long long>(intVal);
+                } else {
+                    uval = static_cast<unsigned long long>(intVal);
                 }
-                return value;
+                if (spec == "X") {
+                    oss << std::uppercase << std::hex << uval;
+                } else {
+                    oss << std::hex << uval;
+                }
+                return oss.str();
             }
 
             // Scientific: E (upper) or e (lower)
             if (spec == "E" || spec == "e") {
-                if (isNumeric) {
-                    if (spec == "E") {
-                        oss << std::uppercase << std::scientific << numVal;
-                    } else {
-                        oss << std::scientific << numVal;
-                    }
-                    return oss.str();
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                if (spec == "E") {
+                    oss << std::uppercase << std::scientific << numVal;
+                } else {
+                    oss << std::scientific << numVal;
                 }
-                return value;
+                return oss.str();
             }
 
             // Percentage: P or p
             if (spec == "P" || spec == "p") {
-                if (isNumeric) {
-                    oss << std::fixed << std::setprecision(2) << (numVal * 100.0) << "%";
-                    return oss.str();
-                }
-                return value;
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                oss << std::fixed << std::setprecision(2) << (numVal * 100.0) << "%";
+                return oss.str();
             }
 
-            // Zero-padded integer: 0N (e.g. "04", "08")
+            // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
             if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
-                if (isNumeric) {
-                    int width = safeStoi(spec.substr(1), 1);
-                    if (width > 50) width = 50;
-                    long long intVal = static_cast<long long>(numVal);
+                if (!isNumericString(value)) return value;
+                double numVal = parseDouble(value);
+                int width = safeStoi(spec.substr(1), 1);
+                if (width > 50) width = 50;
+                long long intVal = static_cast<long long>(numVal);
+                if (intVal < 0) {
+                    unsigned long long absVal = 0ULL - static_cast<unsigned long long>(intVal);
+                    oss << "-" << std::setfill('0') << std::setw(width) << absVal;
+                } else {
                     oss << std::setfill('0') << std::setw(width) << intVal;
-                    return oss.str();
                 }
-                return value;
+                return oss.str();
             }
 
             // Unknown spec — return value as-is
@@ -494,38 +521,34 @@ namespace minta {
             std::vector<std::string> values{toString(args)...};
             std::string result;
             result.reserve(messageTemplate.length());
-            size_t valueIndex = 0;
+            size_t phIdx = 0;
+            size_t pos = 0;
 
-            for (size_t i = 0; i < messageTemplate.length(); ++i) {
-                if (messageTemplate[i] == '{') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
-                        result += '{';
-                        ++i;
+            while (pos < messageTemplate.length()) {
+                if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
+                    if (phIdx < values.size()) {
+                        result += applyFormat(values[phIdx], placeholders[phIdx].spec);
                     } else {
-                        size_t endPos = messageTemplate.find("}", i);
-                        if (endPos == std::string::npos) {
-                            result += messageTemplate[i];
-                        } else if (valueIndex < values.size()) {
-                            std::string content = (valueIndex < placeholders.size())
-                                ? placeholders[valueIndex].fullContent
-                                : messageTemplate.substr(i + 1, endPos - i - 1);
-                            auto parts = splitPlaceholder(content);
-                            result += applyFormat(values[valueIndex++], parts.second);
-                            i = endPos;
-                        } else {
-                            result += messageTemplate.substr(i, endPos - i + 1);
-                            i = endPos;
-                        }
+                        result += messageTemplate.substr(pos, placeholders[phIdx].endPos - pos + 1);
                     }
-                } else if (messageTemplate[i] == '}') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
-                        result += '}';
-                        ++i;
-                    } else {
-                        result += messageTemplate[i];
-                    }
+                    pos = placeholders[phIdx].endPos + 1;
+                    ++phIdx;
+                } else if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') {
+                    result += '{';
+                    pos += 2;
+                } else if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') {
+                    result += '}';
+                    pos += 2;
                 } else {
-                    result += messageTemplate[i];
+                    size_t litStart = pos;
+                    ++pos;
+                    while (pos < messageTemplate.length()) {
+                        if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) break;
+                        if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') break;
+                        if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') break;
+                        ++pos;
+                    }
+                    result += messageTemplate.substr(litStart, pos - litStart);
                 }
             }
             return result;

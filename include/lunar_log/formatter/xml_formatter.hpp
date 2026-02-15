@@ -65,6 +65,9 @@ namespace minta {
                              (i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'));
                 result += valid ? c : '_';
             }
+            // Safety net: the loop above already replaces invalid start chars with '_',
+            // so this check for a leading digit/dash/dot is unreachable with the
+            // current logic. Kept as defensive validation in case the loop changes.
             if (result.empty() || result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
                 result.insert(result.begin(), '_');
             }

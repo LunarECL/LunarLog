@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include "lunar_log.hpp"
 #include "utils/test_utils.hpp"
+#include <cfloat>
 #include <cmath>
+#include <climits>
 #include <limits>
 #include <sstream>
 
@@ -304,4 +306,90 @@ TEST_F(AdditionalTest, ValuesNearLLONGMAXWithHex) {
     // LLONG_MAX as string -> double -> clamp -> long long loses precision due to
     // double's 53-bit mantissa; the clamped value is 7FFFFFFFFFFFFC00
     EXPECT_TRUE(logContent.find("hex: 7FFFFFFFFFFFFC00") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, VeryLargeDoubleCurrencyFormat) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.info("big: {v:C}", 1e200);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("big: $") != std::string::npos);
+    // 1e200 formatted with %.2f produces a very long string (200+ chars);
+    // verify the output is not truncated by checking it ends with ".00"
+    size_t dollarPos = logContent.find("big: $");
+    ASSERT_NE(dollarPos, std::string::npos);
+    size_t lineEnd = logContent.find('\n', dollarPos);
+    if (lineEnd == std::string::npos) lineEnd = logContent.size();
+    std::string valStr = logContent.substr(dollarPos + 6, lineEnd - dollarPos - 6);
+    EXPECT_GE(valStr.size(), 50u);
+    size_t dotPos = valStr.find('.');
+    ASSERT_NE(dotPos, std::string::npos);
+    EXPECT_EQ(valStr.substr(dotPos), ".00");
+}
+
+TEST_F(AdditionalTest, VeryLargeDoubleCurrencyFormatDBLMAX) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.info("max: {v:C}", DBL_MAX);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    // DBL_MAX's %.15g representation ("1.79769313486232e+308") overflows
+    // when re-parsed by strtod, so isNumericString returns false and the
+    // currency format is skipped — the raw toString output is used as-is.
+    EXPECT_TRUE(logContent.find("max: 1.79769") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ToStringLongDirect) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    long lVal = 1234567890L;
+    logger.info("long: {v}", lVal);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("long: 1234567890") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, ToStringLongLongDirect) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    long long llVal = 9876543210LL;
+    logger.info("longlong: {v}", llVal);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_TRUE(logContent.find("longlong: 9876543210") != std::string::npos);
+}
+
+TEST_F(AdditionalTest, LLONGMINWithHexFormat) {
+    minta::LunarLog logger(minta::LogLevel::TRACE);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    long long minVal = LLONG_MIN;
+    logger.info("hex: {v:X}", minVal);
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string logContent = TestUtils::readLogFile("test_log.txt");
+
+    // LLONG_MIN as string -> double -> clamp (to LLONG_MIN+1) -> long long
+    // loses precision; the result is -8000000000000000 (negated to 8000000000000000)
+    // or the clamped value. Either way, it should produce a valid hex output
+    // with a leading minus sign.
+    EXPECT_TRUE(logContent.find("hex: -") != std::string::npos);
 }

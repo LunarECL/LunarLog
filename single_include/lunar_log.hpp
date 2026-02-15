@@ -66,10 +66,9 @@ namespace detail {
         char buf[32];
         size_t pos = std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmBuf);
         if (pos == 0) {
-            buf[0] = '\0';
             pos = 0;
         }
-        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>(((nowMs.count() % 1000) + 1000) % 1000));
+        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>((nowMs.count() + 1000) % 1000));
         return std::string(buf);
     }
 } // namespace detail
@@ -121,7 +120,7 @@ namespace minta {
     public:
         std::string format(const LogEntry &entry) const override {
             std::string result;
-            result.reserve(40 + entry.message.size());
+            result.reserve(80 + entry.message.size() + entry.file.size() + entry.function.size());
             result += detail::formatTimestamp(entry.timestamp);
             result += " [";
             result += getLevelString(entry.level);
@@ -304,6 +303,9 @@ namespace minta {
                              (i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'));
                 result += valid ? c : '_';
             }
+            // Safety net: the loop above already replaces invalid start chars with '_',
+            // so this check for a leading digit/dash/dot is unreachable with the
+            // current logic. Kept as defensive validation in case the loop changes.
             if (result.empty() || result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
                 result.insert(result.begin(), '_');
             }
@@ -491,6 +493,13 @@ namespace minta {
 
         // NOTE: addSink is not thread-safe after logging starts.
         // Add all sinks before any log calls are made.
+        //
+        // There is a TOCTOU race between the m_loggingStarted check and the
+        // push_back: two threads could both pass the check concurrently. This
+        // is acceptable because the documented contract requires all sinks to
+        // be added before any log calls, so well-behaved callers never hit
+        // this window. The atomic check is a best-effort safety net, not a
+        // thread-safe gate.
         void addSink(std::unique_ptr<ISink> sink) {
             if (m_loggingStarted.load(std::memory_order_acquire)) {
                 throw std::logic_error("Cannot add sinks after logging has started");
@@ -528,6 +537,7 @@ namespace minta {
 #include <cstdio>
 #include <climits>
 #include <cmath>
+#include <sstream>
 
 namespace minta {
     class LunarLog {
@@ -825,11 +835,15 @@ namespace minta {
                 if (duration < kRateLimitWindowSeconds) break;
                 if (m_rateLimitWindowStart.compare_exchange_weak(windowStart, nowNs,
                         std::memory_order_relaxed, std::memory_order_relaxed)) {
-                    m_logCount.store(1, std::memory_order_relaxed);
+                    // Release so that the new count is visible to threads that
+                    // subsequently read it with acquire in fetch_add below.
+                    m_logCount.store(1, std::memory_order_release);
                     return true;
                 }
             }
-            size_t count = m_logCount.fetch_add(1, std::memory_order_relaxed);
+            // Acquire pairs with the release-store above: if a window reset just
+            // happened, this thread sees the updated count before incrementing.
+            size_t count = m_logCount.fetch_add(1, std::memory_order_acquire);
             if (count >= kRateLimitMaxLogs) {
                 return false;
             }
@@ -963,10 +977,19 @@ namespace minta {
             return val;
         }
 
+        /// Format a double into a string using the given printf format.
+        /// Uses measure-first pattern to avoid truncation for extreme values.
         static std::string snprintfDouble(const char* fmt, double val) {
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), fmt, val);
-            return std::string(buf);
+            int needed = std::snprintf(nullptr, 0, fmt, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
+            return std::string(heapBuf.data());
         }
 
         /// Format a double with precision into a string using the given printf format.

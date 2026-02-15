@@ -10,7 +10,7 @@ namespace minta {
     public:
         std::string format(const LogEntry &entry) const override {
             std::string result;
-            result.reserve(40 + entry.message.size());
+            result.reserve(80 + entry.message.size() + entry.file.size() + entry.function.size());
             result += detail::formatTimestamp(entry.timestamp);
             result += " [";
             result += getLevelString(entry.level);

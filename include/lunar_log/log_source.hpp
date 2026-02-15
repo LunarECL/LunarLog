@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <climits>
 #include <cmath>
+#include <sstream>
 
 namespace minta {
     class LunarLog {
@@ -316,11 +317,15 @@ namespace minta {
                 if (duration < kRateLimitWindowSeconds) break;
                 if (m_rateLimitWindowStart.compare_exchange_weak(windowStart, nowNs,
                         std::memory_order_relaxed, std::memory_order_relaxed)) {
-                    m_logCount.store(1, std::memory_order_relaxed);
+                    // Release so that the new count is visible to threads that
+                    // subsequently read it with acquire in fetch_add below.
+                    m_logCount.store(1, std::memory_order_release);
                     return true;
                 }
             }
-            size_t count = m_logCount.fetch_add(1, std::memory_order_relaxed);
+            // Acquire pairs with the release-store above: if a window reset just
+            // happened, this thread sees the updated count before incrementing.
+            size_t count = m_logCount.fetch_add(1, std::memory_order_acquire);
             if (count >= kRateLimitMaxLogs) {
                 return false;
             }
@@ -454,10 +459,19 @@ namespace minta {
             return val;
         }
 
+        /// Format a double into a string using the given printf format.
+        /// Uses measure-first pattern to avoid truncation for extreme values.
         static std::string snprintfDouble(const char* fmt, double val) {
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), fmt, val);
-            return std::string(buf);
+            int needed = std::snprintf(nullptr, 0, fmt, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
+            return std::string(heapBuf.data());
         }
 
         /// Format a double with precision into a string using the given printf format.

@@ -63,6 +63,25 @@ include/
     └── log_source.hpp
 ```
 
+## Custom Sinks
+
+You can add a fully custom sink via `addCustomSink`:
+
+```cpp
+class MySink : public minta::ISink {
+public:
+    MySink() {
+        setFormatter(minta::detail::make_unique<minta::HumanReadableFormatter>());
+    }
+    void write(const minta::LogEntry &entry) override {
+        std::cout << formatter()->format(entry) << std::endl;
+    }
+};
+
+auto sink = minta::detail::make_unique<MySink>();
+logger.addCustomSink(std::move(sink));
+```
+
 ## Custom Formatters
 
 ```cpp
@@ -112,6 +131,7 @@ LunarLog is designed for concurrent use from multiple threads with the following
 - **Do not call `setFormatter`/`setTransport` after sink registration.** These methods are `protected` on `ISink` and should only be called from sink constructors. The `LunarLog` class accesses them internally via `friend` during `addSink<SinkType, FormatterType>(...)`.
 - **`setContext` / `clearContext` / `clearAllContext`** are thread-safe and can be called concurrently with logging.
 - **`setMinLevel` / `setCaptureSourceLocation`** are atomic and safe to call at any time.
+- **`ContextScope`** must not outlive the `LunarLog` instance it references. It holds a reference to the logger and calls `clearContext` in its destructor, so destroying the logger first is undefined behavior.
 
 ## Context Capture
 

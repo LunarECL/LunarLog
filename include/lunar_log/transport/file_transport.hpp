@@ -20,9 +20,20 @@ namespace minta {
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (!m_file.good()) {
-                return;
+                m_file.clear();
+                m_file << formattedEntry << '\n';
+                if (!m_file.good()) {
+                    if (!m_errorReported) {
+                        m_errorReported = true;
+                        std::fprintf(stderr, "FileTransport: write failed, some log entries may be lost\n");
+                    }
+                    return;
+                }
+                // Recovery succeeded
+                m_errorReported = false;
+            } else {
+                m_file << formattedEntry << '\n';
             }
-            m_file << formattedEntry << '\n';
             if (m_autoFlush) {
                 m_file << std::flush;
             }
@@ -32,6 +43,7 @@ namespace minta {
         std::ofstream m_file;
         std::mutex m_mutex;
         bool m_autoFlush;
+        bool m_errorReported = false;
     };
 } // namespace minta
 

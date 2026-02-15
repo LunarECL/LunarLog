@@ -229,12 +229,12 @@ namespace minta {
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
+            auto now = std::chrono::system_clock::now();
+
             std::vector<std::string> values{toString(args)...};
 
             auto placeholders = extractPlaceholders(messageTemplate);
             std::vector<std::string> warnings = validatePlaceholders(placeholders, values);
-
-            auto now = std::chrono::system_clock::now();
             std::string message = formatMessage(messageTemplate, placeholders, values);
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
 
@@ -252,7 +252,6 @@ namespace minta {
             });
 
             for (const auto& warning : warnings) {
-                if (!rateLimitCheck()) break;
                 m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {},
                                             captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", {}});
             }
@@ -272,7 +271,11 @@ namespace minta {
                     m_sinkWriteInProgress.store(true, std::memory_order_release);
                     lock.unlock();
 
-                    m_logManager.log(entry);
+                    try {
+                        m_logManager.log(entry);
+                    } catch (...) {
+                        // Swallow — logging must not crash the application
+                    }
                     m_sinkWriteInProgress.store(false, std::memory_order_release);
                     // Notify after every individual write so that flush() wakes up
                     // promptly even when producers keep adding messages.
@@ -289,7 +292,11 @@ namespace minta {
                     m_logQueue.pop();
                     m_sinkWriteInProgress.store(true, std::memory_order_release);
                     lock.unlock();
-                    m_logManager.log(entry);
+                    try {
+                        m_logManager.log(entry);
+                    } catch (...) {
+                        // Swallow — logging must not crash the application
+                    }
                     m_sinkWriteInProgress.store(false, std::memory_order_release);
                     m_flushCV.notify_all();
                     lock.lock();
@@ -424,30 +431,34 @@ namespace minta {
             try { return std::stoi(s); } catch (...) { return fallback; }
         }
 
-        static double parseDouble(const std::string &s) {
-            if (s.empty()) return 0.0;
+        /// Try to parse a string as a double. Returns true on success and sets out.
+        /// Single strtod call replaces the old isNumericString+parseDouble pair.
+        static bool tryParseDouble(const std::string &s, double &out) {
+            if (s.empty()) return false;
             const char* start = s.c_str();
             char* end = nullptr;
             errno = 0;
             double val = std::strtod(start, &end);
             if (errno == ERANGE || end == start || static_cast<size_t>(end - start) != s.size()) {
                 errno = 0;
-                return 0.0;
+                return false;
             }
             errno = 0;
-            return val;
+            if (std::isinf(val) || std::isnan(val)) return false;
+            out = val;
+            return true;
         }
 
+        /// Kept for backward compat / simple cases.
         static bool isNumericString(const std::string &s) {
-            if (s.empty()) return false;
-            const char* start = s.c_str();
-            char* end = nullptr;
-            errno = 0;
-            double val = std::strtod(start, &end);
-            bool ok = (errno == 0 && end != start && static_cast<size_t>(end - start) == s.size());
-            errno = 0;
-            if (ok && (std::isinf(val) || std::isnan(val))) return false;
-            return ok;
+            double ignored;
+            return tryParseDouble(s, ignored);
+        }
+
+        static double parseDouble(const std::string &s) {
+            double val = 0.0;
+            tryParseDouble(s, val);
+            return val;
         }
 
         static double clampForLongLong(double val) {
@@ -491,10 +502,11 @@ namespace minta {
         static std::string applyFormat(const std::string &value, const std::string &spec) {
             if (spec.empty()) return value;
 
+            double numVal;
+
             // Fixed-point: .Nf (e.g. ".2f", ".4f")
             if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
-                if (!isNumericString(value)) return value;
-                double numVal = parseDouble(value);
+                if (!tryParseDouble(value, numVal)) return value;
                 std::string digits = spec.substr(1, spec.size() - 2);
                 int precision = safeStoi(digits, 6);
                 if (precision > 50) precision = 50;
@@ -503,8 +515,7 @@ namespace minta {
 
             // Fixed-point shorthand: Nf (e.g. "2f", "4f")
             if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
-                if (!isNumericString(value)) return value;
-                double numVal = parseDouble(value);
+                if (!tryParseDouble(value, numVal)) return value;
                 int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
                 if (precision > 50) precision = 50;
                 return snprintfDoublePrecision("%.*f", precision, numVal);
@@ -512,8 +523,7 @@ namespace minta {
 
             // Currency: C or c
             if (spec == "C" || spec == "c") {
-                if (!isNumericString(value)) return value;
-                double numVal = parseDouble(value);
+                if (!tryParseDouble(value, numVal)) return value;
                 if (numVal < 0) {
                     std::string formatted = snprintfDouble("%.2f", -numVal);
                     if (formatted == "0.00") return "$0.00";
@@ -526,9 +536,9 @@ namespace minta {
 
             // Hex: X (upper) or x (lower)
             if (spec == "X" || spec == "x") {
-                if (!isNumericString(value)) return value;
+                if (!tryParseDouble(value, numVal)) return value;
                 char buf[64];
-                double numVal = clampForLongLong(parseDouble(value));
+                numVal = clampForLongLong(numVal);
                 long long intVal = static_cast<long long>(numVal);
                 unsigned long long uval;
                 std::string result;
@@ -549,9 +559,8 @@ namespace minta {
 
             // Scientific: E (upper) or e (lower)
             if (spec == "E" || spec == "e") {
-                if (!isNumericString(value)) return value;
+                if (!tryParseDouble(value, numVal)) return value;
                 char buf[64];
-                double numVal = parseDouble(value);
                 if (spec == "E") {
                     std::snprintf(buf, sizeof(buf), "%E", numVal);
                 } else {
@@ -562,16 +571,15 @@ namespace minta {
 
             // Percentage: P or p
             if (spec == "P" || spec == "p") {
-                if (!isNumericString(value)) return value;
-                double numVal = parseDouble(value);
+                if (!tryParseDouble(value, numVal)) return value;
                 return snprintfDouble("%.2f", numVal * 100.0) + "%";
             }
 
             // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
             if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
-                if (!isNumericString(value)) return value;
+                if (!tryParseDouble(value, numVal)) return value;
                 char buf[64];
-                double numVal = clampForLongLong(parseDouble(value));
+                numVal = clampForLongLong(numVal);
                 int width = safeStoi(spec.substr(1), 1);
                 if (width > 50) width = 50;
                 long long intVal = static_cast<long long>(numVal);
@@ -590,7 +598,7 @@ namespace minta {
 
         /// Split "name:spec" into (name, spec). Returns (placeholder, "") if no colon.
         static std::pair<std::string, std::string> splitPlaceholder(const std::string &placeholder) {
-            size_t colonPos = placeholder.find(':');
+            size_t colonPos = placeholder.rfind(':');
             if (colonPos == std::string::npos) {
                 return std::make_pair(placeholder, std::string());
             }

@@ -58,6 +58,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_thread_safety.cpp
             test/tests/test_edge_cases.cpp
             test/tests/test_additional.cpp
+            test/tests/test_round7_fixes.cpp
             test/tests/utils/test_utils.cpp
     )
 

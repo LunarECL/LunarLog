@@ -29,7 +29,9 @@ namespace minta {
         }
 
         void log(const LogEntry &entry) {
-            m_loggingStarted.store(true, std::memory_order_release);
+            if (!m_loggingStarted.load(std::memory_order_relaxed)) {
+                m_loggingStarted.store(true, std::memory_order_release);
+            }
             for (const auto &sink: m_sinks) {
                 sink->write(entry);
             }

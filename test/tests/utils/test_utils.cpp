@@ -10,7 +10,12 @@
 namespace fs = std::filesystem;
 #else
 #include <sys/stat.h>
+#ifdef _MSC_VER
+#include <windows.h>
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #endif
 
 std::string TestUtils::readLogFile(const std::string &filename) {
@@ -25,10 +30,10 @@ std::string TestUtils::readLogFile(const std::string &filename) {
 
 void TestUtils::waitForFileContent(const std::string &filename, int maxAttempts) {
     for (int i = 0; i < maxAttempts; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (fileExists(filename) && getFileSize(filename) > 0) {
             return;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     throw std::runtime_error("Timeout waiting for file content: " + filename);
 }
@@ -38,7 +43,10 @@ void TestUtils::cleanupLogFiles() {
         "test_log.txt", "level_test_log.txt", "rate_limit_test_log.txt",
         "escaped_brackets_test.txt", "test_log1.txt", "test_log2.txt",
         "validation_test_log.txt", "custom_formatter_log.txt", "json_formatter_log.txt", "xml_formatter_log.txt",
-        "context_test_log.txt", "default_formatter_log.txt"
+        "context_test_log.txt", "default_formatter_log.txt",
+        "suffix_format_test.txt", "suffix_json_test.txt", "suffix_xml_test.txt",
+        "thread_safety_test.txt", "test_log2.json",
+        "custom_sink_test.txt", "source_loc_test.txt"
     };
 
     for (const auto &filename : filesToRemove) {

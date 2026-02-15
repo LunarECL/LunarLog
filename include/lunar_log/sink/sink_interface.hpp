@@ -7,12 +7,15 @@
 #include <memory>
 
 namespace minta {
+    class LunarLog;
+
     class ISink {
     public:
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
 
+    protected:
         void setFormatter(std::unique_ptr<IFormatter> formatter) {
             m_formatter = std::move(formatter);
         }
@@ -21,9 +24,25 @@ namespace minta {
             m_transport = std::move(transport);
         }
 
-    protected:
+        IFormatter* formatter() const { return m_formatter.get(); }
+        ITransport* transport() const { return m_transport.get(); }
+
+    private:
         std::unique_ptr<IFormatter> m_formatter;
         std::unique_ptr<ITransport> m_transport;
+
+        friend class LunarLog;
+    };
+
+    class BaseSink : public ISink {
+    public:
+        void write(const LogEntry &entry) override {
+            IFormatter* fmt = formatter();
+            ITransport* tp = transport();
+            if (fmt && tp) {
+                tp->write(fmt->format(entry));
+            }
+        }
     };
 } // namespace minta
 

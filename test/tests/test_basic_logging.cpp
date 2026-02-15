@@ -19,6 +19,7 @@ TEST_F(BasicLoggingTest, AllLogLevels) {
     logger.error("Error message");
     logger.fatal("Fatal message");
 
+    logger.flush();
     TestUtils::waitForFileContent("test_log.txt");
     std::string logContent = TestUtils::readLogFile("test_log.txt");
 
@@ -36,6 +37,7 @@ TEST_F(BasicLoggingTest, PlaceholderReplacement) {
 
     logger.info("User {username} logged in from {ip} at {time}", "alice", "192.168.1.1", "14:30");
 
+    logger.flush();
     TestUtils::waitForFileContent("test_log.txt");
     std::string logContent = TestUtils::readLogFile("test_log.txt");
 

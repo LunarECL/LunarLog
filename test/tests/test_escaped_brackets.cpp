@@ -15,6 +15,7 @@ TEST_F(EscapedBracketsTest, HandleEscapedBrackets) {
     logger.info("This message has escaped brackets: {{escaped}}");
     logger.info("This message has a mix of escaped and unescaped brackets: {{escaped}} and {placeholder}", "value");
 
+    logger.flush();
     TestUtils::waitForFileContent("escaped_brackets_test.txt");
     std::string logContent = TestUtils::readLogFile("escaped_brackets_test.txt");
 

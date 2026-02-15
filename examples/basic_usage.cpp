@@ -19,7 +19,7 @@ int main() {
     logger.fatal("Fatal error: {errorType}", "System crash");
 
     // Enable context capture
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
 
     // Custom context
     logger.setContext("session_id", "abc123");
@@ -35,7 +35,7 @@ int main() {
     logger.clearAllContext();
 
     // Advanced usage with manual context specification
-    logger.logWithContext(minta::LogLevel::INFO, LUNAR_LOG_CONTEXT, "Manual context specification");
+    logger.logWithSourceLocation(minta::LogLevel::INFO, LUNAR_LOG_CONTEXT, "Manual context specification");
 
     // Demonstrating escaped brackets
     logger.info("Escaped brackets example: {{escaped}} {notEscaped}", "value");

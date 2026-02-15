@@ -12,10 +12,11 @@ TEST_F(ContextCaptureTest, CaptureGlobalContext) {
     minta::LunarLog logger(minta::LogLevel::INFO);
     logger.addSink<minta::FileSink>("context_test_log.txt");
 
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
     logger.setContext("session_id", "abc123");
     logger.info("Log with global context");
 
+    logger.flush();
     TestUtils::waitForFileContent("context_test_log.txt");
     std::string logContent = TestUtils::readLogFile("context_test_log.txt");
 
@@ -27,7 +28,7 @@ TEST_F(ContextCaptureTest, CaptureScopedContext) {
     minta::LunarLog logger(minta::LogLevel::INFO);
     logger.addSink<minta::FileSink>("context_test_log.txt");
 
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
     logger.setContext("session_id", "abc123");
 
     {
@@ -37,6 +38,7 @@ TEST_F(ContextCaptureTest, CaptureScopedContext) {
 
     logger.info("Log after scoped context");
 
+    logger.flush();
     TestUtils::waitForFileContent("context_test_log.txt");
     std::string logContent = TestUtils::readLogFile("context_test_log.txt");
 
@@ -54,13 +56,14 @@ TEST_F(ContextCaptureTest, ClearContext) {
     minta::LunarLog logger(minta::LogLevel::INFO);
     logger.addSink<minta::FileSink>("context_test_log.txt");
 
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
     logger.setContext("session_id", "abc123");
     logger.info("Log with context");
 
     logger.clearAllContext();
     logger.info("Log after clearing context");
 
+    logger.flush();
     TestUtils::waitForFileContent("context_test_log.txt");
     std::string logContent = TestUtils::readLogFile("context_test_log.txt");
 

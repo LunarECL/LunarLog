@@ -68,7 +68,7 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug \
             -DLUNARLOG_CXX_STANDARD=17 \
-            -DCMAKE_CXX_FLAGS="--coverage"
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-update=atomic"
 
       - name: Build
         run: cmake --build build
@@ -79,10 +79,9 @@ jobs:
 
       - name: Generate coverage report
         run: |
-          lcov --capture --directory build --output-file coverage.info \
-            --ignore-errors mismatch
-          lcov --remove coverage.info \
-            '/usr/*' \
+          lcov --capture --directory build --base-directory . --output-file coverage_raw.info \
+            --no-external --ignore-errors mismatch
+          lcov --remove coverage_raw.info \
             '*/build/_deps/*' \
             '*/test/*' \
             --output-file coverage.info

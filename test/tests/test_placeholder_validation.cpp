@@ -14,6 +14,7 @@ TEST_F(PlaceholderValidationTest, EmptyPlaceholder) {
 
     logger.info("Empty placeholder: {}", "value");
 
+    logger.flush();
     TestUtils::waitForFileContent("validation_test_log.txt");
     std::string logContent = TestUtils::readLogFile("validation_test_log.txt");
 
@@ -27,6 +28,7 @@ TEST_F(PlaceholderValidationTest, RepeatedPlaceholder) {
 
     logger.info("Repeated placeholder: {placeholder} and {placeholder}", "value1", "value2");
 
+    logger.flush();
     TestUtils::waitForFileContent("validation_test_log.txt");
     std::string logContent = TestUtils::readLogFile("validation_test_log.txt");
 
@@ -40,6 +42,7 @@ TEST_F(PlaceholderValidationTest, TooFewValues) {
 
     logger.info("Too few values: {placeholder1} and {placeholder2}", "value");
 
+    logger.flush();
     TestUtils::waitForFileContent("validation_test_log.txt");
     std::string logContent = TestUtils::readLogFile("validation_test_log.txt");
 
@@ -53,6 +56,7 @@ TEST_F(PlaceholderValidationTest, TooManyValues) {
 
     logger.info("Too many values: {placeholder}", "value1", "value2");
 
+    logger.flush();
     TestUtils::waitForFileContent("validation_test_log.txt");
     std::string logContent = TestUtils::readLogFile("validation_test_log.txt");
 

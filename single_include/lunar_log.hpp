@@ -37,9 +37,8 @@ namespace minta {
 
 #include <string>
 #include <chrono>
-#include <sstream>
-#include <iomanip>
-#include <vector>
+#include <ctime>
+#include <cstdio>
 #include <memory>
 
 namespace minta {
@@ -52,17 +51,27 @@ namespace detail {
         return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 #endif
     }
-} // namespace detail
 
     inline std::string formatTimestamp(const std::chrono::system_clock::time_point &time) {
         auto nowTime = std::chrono::system_clock::to_time_t(time);
         auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()) % 1000;
 
-        std::ostringstream oss;
-        oss << std::put_time(std::localtime(&nowTime), "%Y-%m-%d %H:%M:%S");
-        oss << '.' << std::setfill('0') << std::setw(3) << nowMs.count();
-        return oss.str();
+        std::tm tmBuf;
+#if defined(_MSC_VER)
+        localtime_s(&tmBuf, &nowTime);
+#else
+        localtime_r(&nowTime, &tmBuf);
+#endif
+
+        char buf[32];
+        size_t pos = std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmBuf);
+        if (pos == 0) {
+            buf[0] = '\0';
+        }
+        std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>((nowMs.count() + 1000) % 1000));
+        return std::string(buf);
     }
+} // namespace detail
 } // namespace minta
 
 
@@ -104,33 +113,56 @@ namespace minta {
 
 // --- lunar_log/formatter/human_readable_formatter.hpp ---
 
-#include <sstream>
+#include <string>
 
 namespace minta {
     class HumanReadableFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
-            std::ostringstream oss;
-            oss << formatTimestamp(entry.timestamp) << " "
-                << "[" << getLevelString(entry.level) << "] "
-                << entry.message;
+            std::string result;
+            result.reserve(80 + entry.message.size() + entry.file.size() + entry.function.size());
+            result += detail::formatTimestamp(entry.timestamp);
+            result += " [";
+            result += getLevelString(entry.level);
+            result += "] ";
+            result += entry.message;
 
             if (!entry.file.empty()) {
-                oss << " [" << entry.file << ":" << entry.line << " " << entry.function << "]";
+                result += " [";
+                result += entry.file;
+                result += ':';
+                result += std::to_string(entry.line);
+                result += ' ';
+                result += entry.function;
+                result += ']';
             }
 
             if (!entry.customContext.empty()) {
-                oss << " {";
+                result += " {";
                 bool first = true;
                 for (const auto &ctx : entry.customContext) {
-                    if (!first) oss << ", ";
-                    oss << ctx.first << "=" << ctx.second;
+                    if (!first) result += ", ";
+                    result += ctx.first;
+                    result += '=';
+                    // Quote values containing delimiters
+                    if (ctx.second.find(',') != std::string::npos ||
+                        ctx.second.find('=') != std::string::npos ||
+                        ctx.second.find('"') != std::string::npos) {
+                        result += '"';
+                        for (char c : ctx.second) {
+                            if (c == '"') result += '\\';
+                            result += c;
+                        }
+                        result += '"';
+                    } else {
+                        result += ctx.second;
+                    }
                     first = false;
                 }
-                oss << "}";
+                result += '}';
             }
 
-            return oss.str();
+            return result;
         }
     };
 } // namespace minta
@@ -138,62 +170,82 @@ namespace minta {
 
 // --- lunar_log/formatter/json_formatter.hpp ---
 
-#include <sstream>
-#include <iomanip>
+#include <string>
+#include <cstdio>
 
 namespace minta {
     class JsonFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
-            std::ostringstream json;
-            json << R"({)";
+            std::string levelStr = getLevelString(entry.level);
+            std::string tsStr = detail::formatTimestamp(entry.timestamp);
+            std::string msgEsc = escapeJsonString(entry.message);
 
-            json << R"("level":")" << getLevelString(entry.level) << R"(",)";
-            json << R"("timestamp":")" << formatTimestamp(entry.timestamp) << R"(",)";
-            json << R"("message":")" << escapeJsonString(entry.message) << R"(")";
+            std::string json;
+            json.reserve(64 + levelStr.size() + tsStr.size() + msgEsc.size());
+            json += R"({"level":")";
+            json += levelStr;
+            json += R"(","timestamp":")";
+            json += tsStr;
+            json += R"(","message":")";
+            json += msgEsc;
+            json += '"';
 
             if (!entry.file.empty()) {
-                json << R"(,"file":")" << escapeJsonString(entry.file) << R"(",)";
-                json << R"("line":)" << entry.line << R"(,)";
-                json << R"("function":")" << escapeJsonString(entry.function) << R"(")";
+                std::string fileEsc = escapeJsonString(entry.file);
+                std::string funcEsc = escapeJsonString(entry.function);
+                json += R"(,"file":")";
+                json += fileEsc;
+                json += R"(","line":)";
+                json += std::to_string(entry.line);
+                json += R"(,"function":")";
+                json += funcEsc;
+                json += '"';
             }
 
             if (!entry.customContext.empty()) {
-                json << R"(,"context":{)";
+                json += R"(,"context":{)";
                 bool first = true;
                 for (const auto &ctx : entry.customContext) {
-                    if (!first) json << ",";
-                    json << R"(")" << escapeJsonString(ctx.first) << R"(":")" << escapeJsonString(ctx.second) << R"(")";
+                    if (!first) json += ',';
+                    json += '"';
+                    json += escapeJsonString(ctx.first);
+                    json += R"(":")";
+                    json += escapeJsonString(ctx.second);
+                    json += '"';
                     first = false;
                 }
-                json << "}";
+                json += '}';
             }
 
-            json << R"(})";
-            return json.str();
+            json += '}';
+            return json;
         }
 
     private:
         static std::string escapeJsonString(const std::string &input) {
-            std::ostringstream result;
+            std::string result;
+            result.reserve(input.size());
             for (char c : input) {
                 switch (c) {
-                    case '"': result << R"(\")"; break;
-                    case '\\': result << R"(\\)"; break;
-                    case '\b': result << R"(\b)"; break;
-                    case '\f': result << R"(\f)"; break;
-                    case '\n': result << R"(\n)"; break;
-                    case '\r': result << R"(\r)"; break;
-                    case '\t': result << R"(\t)"; break;
+                    case '"': result += R"(\")"; break;
+                    case '\\': result += R"(\\)"; break;
+                    case '\b': result += R"(\b)"; break;
+                    case '\f': result += R"(\f)"; break;
+                    case '\n': result += R"(\n)"; break;
+                    case '\r': result += R"(\r)"; break;
+                    case '\t': result += R"(\t)"; break;
                     default:
                         if ('\x00' <= c && c <= '\x1f') {
-                            result << R"(\u)" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
+                            char buf[8];
+                            std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                            result += buf;
                         } else {
-                            result << c;
+                            result += c;
                         }
                 }
             }
-            return result.str();
+            return result;
         }
     };
 } // namespace minta
@@ -201,53 +253,96 @@ namespace minta {
 
 // --- lunar_log/formatter/xml_formatter.hpp ---
 
-#include <sstream>
-#include <iomanip>
+#include <string>
 
 namespace minta {
     class XmlFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
-            std::ostringstream xml;
-            xml << "<log_entry>";
-            xml << "<level>" << getLevelString(entry.level) << "</level>";
-            xml << "<timestamp>" << formatTimestamp(entry.timestamp) << "</timestamp>";
-            xml << "<message>" << escapeXmlString(entry.message) << "</message>";
+            std::string xml;
+            xml += "<log_entry>";
+            xml += "<level>";
+            xml += getLevelString(entry.level);
+            xml += "</level>";
+            xml += "<timestamp>";
+            xml += detail::formatTimestamp(entry.timestamp);
+            xml += "</timestamp>";
+            xml += "<message>";
+            xml += escapeXmlString(entry.message);
+            xml += "</message>";
 
             if (!entry.file.empty()) {
-                xml << "<file>" << escapeXmlString(entry.file) << "</file>";
-                xml << "<line>" << entry.line << "</line>";
-                xml << "<function>" << escapeXmlString(entry.function) << "</function>";
+                xml += "<file>";
+                xml += escapeXmlString(entry.file);
+                xml += "</file>";
+                xml += "<line>";
+                xml += std::to_string(entry.line);
+                xml += "</line>";
+                xml += "<function>";
+                xml += escapeXmlString(entry.function);
+                xml += "</function>";
             }
 
             if (!entry.customContext.empty()) {
-                xml << "<context>";
+                xml += "<context>";
                 for (const auto &ctx : entry.customContext) {
-                    xml << "<" << escapeXmlString(ctx.first) << ">";
-                    xml << escapeXmlString(ctx.second);
-                    xml << "</" << escapeXmlString(ctx.first) << ">";
+                    std::string safeName = sanitizeXmlName(ctx.first);
+                    xml += "<";
+                    xml += safeName;
+                    xml += ">";
+                    xml += escapeXmlString(ctx.second);
+                    xml += "</";
+                    xml += safeName;
+                    xml += ">";
                 }
-                xml << "</context>";
+                xml += "</context>";
             }
 
-            xml << "</log_entry>";
-            return xml.str();
+            xml += "</log_entry>";
+            return xml;
         }
 
     private:
+        static std::string sanitizeXmlName(const std::string &input) {
+            if (input.empty()) return "_";
+            std::string result;
+            result.reserve(input.size());
+            for (size_t i = 0; i < input.size(); ++i) {
+                char c = input[i];
+                bool valid = (c == '_' || c == ':') ||
+                             (c >= 'A' && c <= 'Z') ||
+                             (c >= 'a' && c <= 'z') ||
+                             (i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'));
+                result += valid ? c : '_';
+            }
+            // Safety net: the loop above already replaces invalid start chars with '_',
+            // so this check for a leading digit/dash/dot is unreachable with the
+            // current logic. Kept as defensive validation in case the loop changes.
+            if (result.empty() || result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
+                result.insert(result.begin(), '_');
+            }
+            return result;
+        }
+
         static std::string escapeXmlString(const std::string &input) {
-            std::ostringstream result;
+            std::string result;
+            result.reserve(input.size());
             for (char c : input) {
+                unsigned char uc = static_cast<unsigned char>(c);
+                if (uc < 0x20 && uc != 0x09 && uc != 0x0A && uc != 0x0D) {
+                    result += ' ';
+                    continue;
+                }
                 switch (c) {
-                    case '<': result << "&lt;"; break;
-                    case '>': result << "&gt;"; break;
-                    case '&': result << "&amp;"; break;
-                    case '\'': result << "&apos;"; break;
-                    case '"': result << "&quot;"; break;
-                    default: result << c; break;
+                    case '<': result += "&lt;"; break;
+                    case '>': result += "&gt;"; break;
+                    case '&': result += "&amp;"; break;
+                    case '\'': result += "&apos;"; break;
+                    case '"': result += "&quot;"; break;
+                    default: result += c; break;
                 }
             }
-            return result.str();
+            return result;
         }
     };
 } // namespace minta
@@ -277,7 +372,8 @@ namespace minta {
 namespace minta {
     class FileTransport : public ITransport {
     public:
-        explicit FileTransport(const std::string &filename) : m_filename(filename) {
+        explicit FileTransport(const std::string &filename, bool autoFlush = true)
+            : m_autoFlush(autoFlush) {
             m_file.open(filename, std::ios::app);
             if (!m_file.is_open()) {
                 throw std::runtime_error("FileTransport: failed to open file: " + filename);
@@ -287,15 +383,30 @@ namespace minta {
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (!m_file.good()) {
-                return;
+                m_file.clear();
+                m_file << formattedEntry << '\n';
+                if (!m_file.good()) {
+                    if (!m_errorReported) {
+                        m_errorReported = true;
+                        std::fprintf(stderr, "FileTransport: write failed, some log entries may be lost\n");
+                    }
+                    return;
+                }
+                // Recovery succeeded
+                m_errorReported = false;
+            } else {
+                m_file << formattedEntry << '\n';
             }
-            m_file << formattedEntry << std::endl;
+            if (m_autoFlush) {
+                m_file << std::flush;
+            }
         }
 
     private:
-        std::string m_filename;
         std::ofstream m_file;
         std::mutex m_mutex;
+        bool m_autoFlush;
+        bool m_errorReported = false;
     };
 } // namespace minta
 
@@ -310,7 +421,7 @@ namespace minta {
     public:
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(m_mutex);
-            std::cout << formattedEntry << std::endl;
+            std::cout << formattedEntry << '\n' << std::flush;
         }
 
     private:
@@ -324,12 +435,15 @@ namespace minta {
 #include <memory>
 
 namespace minta {
+    class LunarLog;
+
     class ISink {
     public:
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
 
+    protected:
         void setFormatter(std::unique_ptr<IFormatter> formatter) {
             m_formatter = std::move(formatter);
         }
@@ -338,9 +452,25 @@ namespace minta {
             m_transport = std::move(transport);
         }
 
-    protected:
+        IFormatter* formatter() const { return m_formatter.get(); }
+        ITransport* transport() const { return m_transport.get(); }
+
+    private:
         std::unique_ptr<IFormatter> m_formatter;
         std::unique_ptr<ITransport> m_transport;
+
+        friend class LunarLog;
+    };
+
+    class BaseSink : public ISink {
+    public:
+        void write(const LogEntry &entry) override {
+            IFormatter* fmt = formatter();
+            ITransport* tp = transport();
+            if (fmt && tp) {
+                tp->write(fmt->format(entry));
+            }
+        }
     };
 } // namespace minta
 
@@ -349,17 +479,11 @@ namespace minta {
 
 
 namespace minta {
-    class ConsoleSink : public ISink {
+    class ConsoleSink : public BaseSink {
     public:
         ConsoleSink() {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             setTransport(detail::make_unique<StdoutTransport>());
-        }
-
-        void write(const LogEntry &entry) override {
-            if (m_formatter && m_transport) {
-                m_transport->write(m_formatter->format(entry));
-            }
         }
     };
 } // namespace minta
@@ -369,17 +493,11 @@ namespace minta {
 
 
 namespace minta {
-    class FileSink : public ISink {
+    class FileSink : public BaseSink {
     public:
         explicit FileSink(const std::string &filename) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             setTransport(detail::make_unique<FileTransport>(filename));
-        }
-
-        void write(const LogEntry &entry) override {
-            if (m_formatter && m_transport) {
-                m_transport->write(m_formatter->format(entry));
-            }
         }
     };
 } // namespace minta
@@ -389,15 +507,34 @@ namespace minta {
 
 #include <vector>
 #include <memory>
+#include <atomic>
+#include <stdexcept>
 
 namespace minta {
     class LogManager {
     public:
+        LogManager() : m_loggingStarted(false) {}
+
+        // NOTE: addSink is not thread-safe after logging starts.
+        // Add all sinks before any log calls are made.
+        //
+        // There is a TOCTOU race between the m_loggingStarted check and the
+        // push_back: two threads could both pass the check concurrently. This
+        // is acceptable because the documented contract requires all sinks to
+        // be added before any log calls, so well-behaved callers never hit
+        // this window. The atomic check is a best-effort safety net, not a
+        // thread-safe gate.
         void addSink(std::unique_ptr<ISink> sink) {
+            if (m_loggingStarted.load(std::memory_order_acquire)) {
+                throw std::logic_error("Cannot add sinks after logging has started");
+            }
             m_sinks.push_back(std::move(sink));
         }
 
         void log(const LogEntry &entry) {
+            if (!m_loggingStarted.load(std::memory_order_relaxed)) {
+                m_loggingStarted.store(true, std::memory_order_release);
+            }
             for (const auto &sink: m_sinks) {
                 sink->write(entry);
             }
@@ -405,6 +542,7 @@ namespace minta {
 
     private:
         std::vector<std::unique_ptr<ISink> > m_sinks;
+        std::atomic<bool> m_loggingStarted;
     };
 } // namespace minta
 
@@ -416,25 +554,38 @@ namespace minta {
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include <regex>
 #include <type_traits>
 #include <set>
 #include <map>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
+#include <cstdio>
+#include <climits>
+#include <cmath>
+#include <sstream>
 
 namespace minta {
     class LunarLog {
     public:
-        explicit LunarLog(LogLevel minLevel = LogLevel::INFO)
+        explicit LunarLog(LogLevel minLevel = LogLevel::INFO, bool addDefaultConsoleSink = true)
             : m_minLevel(minLevel)
             , m_isRunning(true)
-            , m_lastLogTime(std::chrono::steady_clock::now())
+            , m_rateLimitWindowStart(std::chrono::steady_clock::now().time_since_epoch().count())
             , m_logCount(0)
-            , m_captureContext(false) {
-            addSink<ConsoleSink>();
+            , m_captureSourceLocation(false)
+            , m_hasCustomContext(false)
+            , m_sinkWriteInProgress(false) {
+            if (addDefaultConsoleSink) {
+                addSink<ConsoleSink>();
+            }
             m_logThread = std::thread(&LunarLog::processLogQueue, this);
         }
 
-        ~LunarLog() {
+        // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
+        // while other threads are still calling log methods is undefined behavior.
+        ~LunarLog() noexcept {
+            flush();
             m_isRunning = false;
             m_logCV.notify_one();
             if (m_logThread.joinable()) {
@@ -455,20 +606,38 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
-        void setCaptureContext(bool capture) {
-            m_captureContext.store(capture, std::memory_order_relaxed);
+        void setCaptureSourceLocation(bool capture) {
+            m_captureSourceLocation.store(capture, std::memory_order_relaxed);
         }
 
-        bool getCaptureContext() const {
-            return m_captureContext.load(std::memory_order_relaxed);
+        bool getCaptureSourceLocation() const {
+            return m_captureSourceLocation.load(std::memory_order_relaxed);
+        }
+
+        /// @deprecated Use setCaptureSourceLocation instead.
+        inline void setCaptureContext(bool capture) {
+            setCaptureSourceLocation(capture);
+        }
+
+        /// @deprecated Use getCaptureSourceLocation instead.
+        inline bool getCaptureContext() const {
+            return getCaptureSourceLocation();
+        }
+
+        /// @warning Do not call flush() from within a sink write() implementation.
+        ///          flush() acquires the queue mutex and waits for sink writes to
+        ///          complete, so calling it from inside write() will deadlock.
+        void flush() {
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            m_flushCV.wait(lock, [this] {
+                return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
+            });
         }
 
         template<typename SinkType, typename... Args>
         typename std::enable_if<std::is_base_of<ISink, SinkType>::value>::type
         addSink(Args &&... args) {
-            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
-            sink->setFormatter(detail::make_unique<HumanReadableFormatter>());
-            m_logManager.addSink(std::move(sink));
+            m_logManager.addSink(detail::make_unique<SinkType>(std::forward<Args>(args)...));
         }
 
         template<typename SinkType, typename FormatterType, typename... Args>
@@ -489,8 +658,14 @@ namespace minta {
         }
 
         template<typename... Args>
-        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+        void logWithSourceLocation(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
             logInternal(level, file, line, function, messageTemplate, args...);
+        }
+
+        /// @deprecated Use logWithSourceLocation instead.
+        template<typename... Args>
+        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            logWithSourceLocation(level, file, line, function, messageTemplate, args...);
         }
 
         template<typename... Args>
@@ -526,16 +701,19 @@ namespace minta {
         void setContext(const std::string& key, const std::string& value) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext[key] = value;
+            m_hasCustomContext.store(true, std::memory_order_release);
         }
 
         void clearContext(const std::string& key) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext.erase(key);
+            m_hasCustomContext.store(!m_customContext.empty(), std::memory_order_release);
         }
 
         void clearAllContext() {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext.clear();
+            m_hasCustomContext.store(false, std::memory_order_release);
         }
 
     private:
@@ -544,46 +722,76 @@ namespace minta {
 
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_isRunning;
-        std::chrono::steady_clock::time_point m_lastLogTime;
-        size_t m_logCount;
+        std::atomic<long long> m_rateLimitWindowStart;
+        std::atomic<size_t> m_logCount;
         std::mutex m_queueMutex;
         std::mutex m_contextMutex;
-        std::mutex m_rateLimitMutex;
         std::condition_variable m_logCV;
+        std::condition_variable m_flushCV;
         std::queue<LogEntry> m_logQueue;
         std::thread m_logThread;
         LogManager m_logManager;
         std::map<std::string, std::string> m_customContext;
-        std::atomic<bool> m_captureContext;
+        std::atomic<bool> m_captureSourceLocation;
+        std::atomic<bool> m_hasCustomContext;
+        std::atomic<bool> m_sinkWriteInProgress;
 
-        static const std::regex& placeholderRegex() {
-            static const std::regex instance(R"(\{([^{}]*)\})");
-            return instance;
+        struct PlaceholderInfo {
+            std::string name;
+            std::string fullContent;
+            std::string spec;
+            size_t startPos;
+            size_t endPos;
+        };
+
+        static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
+            std::vector<PlaceholderInfo> placeholders;
+            for (size_t i = 0; i < messageTemplate.length(); ++i) {
+                if (messageTemplate[i] == '{') {
+                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
+                        ++i;
+                        continue;
+                    }
+                    size_t endPos = messageTemplate.find('}', i);
+                    if (endPos == std::string::npos) break;
+                    std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
+                    auto parts = splitPlaceholder(content);
+                    placeholders.push_back({parts.first, content, parts.second, i, endPos});
+                    i = endPos;
+                } else if (messageTemplate[i] == '}') {
+                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
+                        ++i;
+                    }
+                }
+            }
+            return placeholders;
         }
 
         template<typename... Args>
         void logInternal(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            if (!m_isRunning.load(std::memory_order_acquire)) return;
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
-            auto validationResult = validatePlaceholders(messageTemplate, args...);
-            std::string validatedTemplate = validationResult.first;
-            std::vector<std::string> warnings = validationResult.second;
-
             auto now = std::chrono::system_clock::now();
-            std::string message = formatMessage(validatedTemplate, args...);
-            auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
 
-            bool captureCtx = m_captureContext.load(std::memory_order_relaxed);
+            std::vector<std::string> values{toString(args)...};
+
+            auto placeholders = extractPlaceholders(messageTemplate);
+            std::vector<std::string> warnings = validatePlaceholders(placeholders, values);
+            std::string message = formatMessage(messageTemplate, placeholders, values);
+            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
+
+            bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
-            {
+            if (m_hasCustomContext.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
             }
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, validatedTemplate, std::move(argumentPairs),
+                level, std::move(message), now, messageTemplate, std::move(argumentPairs),
                 captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy)
             });
 
@@ -604,60 +812,91 @@ namespace minta {
                 while (!m_logQueue.empty()) {
                     auto entry = std::move(m_logQueue.front());
                     m_logQueue.pop();
+                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
 
-                    m_logManager.log(entry);
+                    try {
+                        m_logManager.log(entry);
+                    } catch (...) {
+                        // Swallow — logging must not crash the application
+                    }
 
+                    // Re-acquire lock BEFORE clearing sinkWriteInProgress and
+                    // notifying, so that flush() cannot miss the state change.
+                    // Without this, flush() can check the predicate (seeing
+                    // sinkWriteInProgress==true), then we set it to false and
+                    // notify, and THEN flush() enters wait — a classic lost wakeup.
                     lock.lock();
+                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
+                    m_flushCV.notify_all();
+                }
+            }
+
+            {
+                std::unique_lock<std::mutex> lock(m_queueMutex);
+                while (!m_logQueue.empty()) {
+                    auto entry = std::move(m_logQueue.front());
+                    m_logQueue.pop();
+                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
+                    lock.unlock();
+                    try {
+                        m_logManager.log(entry);
+                    } catch (...) {
+                        // Swallow — logging must not crash the application
+                    }
+                    lock.lock();
+                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
+                    m_flushCV.notify_all();
                 }
             }
         }
 
+        // Rate limiting is best-effort under concurrent access.
+        //
+        // When the window expires, the first thread to win the CAS resets
+        // m_rateLimitWindowStart and stores m_logCount to 1 (counting its own
+        // message). Concurrent threads that already read the old window but
+        // lose the CAS retry and see the new window; their subsequent
+        // fetch_add on m_logCount races with the store(1), so a small number
+        // of messages at the window boundary may be silently lost or allowed
+        // beyond the limit. This is acceptable for a best-effort rate limiter.
         bool rateLimitCheck() {
-            std::lock_guard<std::mutex> lock(m_rateLimitMutex);
             auto now = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - m_lastLogTime).count();
-            if (duration >= kRateLimitWindowSeconds) {
-                m_lastLogTime = now;
-                m_logCount = 1;
-                return true;
+            long long nowNs = now.time_since_epoch().count();
+            long long windowStart = m_rateLimitWindowStart.load(std::memory_order_relaxed);
+
+            for (;;) {
+                auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::duration(nowNs - windowStart)).count();
+                if (duration < kRateLimitWindowSeconds) break;
+                if (m_rateLimitWindowStart.compare_exchange_weak(windowStart, nowNs,
+                        std::memory_order_relaxed, std::memory_order_relaxed)) {
+                    // Release so that the new count is visible to threads that
+                    // subsequently read it with acquire in fetch_add below.
+                    m_logCount.store(1, std::memory_order_release);
+                    return true;
+                }
             }
-            if (m_logCount >= kRateLimitMaxLogs) {
+            // Acquire pairs with the release-store above: if a window reset just
+            // happened, this thread sees the updated count before incrementing.
+            size_t count = m_logCount.fetch_add(1, std::memory_order_acquire);
+            if (count >= kRateLimitMaxLogs) {
                 return false;
             }
-            ++m_logCount;
             return true;
         }
 
-        template<typename... Args>
-        static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
-            const std::string &messageTemplate, const Args &... args) {
+        static std::vector<std::string> validatePlaceholders(
+            const std::vector<PlaceholderInfo> &placeholders,
+            const std::vector<std::string> &values) {
             std::vector<std::string> warnings;
-            std::vector<std::string> placeholders;
             std::set<std::string> uniquePlaceholders;
-            std::vector<std::string> values{toString(args)...};
 
-            const std::regex& regex = placeholderRegex();
-            auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), regex);
-            auto placeholderEnd = std::sregex_iterator();
-
-            for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
-                std::smatch match = *i;
-                std::string placeholder = match[1].str();
-
-                if (placeholder.empty()) {
-                    std::string prefix = match.prefix().str();
-                    if (!prefix.empty() && prefix.back() == '{') {
-                        continue;
-                    }
-                }
-
-                placeholders.push_back(placeholder);
-
-                if (placeholder.empty()) {
+            for (const auto &ph : placeholders) {
+                if (ph.name.empty()) {
                     warnings.push_back("Warning: Empty placeholder found");
-                } else if (!uniquePlaceholders.insert(placeholder).second) {
-                    warnings.push_back("Warning: Repeated placeholder name: " + placeholder);
+                } else if (!uniquePlaceholders.insert(ph.name).second) {
+                    warnings.push_back("Warning: Repeated placeholder name: " + ph.name);
                 }
             }
 
@@ -667,7 +906,7 @@ namespace minta {
                 warnings.push_back("Warning: More placeholders than provided values");
             }
 
-            return std::make_pair(messageTemplate, warnings);
+            return warnings;
         }
 
         template<typename T>
@@ -677,67 +916,289 @@ namespace minta {
             return oss.str();
         }
 
-        template<typename... Args>
-        static std::string formatMessage(const std::string &messageTemplate, const Args &... args) {
-            std::vector<std::string> values{toString(args)...};
+        static std::string toString(const std::string &value) {
+            return value;
+        }
+
+        static std::string toString(const char *value) {
+            if (!value) return "(null)";
+            return std::string(value);
+        }
+
+        static std::string toString(std::nullptr_t) {
+            return "(null)";
+        }
+
+        static std::string toString(int value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(long long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned int value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned long long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(bool value) {
+            return value ? "true" : "false";
+        }
+
+        static std::string toString(double value) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.15g", value);
+            return std::string(buf);
+        }
+
+        static std::string toString(float value) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(value));
+            return std::string(buf);
+        }
+
+        /// Safely parse an integer from a string. Returns fallback on failure.
+        static int safeStoi(const std::string &s, int fallback = 0) {
+            if (s.empty()) return fallback;
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(s[i]))) return fallback;
+            }
+            try { return std::stoi(s); } catch (...) { return fallback; }
+        }
+
+        /// Try to parse a string as a double. Returns true on success and sets out.
+        /// Single strtod call replaces the old isNumericString+parseDouble pair.
+        static bool tryParseDouble(const std::string &s, double &out) {
+            if (s.empty()) return false;
+            const char* start = s.c_str();
+            char* end = nullptr;
+            errno = 0;
+            double val = std::strtod(start, &end);
+            if (errno == ERANGE || end == start || static_cast<size_t>(end - start) != s.size()) {
+                errno = 0;
+                return false;
+            }
+            errno = 0;
+            if (std::isinf(val) || std::isnan(val)) return false;
+            out = val;
+            return true;
+        }
+
+        /// Kept for backward compat / simple cases.
+        static bool isNumericString(const std::string &s) {
+            double ignored;
+            return tryParseDouble(s, ignored);
+        }
+
+        static double parseDouble(const std::string &s) {
+            double val = 0.0;
+            tryParseDouble(s, val);
+            return val;
+        }
+
+        static double clampForLongLong(double val) {
+            if (val != val) return 0.0;
+            static const double kMinLL = static_cast<double>(LLONG_MIN + 1);
+            static const double kMaxLL = std::nextafter(static_cast<double>(LLONG_MAX), 0.0);
+            if (val < kMinLL) return kMinLL;
+            if (val > kMaxLL) return kMaxLL;
+            return val;
+        }
+
+        /// Format a double into a string using the given printf format.
+        /// Uses measure-first pattern to avoid truncation for extreme values.
+        static std::string snprintfDouble(const char* fmt, double val) {
+            int needed = std::snprintf(nullptr, 0, fmt, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
+            return std::string(heapBuf.data());
+        }
+
+        /// Format a double with precision into a string using the given printf format.
+        static std::string snprintfDoublePrecision(const char* fmt, int precision, double val) {
+            int needed = std::snprintf(nullptr, 0, fmt, precision, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, precision, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, precision, val);
+            return std::string(heapBuf.data());
+        }
+
+        static std::string applyFormat(const std::string &value, const std::string &spec) {
+            if (spec.empty()) return value;
+
+            double numVal;
+
+            // Fixed-point: .Nf (e.g. ".2f", ".4f")
+            if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
+                if (!tryParseDouble(value, numVal)) return value;
+                std::string digits = spec.substr(1, spec.size() - 2);
+                int precision = safeStoi(digits, 6);
+                if (precision > 50) precision = 50;
+                return snprintfDoublePrecision("%.*f", precision, numVal);
+            }
+
+            // Fixed-point shorthand: Nf (e.g. "2f", "4f")
+            if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
+                if (!tryParseDouble(value, numVal)) return value;
+                int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
+                if (precision > 50) precision = 50;
+                return snprintfDoublePrecision("%.*f", precision, numVal);
+            }
+
+            // Currency: C or c
+            if (spec == "C" || spec == "c") {
+                if (!tryParseDouble(value, numVal)) return value;
+                if (numVal < 0) {
+                    std::string formatted = snprintfDouble("%.2f", -numVal);
+                    if (formatted == "0.00") return "$0.00";
+                    return "-$" + formatted;
+                } else {
+                    std::string formatted = snprintfDouble("%.2f", numVal);
+                    return "$" + formatted;
+                }
+            }
+
+            // Hex: X (upper) or x (lower)
+            if (spec == "X" || spec == "x") {
+                if (!tryParseDouble(value, numVal)) return value;
+                char buf[64];
+                numVal = clampForLongLong(numVal);
+                long long intVal = static_cast<long long>(numVal);
+                unsigned long long uval;
+                std::string result;
+                if (intVal < 0) {
+                    result = "-";
+                    uval = 0ULL - static_cast<unsigned long long>(intVal);
+                } else {
+                    uval = static_cast<unsigned long long>(intVal);
+                }
+                if (spec == "X") {
+                    std::snprintf(buf, sizeof(buf), "%llX", uval);
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%llx", uval);
+                }
+                result += buf;
+                return result;
+            }
+
+            // Scientific: E (upper) or e (lower)
+            if (spec == "E" || spec == "e") {
+                if (!tryParseDouble(value, numVal)) return value;
+                char buf[64];
+                if (spec == "E") {
+                    std::snprintf(buf, sizeof(buf), "%E", numVal);
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%e", numVal);
+                }
+                return std::string(buf);
+            }
+
+            // Percentage: P or p
+            if (spec == "P" || spec == "p") {
+                if (!tryParseDouble(value, numVal)) return value;
+                double pct = numVal * 100.0;
+                if (!std::isfinite(pct)) pct = numVal;
+                return snprintfDouble("%.2f", pct) + "%";
+            }
+
+            // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
+            if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+                if (!tryParseDouble(value, numVal)) return value;
+                char buf[64];
+                numVal = clampForLongLong(numVal);
+                int width = safeStoi(spec.substr(1), 1);
+                if (width > 50) width = 50;
+                long long intVal = static_cast<long long>(numVal);
+                if (intVal < 0) {
+                    unsigned long long absVal = 0ULL - static_cast<unsigned long long>(intVal);
+                    std::snprintf(buf, sizeof(buf), "-%0*llu", width, absVal);
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%0*lld", width, intVal);
+                }
+                return std::string(buf);
+            }
+
+            // Unknown spec — return value as-is
+            return value;
+        }
+
+        /// Split "name:spec" into (name, spec). Returns (placeholder, "") if no colon.
+        static std::pair<std::string, std::string> splitPlaceholder(const std::string &placeholder) {
+            size_t colonPos = placeholder.rfind(':');
+            if (colonPos == std::string::npos) {
+                return std::make_pair(placeholder, std::string());
+            }
+            return std::make_pair(placeholder.substr(0, colonPos), placeholder.substr(colonPos + 1));
+        }
+
+        static std::string formatMessage(const std::string &messageTemplate,
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::string result;
             result.reserve(messageTemplate.length());
-            size_t valueIndex = 0;
+            size_t phIdx = 0;
+            size_t pos = 0;
 
-            for (size_t i = 0; i < messageTemplate.length(); ++i) {
-                if (messageTemplate[i] == '{') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
-                        result += '{';
-                        ++i;
+            while (pos < messageTemplate.length()) {
+                if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
+                    if (phIdx < values.size()) {
+                        result += applyFormat(values[phIdx], placeholders[phIdx].spec);
                     } else {
-                        size_t endPos = messageTemplate.find("}", i);
-                        if (endPos == std::string::npos) {
-                            result += messageTemplate[i];
-                        } else if (valueIndex < values.size()) {
-                            result += values[valueIndex++];
-                            i = endPos;
-                        } else {
-                            result += messageTemplate.substr(i, endPos - i + 1);
-                            i = endPos;
-                        }
+                        result.append(messageTemplate, pos, placeholders[phIdx].endPos - pos + 1);
                     }
-                } else if (messageTemplate[i] == '}') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
-                        result += '}';
-                        ++i;
-                    } else {
-                        result += messageTemplate[i];
-                    }
+                    pos = placeholders[phIdx].endPos + 1;
+                    ++phIdx;
+                } else if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') {
+                    result += '{';
+                    pos += 2;
+                } else if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') {
+                    result += '}';
+                    pos += 2;
                 } else {
-                    result += messageTemplate[i];
+                    size_t litStart = pos;
+                    ++pos;
+                    while (pos < messageTemplate.length()) {
+                        if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) break;
+                        if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') break;
+                        if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') break;
+                        ++pos;
+                    }
+                    result.append(messageTemplate, litStart, pos - litStart);
                 }
             }
             return result;
         }
 
-        template<typename... Args>
         static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(
-            const std::string &messageTemplate, const Args &... args) {
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
-            std::vector<std::string> values{toString(args)...};
-
-            const std::regex& regex = placeholderRegex();
-            auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), regex);
-            auto placeholderEnd = std::sregex_iterator();
 
             size_t valueIndex = 0;
-            for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd && valueIndex < values.size(); ++i) {
-                std::smatch match = *i;
-                std::string placeholder = match[1].str();
-
-                if (placeholder.empty()) {
-                    std::string prefix = match.prefix().str();
-                    if (!prefix.empty() && prefix.back() == '{') {
-                        continue;
-                    }
-                }
-
-                argumentPairs.emplace_back(placeholder, values[valueIndex++]);
+            for (const auto &ph : placeholders) {
+                if (valueIndex >= values.size()) break;
+                argumentPairs.emplace_back(ph.name, values[valueIndex++]);
             }
 
             return argumentPairs;
@@ -751,7 +1212,7 @@ namespace minta {
             m_logger.setContext(key, value);
         }
 
-        ~ContextScope() {
+        ~ContextScope() noexcept {
             m_logger.clearContext(m_key);
         }
 
@@ -767,6 +1228,6 @@ namespace minta {
 } // namespace minta
 
 
-#define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __FUNCTION__
+#define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __func__
 
 #endif // LUNAR_LOG_SINGLE_HEADER_HPP

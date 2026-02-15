@@ -3,6 +3,7 @@
 #include "utils/test_utils.hpp"
 #include <thread>
 #include <chrono>
+#include <algorithm>
 
 class RateLimitingTest : public ::testing::Test {
 protected:
@@ -18,11 +19,12 @@ TEST_F(RateLimitingTest, EnforceRateLimit) {
         logger.info("Message {index}", i);
     }
 
+    logger.flush();
     TestUtils::waitForFileContent("rate_limit_test_log.txt");
     std::string logContent = TestUtils::readLogFile("rate_limit_test_log.txt");
 
-    size_t messageCount = std::count(logContent.begin(), logContent.end(), '\n');
-    EXPECT_EQ(messageCount, 1000);
+    size_t messageCount = static_cast<size_t>(std::count(logContent.begin(), logContent.end(), '\n'));
+    EXPECT_EQ(messageCount, static_cast<size_t>(1000));
 }
 
 TEST_F(RateLimitingTest, ResetAfterRateLimit) {
@@ -37,6 +39,7 @@ TEST_F(RateLimitingTest, ResetAfterRateLimit) {
 
     logger.info("This message should appear after the rate limit reset");
 
+    logger.flush();
     TestUtils::waitForFileContent("rate_limit_test_log.txt");
     std::string logContent = TestUtils::readLogFile("rate_limit_test_log.txt");
 

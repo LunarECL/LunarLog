@@ -3,33 +3,56 @@
 
 #include "formatter_interface.hpp"
 #include "../core/log_common.hpp"
-#include <sstream>
+#include <string>
 
 namespace minta {
     class HumanReadableFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
-            std::ostringstream oss;
-            oss << formatTimestamp(entry.timestamp) << " "
-                << "[" << getLevelString(entry.level) << "] "
-                << entry.message;
+            std::string result;
+            result.reserve(80 + entry.message.size() + entry.file.size() + entry.function.size());
+            result += detail::formatTimestamp(entry.timestamp);
+            result += " [";
+            result += getLevelString(entry.level);
+            result += "] ";
+            result += entry.message;
 
             if (!entry.file.empty()) {
-                oss << " [" << entry.file << ":" << entry.line << " " << entry.function << "]";
+                result += " [";
+                result += entry.file;
+                result += ':';
+                result += std::to_string(entry.line);
+                result += ' ';
+                result += entry.function;
+                result += ']';
             }
 
             if (!entry.customContext.empty()) {
-                oss << " {";
+                result += " {";
                 bool first = true;
                 for (const auto &ctx : entry.customContext) {
-                    if (!first) oss << ", ";
-                    oss << ctx.first << "=" << ctx.second;
+                    if (!first) result += ", ";
+                    result += ctx.first;
+                    result += '=';
+                    // Quote values containing delimiters
+                    if (ctx.second.find(',') != std::string::npos ||
+                        ctx.second.find('=') != std::string::npos ||
+                        ctx.second.find('"') != std::string::npos) {
+                        result += '"';
+                        for (char c : ctx.second) {
+                            if (c == '"') result += '\\';
+                            result += c;
+                        }
+                        result += '"';
+                    } else {
+                        result += ctx.second;
+                    }
                     first = false;
                 }
-                oss << "}";
+                result += '}';
             }
 
-            return oss.str();
+            return result;
         }
     };
 } // namespace minta

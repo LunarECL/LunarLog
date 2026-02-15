@@ -10,25 +10,38 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include <regex>
 #include <type_traits>
 #include <set>
 #include <map>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
+#include <cstdio>
+#include <climits>
+#include <cmath>
+#include <sstream>
 
 namespace minta {
     class LunarLog {
     public:
-        explicit LunarLog(LogLevel minLevel = LogLevel::INFO)
+        explicit LunarLog(LogLevel minLevel = LogLevel::INFO, bool addDefaultConsoleSink = true)
             : m_minLevel(minLevel)
             , m_isRunning(true)
-            , m_lastLogTime(std::chrono::steady_clock::now())
+            , m_rateLimitWindowStart(std::chrono::steady_clock::now().time_since_epoch().count())
             , m_logCount(0)
-            , m_captureContext(false) {
-            addSink<ConsoleSink>();
+            , m_captureSourceLocation(false)
+            , m_hasCustomContext(false)
+            , m_sinkWriteInProgress(false) {
+            if (addDefaultConsoleSink) {
+                addSink<ConsoleSink>();
+            }
             m_logThread = std::thread(&LunarLog::processLogQueue, this);
         }
 
-        ~LunarLog() {
+        // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
+        // while other threads are still calling log methods is undefined behavior.
+        ~LunarLog() noexcept {
+            flush();
             m_isRunning = false;
             m_logCV.notify_one();
             if (m_logThread.joinable()) {
@@ -49,20 +62,38 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
-        void setCaptureContext(bool capture) {
-            m_captureContext.store(capture, std::memory_order_relaxed);
+        void setCaptureSourceLocation(bool capture) {
+            m_captureSourceLocation.store(capture, std::memory_order_relaxed);
         }
 
-        bool getCaptureContext() const {
-            return m_captureContext.load(std::memory_order_relaxed);
+        bool getCaptureSourceLocation() const {
+            return m_captureSourceLocation.load(std::memory_order_relaxed);
+        }
+
+        /// @deprecated Use setCaptureSourceLocation instead.
+        inline void setCaptureContext(bool capture) {
+            setCaptureSourceLocation(capture);
+        }
+
+        /// @deprecated Use getCaptureSourceLocation instead.
+        inline bool getCaptureContext() const {
+            return getCaptureSourceLocation();
+        }
+
+        /// @warning Do not call flush() from within a sink write() implementation.
+        ///          flush() acquires the queue mutex and waits for sink writes to
+        ///          complete, so calling it from inside write() will deadlock.
+        void flush() {
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            m_flushCV.wait(lock, [this] {
+                return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
+            });
         }
 
         template<typename SinkType, typename... Args>
         typename std::enable_if<std::is_base_of<ISink, SinkType>::value>::type
         addSink(Args &&... args) {
-            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
-            sink->setFormatter(detail::make_unique<HumanReadableFormatter>());
-            m_logManager.addSink(std::move(sink));
+            m_logManager.addSink(detail::make_unique<SinkType>(std::forward<Args>(args)...));
         }
 
         template<typename SinkType, typename FormatterType, typename... Args>
@@ -83,8 +114,14 @@ namespace minta {
         }
 
         template<typename... Args>
-        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+        void logWithSourceLocation(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
             logInternal(level, file, line, function, messageTemplate, args...);
+        }
+
+        /// @deprecated Use logWithSourceLocation instead.
+        template<typename... Args>
+        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            logWithSourceLocation(level, file, line, function, messageTemplate, args...);
         }
 
         template<typename... Args>
@@ -120,16 +157,19 @@ namespace minta {
         void setContext(const std::string& key, const std::string& value) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext[key] = value;
+            m_hasCustomContext.store(true, std::memory_order_release);
         }
 
         void clearContext(const std::string& key) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext.erase(key);
+            m_hasCustomContext.store(!m_customContext.empty(), std::memory_order_release);
         }
 
         void clearAllContext() {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext.clear();
+            m_hasCustomContext.store(false, std::memory_order_release);
         }
 
     private:
@@ -138,46 +178,76 @@ namespace minta {
 
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_isRunning;
-        std::chrono::steady_clock::time_point m_lastLogTime;
-        size_t m_logCount;
+        std::atomic<long long> m_rateLimitWindowStart;
+        std::atomic<size_t> m_logCount;
         std::mutex m_queueMutex;
         std::mutex m_contextMutex;
-        std::mutex m_rateLimitMutex;
         std::condition_variable m_logCV;
+        std::condition_variable m_flushCV;
         std::queue<LogEntry> m_logQueue;
         std::thread m_logThread;
         LogManager m_logManager;
         std::map<std::string, std::string> m_customContext;
-        std::atomic<bool> m_captureContext;
+        std::atomic<bool> m_captureSourceLocation;
+        std::atomic<bool> m_hasCustomContext;
+        std::atomic<bool> m_sinkWriteInProgress;
 
-        static const std::regex& placeholderRegex() {
-            static const std::regex instance(R"(\{([^{}]*)\})");
-            return instance;
+        struct PlaceholderInfo {
+            std::string name;
+            std::string fullContent;
+            std::string spec;
+            size_t startPos;
+            size_t endPos;
+        };
+
+        static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
+            std::vector<PlaceholderInfo> placeholders;
+            for (size_t i = 0; i < messageTemplate.length(); ++i) {
+                if (messageTemplate[i] == '{') {
+                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
+                        ++i;
+                        continue;
+                    }
+                    size_t endPos = messageTemplate.find('}', i);
+                    if (endPos == std::string::npos) break;
+                    std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
+                    auto parts = splitPlaceholder(content);
+                    placeholders.push_back({parts.first, content, parts.second, i, endPos});
+                    i = endPos;
+                } else if (messageTemplate[i] == '}') {
+                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
+                        ++i;
+                    }
+                }
+            }
+            return placeholders;
         }
 
         template<typename... Args>
         void logInternal(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            if (!m_isRunning.load(std::memory_order_acquire)) return;
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
-            auto validationResult = validatePlaceholders(messageTemplate, args...);
-            std::string validatedTemplate = validationResult.first;
-            std::vector<std::string> warnings = validationResult.second;
-
             auto now = std::chrono::system_clock::now();
-            std::string message = formatMessage(validatedTemplate, args...);
-            auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
 
-            bool captureCtx = m_captureContext.load(std::memory_order_relaxed);
+            std::vector<std::string> values{toString(args)...};
+
+            auto placeholders = extractPlaceholders(messageTemplate);
+            std::vector<std::string> warnings = validatePlaceholders(placeholders, values);
+            std::string message = formatMessage(messageTemplate, placeholders, values);
+            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
+
+            bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
-            {
+            if (m_hasCustomContext.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
             }
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, validatedTemplate, std::move(argumentPairs),
+                level, std::move(message), now, messageTemplate, std::move(argumentPairs),
                 captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy)
             });
 
@@ -198,60 +268,91 @@ namespace minta {
                 while (!m_logQueue.empty()) {
                     auto entry = std::move(m_logQueue.front());
                     m_logQueue.pop();
+                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
 
-                    m_logManager.log(entry);
+                    try {
+                        m_logManager.log(entry);
+                    } catch (...) {
+                        // Swallow — logging must not crash the application
+                    }
 
+                    // Re-acquire lock BEFORE clearing sinkWriteInProgress and
+                    // notifying, so that flush() cannot miss the state change.
+                    // Without this, flush() can check the predicate (seeing
+                    // sinkWriteInProgress==true), then we set it to false and
+                    // notify, and THEN flush() enters wait — a classic lost wakeup.
                     lock.lock();
+                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
+                    m_flushCV.notify_all();
+                }
+            }
+
+            {
+                std::unique_lock<std::mutex> lock(m_queueMutex);
+                while (!m_logQueue.empty()) {
+                    auto entry = std::move(m_logQueue.front());
+                    m_logQueue.pop();
+                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
+                    lock.unlock();
+                    try {
+                        m_logManager.log(entry);
+                    } catch (...) {
+                        // Swallow — logging must not crash the application
+                    }
+                    lock.lock();
+                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
+                    m_flushCV.notify_all();
                 }
             }
         }
 
+        // Rate limiting is best-effort under concurrent access.
+        //
+        // When the window expires, the first thread to win the CAS resets
+        // m_rateLimitWindowStart and stores m_logCount to 1 (counting its own
+        // message). Concurrent threads that already read the old window but
+        // lose the CAS retry and see the new window; their subsequent
+        // fetch_add on m_logCount races with the store(1), so a small number
+        // of messages at the window boundary may be silently lost or allowed
+        // beyond the limit. This is acceptable for a best-effort rate limiter.
         bool rateLimitCheck() {
-            std::lock_guard<std::mutex> lock(m_rateLimitMutex);
             auto now = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - m_lastLogTime).count();
-            if (duration >= kRateLimitWindowSeconds) {
-                m_lastLogTime = now;
-                m_logCount = 1;
-                return true;
+            long long nowNs = now.time_since_epoch().count();
+            long long windowStart = m_rateLimitWindowStart.load(std::memory_order_relaxed);
+
+            for (;;) {
+                auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::duration(nowNs - windowStart)).count();
+                if (duration < kRateLimitWindowSeconds) break;
+                if (m_rateLimitWindowStart.compare_exchange_weak(windowStart, nowNs,
+                        std::memory_order_relaxed, std::memory_order_relaxed)) {
+                    // Release so that the new count is visible to threads that
+                    // subsequently read it with acquire in fetch_add below.
+                    m_logCount.store(1, std::memory_order_release);
+                    return true;
+                }
             }
-            if (m_logCount >= kRateLimitMaxLogs) {
+            // Acquire pairs with the release-store above: if a window reset just
+            // happened, this thread sees the updated count before incrementing.
+            size_t count = m_logCount.fetch_add(1, std::memory_order_acquire);
+            if (count >= kRateLimitMaxLogs) {
                 return false;
             }
-            ++m_logCount;
             return true;
         }
 
-        template<typename... Args>
-        static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
-            const std::string &messageTemplate, const Args &... args) {
+        static std::vector<std::string> validatePlaceholders(
+            const std::vector<PlaceholderInfo> &placeholders,
+            const std::vector<std::string> &values) {
             std::vector<std::string> warnings;
-            std::vector<std::string> placeholders;
             std::set<std::string> uniquePlaceholders;
-            std::vector<std::string> values{toString(args)...};
 
-            const std::regex& regex = placeholderRegex();
-            auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), regex);
-            auto placeholderEnd = std::sregex_iterator();
-
-            for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
-                std::smatch match = *i;
-                std::string placeholder = match[1].str();
-
-                if (placeholder.empty()) {
-                    std::string prefix = match.prefix().str();
-                    if (!prefix.empty() && prefix.back() == '{') {
-                        continue;
-                    }
-                }
-
-                placeholders.push_back(placeholder);
-
-                if (placeholder.empty()) {
+            for (const auto &ph : placeholders) {
+                if (ph.name.empty()) {
                     warnings.push_back("Warning: Empty placeholder found");
-                } else if (!uniquePlaceholders.insert(placeholder).second) {
-                    warnings.push_back("Warning: Repeated placeholder name: " + placeholder);
+                } else if (!uniquePlaceholders.insert(ph.name).second) {
+                    warnings.push_back("Warning: Repeated placeholder name: " + ph.name);
                 }
             }
 
@@ -261,7 +362,7 @@ namespace minta {
                 warnings.push_back("Warning: More placeholders than provided values");
             }
 
-            return std::make_pair(messageTemplate, warnings);
+            return warnings;
         }
 
         template<typename T>
@@ -271,67 +372,289 @@ namespace minta {
             return oss.str();
         }
 
-        template<typename... Args>
-        static std::string formatMessage(const std::string &messageTemplate, const Args &... args) {
-            std::vector<std::string> values{toString(args)...};
+        static std::string toString(const std::string &value) {
+            return value;
+        }
+
+        static std::string toString(const char *value) {
+            if (!value) return "(null)";
+            return std::string(value);
+        }
+
+        static std::string toString(std::nullptr_t) {
+            return "(null)";
+        }
+
+        static std::string toString(int value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(long long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned int value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(unsigned long long value) {
+            return std::to_string(value);
+        }
+
+        static std::string toString(bool value) {
+            return value ? "true" : "false";
+        }
+
+        static std::string toString(double value) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.15g", value);
+            return std::string(buf);
+        }
+
+        static std::string toString(float value) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(value));
+            return std::string(buf);
+        }
+
+        /// Safely parse an integer from a string. Returns fallback on failure.
+        static int safeStoi(const std::string &s, int fallback = 0) {
+            if (s.empty()) return fallback;
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(s[i]))) return fallback;
+            }
+            try { return std::stoi(s); } catch (...) { return fallback; }
+        }
+
+        /// Try to parse a string as a double. Returns true on success and sets out.
+        /// Single strtod call replaces the old isNumericString+parseDouble pair.
+        static bool tryParseDouble(const std::string &s, double &out) {
+            if (s.empty()) return false;
+            const char* start = s.c_str();
+            char* end = nullptr;
+            errno = 0;
+            double val = std::strtod(start, &end);
+            if (errno == ERANGE || end == start || static_cast<size_t>(end - start) != s.size()) {
+                errno = 0;
+                return false;
+            }
+            errno = 0;
+            if (std::isinf(val) || std::isnan(val)) return false;
+            out = val;
+            return true;
+        }
+
+        /// Kept for backward compat / simple cases.
+        static bool isNumericString(const std::string &s) {
+            double ignored;
+            return tryParseDouble(s, ignored);
+        }
+
+        static double parseDouble(const std::string &s) {
+            double val = 0.0;
+            tryParseDouble(s, val);
+            return val;
+        }
+
+        static double clampForLongLong(double val) {
+            if (val != val) return 0.0;
+            static const double kMinLL = static_cast<double>(LLONG_MIN + 1);
+            static const double kMaxLL = std::nextafter(static_cast<double>(LLONG_MAX), 0.0);
+            if (val < kMinLL) return kMinLL;
+            if (val > kMaxLL) return kMaxLL;
+            return val;
+        }
+
+        /// Format a double into a string using the given printf format.
+        /// Uses measure-first pattern to avoid truncation for extreme values.
+        static std::string snprintfDouble(const char* fmt, double val) {
+            int needed = std::snprintf(nullptr, 0, fmt, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
+            return std::string(heapBuf.data());
+        }
+
+        /// Format a double with precision into a string using the given printf format.
+        static std::string snprintfDoublePrecision(const char* fmt, int precision, double val) {
+            int needed = std::snprintf(nullptr, 0, fmt, precision, val);
+            if (needed < 0) return std::string();
+            if (static_cast<size_t>(needed) < 256) {
+                char stackBuf[256];
+                std::snprintf(stackBuf, sizeof(stackBuf), fmt, precision, val);
+                return std::string(stackBuf);
+            }
+            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
+            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, precision, val);
+            return std::string(heapBuf.data());
+        }
+
+        static std::string applyFormat(const std::string &value, const std::string &spec) {
+            if (spec.empty()) return value;
+
+            double numVal;
+
+            // Fixed-point: .Nf (e.g. ".2f", ".4f")
+            if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
+                if (!tryParseDouble(value, numVal)) return value;
+                std::string digits = spec.substr(1, spec.size() - 2);
+                int precision = safeStoi(digits, 6);
+                if (precision > 50) precision = 50;
+                return snprintfDoublePrecision("%.*f", precision, numVal);
+            }
+
+            // Fixed-point shorthand: Nf (e.g. "2f", "4f")
+            if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
+                if (!tryParseDouble(value, numVal)) return value;
+                int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
+                if (precision > 50) precision = 50;
+                return snprintfDoublePrecision("%.*f", precision, numVal);
+            }
+
+            // Currency: C or c
+            if (spec == "C" || spec == "c") {
+                if (!tryParseDouble(value, numVal)) return value;
+                if (numVal < 0) {
+                    std::string formatted = snprintfDouble("%.2f", -numVal);
+                    if (formatted == "0.00") return "$0.00";
+                    return "-$" + formatted;
+                } else {
+                    std::string formatted = snprintfDouble("%.2f", numVal);
+                    return "$" + formatted;
+                }
+            }
+
+            // Hex: X (upper) or x (lower)
+            if (spec == "X" || spec == "x") {
+                if (!tryParseDouble(value, numVal)) return value;
+                char buf[64];
+                numVal = clampForLongLong(numVal);
+                long long intVal = static_cast<long long>(numVal);
+                unsigned long long uval;
+                std::string result;
+                if (intVal < 0) {
+                    result = "-";
+                    uval = 0ULL - static_cast<unsigned long long>(intVal);
+                } else {
+                    uval = static_cast<unsigned long long>(intVal);
+                }
+                if (spec == "X") {
+                    std::snprintf(buf, sizeof(buf), "%llX", uval);
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%llx", uval);
+                }
+                result += buf;
+                return result;
+            }
+
+            // Scientific: E (upper) or e (lower)
+            if (spec == "E" || spec == "e") {
+                if (!tryParseDouble(value, numVal)) return value;
+                char buf[64];
+                if (spec == "E") {
+                    std::snprintf(buf, sizeof(buf), "%E", numVal);
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%e", numVal);
+                }
+                return std::string(buf);
+            }
+
+            // Percentage: P or p
+            if (spec == "P" || spec == "p") {
+                if (!tryParseDouble(value, numVal)) return value;
+                double pct = numVal * 100.0;
+                if (!std::isfinite(pct)) pct = numVal;
+                return snprintfDouble("%.2f", pct) + "%";
+            }
+
+            // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
+            if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+                if (!tryParseDouble(value, numVal)) return value;
+                char buf[64];
+                numVal = clampForLongLong(numVal);
+                int width = safeStoi(spec.substr(1), 1);
+                if (width > 50) width = 50;
+                long long intVal = static_cast<long long>(numVal);
+                if (intVal < 0) {
+                    unsigned long long absVal = 0ULL - static_cast<unsigned long long>(intVal);
+                    std::snprintf(buf, sizeof(buf), "-%0*llu", width, absVal);
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%0*lld", width, intVal);
+                }
+                return std::string(buf);
+            }
+
+            // Unknown spec — return value as-is
+            return value;
+        }
+
+        /// Split "name:spec" into (name, spec). Returns (placeholder, "") if no colon.
+        static std::pair<std::string, std::string> splitPlaceholder(const std::string &placeholder) {
+            size_t colonPos = placeholder.rfind(':');
+            if (colonPos == std::string::npos) {
+                return std::make_pair(placeholder, std::string());
+            }
+            return std::make_pair(placeholder.substr(0, colonPos), placeholder.substr(colonPos + 1));
+        }
+
+        static std::string formatMessage(const std::string &messageTemplate,
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::string result;
             result.reserve(messageTemplate.length());
-            size_t valueIndex = 0;
+            size_t phIdx = 0;
+            size_t pos = 0;
 
-            for (size_t i = 0; i < messageTemplate.length(); ++i) {
-                if (messageTemplate[i] == '{') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
-                        result += '{';
-                        ++i;
+            while (pos < messageTemplate.length()) {
+                if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
+                    if (phIdx < values.size()) {
+                        result += applyFormat(values[phIdx], placeholders[phIdx].spec);
                     } else {
-                        size_t endPos = messageTemplate.find("}", i);
-                        if (endPos == std::string::npos) {
-                            result += messageTemplate[i];
-                        } else if (valueIndex < values.size()) {
-                            result += values[valueIndex++];
-                            i = endPos;
-                        } else {
-                            result += messageTemplate.substr(i, endPos - i + 1);
-                            i = endPos;
-                        }
+                        result.append(messageTemplate, pos, placeholders[phIdx].endPos - pos + 1);
                     }
-                } else if (messageTemplate[i] == '}') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
-                        result += '}';
-                        ++i;
-                    } else {
-                        result += messageTemplate[i];
-                    }
+                    pos = placeholders[phIdx].endPos + 1;
+                    ++phIdx;
+                } else if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') {
+                    result += '{';
+                    pos += 2;
+                } else if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') {
+                    result += '}';
+                    pos += 2;
                 } else {
-                    result += messageTemplate[i];
+                    size_t litStart = pos;
+                    ++pos;
+                    while (pos < messageTemplate.length()) {
+                        if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) break;
+                        if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') break;
+                        if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') break;
+                        ++pos;
+                    }
+                    result.append(messageTemplate, litStart, pos - litStart);
                 }
             }
             return result;
         }
 
-        template<typename... Args>
         static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(
-            const std::string &messageTemplate, const Args &... args) {
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
-            std::vector<std::string> values{toString(args)...};
-
-            const std::regex& regex = placeholderRegex();
-            auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), regex);
-            auto placeholderEnd = std::sregex_iterator();
 
             size_t valueIndex = 0;
-            for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd && valueIndex < values.size(); ++i) {
-                std::smatch match = *i;
-                std::string placeholder = match[1].str();
-
-                if (placeholder.empty()) {
-                    std::string prefix = match.prefix().str();
-                    if (!prefix.empty() && prefix.back() == '{') {
-                        continue;
-                    }
-                }
-
-                argumentPairs.emplace_back(placeholder, values[valueIndex++]);
+            for (const auto &ph : placeholders) {
+                if (valueIndex >= values.size()) break;
+                argumentPairs.emplace_back(ph.name, values[valueIndex++]);
             }
 
             return argumentPairs;
@@ -345,7 +668,7 @@ namespace minta {
             m_logger.setContext(key, value);
         }
 
-        ~ContextScope() {
+        ~ContextScope() noexcept {
             m_logger.clearContext(m_key);
         }
 

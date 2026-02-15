@@ -19,6 +19,7 @@ TEST_F(LogLevelsTest, RespectLogLevel) {
     logger.error("Error message");
     logger.fatal("Fatal message");
 
+    logger.flush();
     TestUtils::waitForFileContent("level_test_log.txt");
     std::string logContent = TestUtils::readLogFile("level_test_log.txt");
 
@@ -42,6 +43,7 @@ TEST_F(LogLevelsTest, ChangeLogLevel) {
     logger.warn("This should now be logged");
     logger.info("This should still not be logged");
 
+    logger.flush();
     TestUtils::waitForFileContent("level_test_log.txt");
     std::string logContent = TestUtils::readLogFile("level_test_log.txt");
 

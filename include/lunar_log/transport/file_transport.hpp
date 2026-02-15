@@ -21,7 +21,7 @@ namespace minta {
             if (!m_file.good()) {
                 return;
             }
-            m_file << formattedEntry << std::endl;
+            m_file << formattedEntry << '\n' << std::flush;
         }
 
     private:

@@ -69,7 +69,7 @@ include/
 class MyFormatter : public minta::IFormatter {
 public:
     std::string format(const minta::LogEntry &entry) const override {
-        return "[" + entry.levelStr + "] " + entry.message + "\n";
+        return "[" + minta::getLevelString(entry.level) + "] " + entry.message + "\n";
     }
 };
 

@@ -5,7 +5,7 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
-#include <vector>
+#include <ctime>
 #include <memory>
 
 namespace minta {
@@ -24,8 +24,15 @@ namespace detail {
         auto nowTime = std::chrono::system_clock::to_time_t(time);
         auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()) % 1000;
 
+        std::tm tmBuf;
+#if defined(_MSC_VER)
+        localtime_s(&tmBuf, &nowTime);
+#else
+        localtime_r(&nowTime, &tmBuf);
+#endif
+
         std::ostringstream oss;
-        oss << std::put_time(std::localtime(&nowTime), "%Y-%m-%d %H:%M:%S");
+        oss << std::put_time(&tmBuf, "%Y-%m-%d %H:%M:%S");
         oss << '.' << std::setfill('0') << std::setw(3) << nowMs.count();
         return oss.str();
     }

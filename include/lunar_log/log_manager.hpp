@@ -8,6 +8,8 @@
 namespace minta {
     class LogManager {
     public:
+        // NOTE: addSink is not thread-safe after logging starts.
+        // Add all sinks before any log calls are made.
         void addSink(std::unique_ptr<ISink> sink) {
             m_sinks.push_back(std::move(sink));
         }

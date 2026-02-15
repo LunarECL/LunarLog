@@ -10,7 +10,7 @@ namespace minta {
     public:
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(m_mutex);
-            std::cout << formattedEntry << std::endl;
+            std::cout << formattedEntry << '\n' << std::flush;
         }
 
     private:

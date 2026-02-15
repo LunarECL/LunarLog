@@ -25,9 +25,10 @@ namespace minta {
             if (!entry.customContext.empty()) {
                 xml << "<context>";
                 for (const auto &ctx : entry.customContext) {
-                    xml << "<" << escapeXmlString(ctx.first) << ">";
+                    std::string safeName = sanitizeXmlName(ctx.first);
+                    xml << "<" << safeName << ">";
                     xml << escapeXmlString(ctx.second);
-                    xml << "</" << escapeXmlString(ctx.first) << ">";
+                    xml << "</" << safeName << ">";
                 }
                 xml << "</context>";
             }
@@ -37,6 +38,24 @@ namespace minta {
         }
 
     private:
+        static std::string sanitizeXmlName(const std::string &input) {
+            if (input.empty()) return "_";
+            std::string result;
+            result.reserve(input.size());
+            for (size_t i = 0; i < input.size(); ++i) {
+                char c = input[i];
+                bool valid = (c == '_' || c == ':') ||
+                             (c >= 'A' && c <= 'Z') ||
+                             (c >= 'a' && c <= 'z') ||
+                             (i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'));
+                result += valid ? c : '_';
+            }
+            if (result.empty() || result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
+                result.insert(result.begin(), '_');
+            }
+            return result;
+        }
+
         static std::string escapeXmlString(const std::string &input) {
             std::ostringstream result;
             for (char c : input) {

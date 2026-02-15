@@ -10,10 +10,12 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include <regex>
 #include <type_traits>
 #include <set>
 #include <map>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
 
 namespace minta {
     class LunarLog {
@@ -21,7 +23,7 @@ namespace minta {
         explicit LunarLog(LogLevel minLevel = LogLevel::INFO)
             : m_minLevel(minLevel)
             , m_isRunning(true)
-            , m_lastLogTime(std::chrono::steady_clock::now())
+            , m_rateLimitWindowStart(std::chrono::steady_clock::now())
             , m_logCount(0)
             , m_captureContext(false) {
             addSink<ConsoleSink>();
@@ -29,6 +31,7 @@ namespace minta {
         }
 
         ~LunarLog() {
+            flush();
             m_isRunning = false;
             m_logCV.notify_one();
             if (m_logThread.joinable()) {
@@ -57,11 +60,15 @@ namespace minta {
             return m_captureContext.load(std::memory_order_relaxed);
         }
 
+        void flush() {
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            m_flushCV.wait(lock, [this] { return m_logQueue.empty(); });
+        }
+
         template<typename SinkType, typename... Args>
         typename std::enable_if<std::is_base_of<ISink, SinkType>::value>::type
         addSink(Args &&... args) {
             auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
-            sink->setFormatter(detail::make_unique<HumanReadableFormatter>());
             m_logManager.addSink(std::move(sink));
         }
 
@@ -138,21 +145,46 @@ namespace minta {
 
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_isRunning;
-        std::chrono::steady_clock::time_point m_lastLogTime;
-        size_t m_logCount;
+        std::chrono::steady_clock::time_point m_rateLimitWindowStart;
+        std::atomic<size_t> m_logCount;
         std::mutex m_queueMutex;
         std::mutex m_contextMutex;
-        std::mutex m_rateLimitMutex;
         std::condition_variable m_logCV;
+        std::condition_variable m_flushCV;
         std::queue<LogEntry> m_logQueue;
         std::thread m_logThread;
         LogManager m_logManager;
         std::map<std::string, std::string> m_customContext;
         std::atomic<bool> m_captureContext;
 
-        static const std::regex& placeholderRegex() {
-            static const std::regex instance(R"(\{([^{}]*)\})");
-            return instance;
+        struct PlaceholderInfo {
+            std::string name;
+            std::string fullContent;
+            size_t startPos;
+            size_t endPos;
+        };
+
+        static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
+            std::vector<PlaceholderInfo> placeholders;
+            for (size_t i = 0; i < messageTemplate.length(); ++i) {
+                if (messageTemplate[i] == '{') {
+                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
+                        ++i;
+                        continue;
+                    }
+                    size_t endPos = messageTemplate.find('}', i);
+                    if (endPos == std::string::npos) break;
+                    std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
+                    auto parts = splitPlaceholder(content);
+                    placeholders.push_back({parts.first, content, i, endPos});
+                    i = endPos;
+                } else if (messageTemplate[i] == '}') {
+                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
+                        ++i;
+                    }
+                }
+            }
+            return placeholders;
         }
 
         template<typename... Args>
@@ -204,22 +236,35 @@ namespace minta {
 
                     lock.lock();
                 }
+
+                m_flushCV.notify_all();
+            }
+
+            {
+                std::unique_lock<std::mutex> lock(m_queueMutex);
+                while (!m_logQueue.empty()) {
+                    auto entry = std::move(m_logQueue.front());
+                    m_logQueue.pop();
+                    lock.unlock();
+                    m_logManager.log(entry);
+                    lock.lock();
+                }
+                m_flushCV.notify_all();
             }
         }
 
         bool rateLimitCheck() {
-            std::lock_guard<std::mutex> lock(m_rateLimitMutex);
             auto now = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - m_lastLogTime).count();
+            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - m_rateLimitWindowStart).count();
             if (duration >= kRateLimitWindowSeconds) {
-                m_lastLogTime = now;
-                m_logCount = 1;
+                m_rateLimitWindowStart = now;
+                m_logCount.store(1, std::memory_order_relaxed);
                 return true;
             }
-            if (m_logCount >= kRateLimitMaxLogs) {
+            size_t count = m_logCount.fetch_add(1, std::memory_order_relaxed);
+            if (count >= kRateLimitMaxLogs) {
                 return false;
             }
-            ++m_logCount;
             return true;
         }
 
@@ -227,33 +272,16 @@ namespace minta {
         static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
             const std::string &messageTemplate, const Args &... args) {
             std::vector<std::string> warnings;
-            std::vector<std::string> placeholders;
             std::set<std::string> uniquePlaceholders;
             std::vector<std::string> values{toString(args)...};
 
-            const std::regex& regex = placeholderRegex();
-            auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), regex);
-            auto placeholderEnd = std::sregex_iterator();
+            auto placeholders = extractPlaceholders(messageTemplate);
 
-            for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd; ++i) {
-                std::smatch match = *i;
-                std::string placeholder = match[1].str();
-
-                if (placeholder.empty()) {
-                    std::string prefix = match.prefix().str();
-                    if (!prefix.empty() && prefix.back() == '{') {
-                        continue;
-                    }
-                }
-
-                auto parts = splitPlaceholder(placeholder);
-                std::string name = parts.first;
-                placeholders.push_back(placeholder);
-
-                if (name.empty()) {
+            for (const auto &ph : placeholders) {
+                if (ph.name.empty()) {
                     warnings.push_back("Warning: Empty placeholder found");
-                } else if (!uniquePlaceholders.insert(name).second) {
-                    warnings.push_back("Warning: Repeated placeholder name: " + name);
+                } else if (!uniquePlaceholders.insert(ph.name).second) {
+                    warnings.push_back("Warning: Repeated placeholder name: " + ph.name);
                 }
             }
 
@@ -294,20 +322,38 @@ namespace minta {
             try { return std::stoi(s); } catch (...) { return fallback; }
         }
 
-        /// Apply a format spec to a stringified value.
-        /// Supported specs: .Nf, Nf, C/c, X/x, E/e, P/p, 0N.
-        /// Non-numeric values or unknown specs pass through unchanged.
+        static double parseDouble(const std::string &s) {
+            if (s.empty()) return 0.0;
+            const char* start = s.c_str();
+            char* end = nullptr;
+            errno = 0;
+            double val = std::strtod(start, &end);
+            if (errno == ERANGE || end == start || static_cast<size_t>(end - start) != s.size()) {
+                errno = 0;
+                return 0.0;
+            }
+            errno = 0;
+            return val;
+        }
+
+        static bool isNumericString(const std::string &s) {
+            if (s.empty()) return false;
+            const char* start = s.c_str();
+            char* end = nullptr;
+            errno = 0;
+            std::strtod(start, &end);
+            bool ok = (errno == 0 && end != start && static_cast<size_t>(end - start) == s.size());
+            errno = 0;
+            return ok;
+        }
+
         static std::string applyFormat(const std::string &value, const std::string &spec) {
             if (spec.empty()) return value;
 
             double numVal = 0;
-            bool isNumeric = false;
-            try {
-                size_t pos = 0;
-                numVal = std::stod(value, &pos);
-                isNumeric = (pos == value.size());
-            } catch (...) {
-                isNumeric = false;
+            bool isNumeric = isNumericString(value);
+            if (isNumeric) {
+                numVal = parseDouble(value);
             }
 
             std::ostringstream oss;
@@ -463,24 +509,12 @@ namespace minta {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
             std::vector<std::string> values{toString(args)...};
 
-            const std::regex& regex = placeholderRegex();
-            auto placeholderBegin = std::sregex_iterator(messageTemplate.begin(), messageTemplate.end(), regex);
-            auto placeholderEnd = std::sregex_iterator();
+            auto placeholders = extractPlaceholders(messageTemplate);
 
             size_t valueIndex = 0;
-            for (std::sregex_iterator i = placeholderBegin; i != placeholderEnd && valueIndex < values.size(); ++i) {
-                std::smatch match = *i;
-                std::string placeholder = match[1].str();
-
-                if (placeholder.empty()) {
-                    std::string prefix = match.prefix().str();
-                    if (!prefix.empty() && prefix.back() == '{') {
-                        continue;
-                    }
-                }
-
-                auto parts = splitPlaceholder(placeholder);
-                argumentPairs.emplace_back(parts.first, values[valueIndex++]);
+            for (const auto &ph : placeholders) {
+                if (valueIndex >= values.size()) break;
+                argumentPairs.emplace_back(ph.name, values[valueIndex++]);
             }
 
             return argumentPairs;

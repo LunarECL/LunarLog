@@ -18,6 +18,7 @@ TEST_F(RateLimitingTest, EnforceRateLimit) {
         logger.info("Message {index}", i);
     }
 
+    logger.flush();
     TestUtils::waitForFileContent("rate_limit_test_log.txt");
     std::string logContent = TestUtils::readLogFile("rate_limit_test_log.txt");
 

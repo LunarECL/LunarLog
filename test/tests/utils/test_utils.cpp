@@ -38,7 +38,8 @@ void TestUtils::cleanupLogFiles() {
         "test_log.txt", "level_test_log.txt", "rate_limit_test_log.txt",
         "escaped_brackets_test.txt", "test_log1.txt", "test_log2.txt",
         "validation_test_log.txt", "custom_formatter_log.txt", "json_formatter_log.txt", "xml_formatter_log.txt",
-        "context_test_log.txt", "default_formatter_log.txt"
+        "context_test_log.txt", "default_formatter_log.txt",
+        "suffix_format_test.txt", "suffix_json_test.txt", "suffix_xml_test.txt"
     };
 
     for (const auto &filename : filesToRemove) {

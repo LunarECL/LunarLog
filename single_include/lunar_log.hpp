@@ -723,6 +723,7 @@ namespace minta {
                 if (isNumeric) {
                     std::string digits = spec.substr(1, spec.size() - 2);
                     int precision = safeStoi(digits, 6);
+                    if (precision > 50) precision = 50;
                     oss << std::fixed << std::setprecision(precision) << numVal;
                     return oss.str();
                 }
@@ -733,6 +734,7 @@ namespace minta {
             if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
                 if (isNumeric) {
                     int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
+                    if (precision > 50) precision = 50;
                     oss << std::fixed << std::setprecision(precision) << numVal;
                     return oss.str();
                 }
@@ -756,14 +758,18 @@ namespace minta {
             if (spec == "X" || spec == "x") {
                 if (isNumeric) {
                     long long intVal = static_cast<long long>(numVal);
+                    unsigned long long uval;
                     if (intVal < 0) {
                         oss << "-";
-                        intVal = -intVal;
+                        // Unsigned negation avoids UB when intVal == LLONG_MIN
+                        uval = 0ULL - static_cast<unsigned long long>(intVal);
+                    } else {
+                        uval = static_cast<unsigned long long>(intVal);
                     }
                     if (spec == "X") {
-                        oss << std::uppercase << std::hex << intVal;
+                        oss << std::uppercase << std::hex << uval;
                     } else {
-                        oss << std::hex << intVal;
+                        oss << std::hex << uval;
                     }
                     return oss.str();
                 }
@@ -796,6 +802,7 @@ namespace minta {
             if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
                 if (isNumeric) {
                     int width = safeStoi(spec.substr(1), 1);
+                    if (width > 50) width = 50;
                     long long intVal = static_cast<long long>(numVal);
                     oss << std::setfill('0') << std::setw(width) << intVal;
                     return oss.str();

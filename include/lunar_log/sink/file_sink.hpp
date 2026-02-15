@@ -6,17 +6,11 @@
 #include "../transport/file_transport.hpp"
 
 namespace minta {
-    class FileSink : public ISink {
+    class FileSink : public BaseSink {
     public:
         explicit FileSink(const std::string &filename) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             setTransport(detail::make_unique<FileTransport>(filename));
-        }
-
-        void write(const LogEntry &entry) override {
-            if (m_formatter && m_transport) {
-                m_transport->write(m_formatter->format(entry));
-            }
         }
     };
 } // namespace minta

@@ -6,17 +6,11 @@
 #include "../transport/stdout_transport.hpp"
 
 namespace minta {
-    class ConsoleSink : public ISink {
+    class ConsoleSink : public BaseSink {
     public:
         ConsoleSink() {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             setTransport(detail::make_unique<StdoutTransport>());
-        }
-
-        void write(const LogEntry &entry) override {
-            if (m_formatter && m_transport) {
-                m_transport->write(m_formatter->format(entry));
-            }
         }
     };
 } // namespace minta

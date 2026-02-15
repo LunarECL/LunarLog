@@ -12,7 +12,7 @@ TEST_F(ContextCaptureTest, CaptureGlobalContext) {
     minta::LunarLog logger(minta::LogLevel::INFO);
     logger.addSink<minta::FileSink>("context_test_log.txt");
 
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
     logger.setContext("session_id", "abc123");
     logger.info("Log with global context");
 
@@ -28,7 +28,7 @@ TEST_F(ContextCaptureTest, CaptureScopedContext) {
     minta::LunarLog logger(minta::LogLevel::INFO);
     logger.addSink<minta::FileSink>("context_test_log.txt");
 
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
     logger.setContext("session_id", "abc123");
 
     {
@@ -56,7 +56,7 @@ TEST_F(ContextCaptureTest, ClearContext) {
     minta::LunarLog logger(minta::LogLevel::INFO);
     logger.addSink<minta::FileSink>("context_test_log.txt");
 
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
     logger.setContext("session_id", "abc123");
     logger.info("Log with context");
 

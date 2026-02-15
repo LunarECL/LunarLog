@@ -41,7 +41,7 @@ namespace minta {
 
         // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
         // while other threads are still calling log methods is undefined behavior.
-        ~LunarLog() {
+        ~LunarLog() noexcept {
             flush();
             m_isRunning = false;
             m_logCV.notify_one();
@@ -230,12 +230,10 @@ namespace minta {
             std::vector<std::string> values{toString(args)...};
 
             auto placeholders = extractPlaceholders(messageTemplate);
-            auto validationResult = validatePlaceholders(messageTemplate, placeholders, values);
-            std::string validatedTemplate = validationResult.first;
-            std::vector<std::string> warnings = validationResult.second;
+            std::vector<std::string> warnings = validatePlaceholders(placeholders, values);
 
             auto now = std::chrono::system_clock::now();
-            std::string message = formatMessage(validatedTemplate, placeholders, values);
+            std::string message = formatMessage(messageTemplate, placeholders, values);
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
 
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
@@ -247,7 +245,7 @@ namespace minta {
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, validatedTemplate, std::move(argumentPairs),
+                level, std::move(message), now, messageTemplate, std::move(argumentPairs),
                 captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy)
             });
 
@@ -274,12 +272,12 @@ namespace minta {
 
                     m_logManager.log(entry);
                     m_sinkWriteInProgress.store(false, std::memory_order_release);
+                    // Notify after every individual write so that flush() wakes up
+                    // promptly even when producers keep adding messages.
+                    m_flushCV.notify_all();
 
                     lock.lock();
                 }
-
-                lock.unlock();
-                m_flushCV.notify_all();
             }
 
             {
@@ -291,16 +289,21 @@ namespace minta {
                     lock.unlock();
                     m_logManager.log(entry);
                     m_sinkWriteInProgress.store(false, std::memory_order_release);
+                    m_flushCV.notify_all();
                     lock.lock();
                 }
-                lock.unlock();
-                m_flushCV.notify_all();
             }
         }
 
-        // Rate limiting is best-effort under concurrent access. The window reset
-        // and count increment are not atomic together, so racing threads may
-        // slightly exceed or undercount the 1000-message-per-second limit.
+        // Rate limiting is best-effort under concurrent access.
+        //
+        // When the window expires, the first thread to win the CAS resets
+        // m_rateLimitWindowStart and stores m_logCount to 1 (counting its own
+        // message). Concurrent threads that already read the old window but
+        // lose the CAS retry and see the new window; their subsequent
+        // fetch_add on m_logCount races with the store(1), so a small number
+        // of messages at the window boundary may be silently lost or allowed
+        // beyond the limit. This is acceptable for a best-effort rate limiter.
         bool rateLimitCheck() {
             auto now = std::chrono::steady_clock::now();
             long long nowNs = now.time_since_epoch().count();
@@ -323,8 +326,8 @@ namespace minta {
             return true;
         }
 
-        static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
-            const std::string &messageTemplate, const std::vector<PlaceholderInfo> &placeholders,
+        static std::vector<std::string> validatePlaceholders(
+            const std::vector<PlaceholderInfo> &placeholders,
             const std::vector<std::string> &values) {
             std::vector<std::string> warnings;
             std::set<std::string> uniquePlaceholders;
@@ -343,7 +346,7 @@ namespace minta {
                 warnings.push_back("Warning: More placeholders than provided values");
             }
 
-            return std::make_pair(messageTemplate, warnings);
+            return warnings;
         }
 
         template<typename T>
@@ -476,8 +479,6 @@ namespace minta {
         static std::string applyFormat(const std::string &value, const std::string &spec) {
             if (spec.empty()) return value;
 
-            char buf[64];
-
             // Fixed-point: .Nf (e.g. ".2f", ".4f")
             if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
                 if (!isNumericString(value)) return value;
@@ -513,6 +514,7 @@ namespace minta {
             // Hex: X (upper) or x (lower)
             if (spec == "X" || spec == "x") {
                 if (!isNumericString(value)) return value;
+                char buf[64];
                 double numVal = clampForLongLong(parseDouble(value));
                 long long intVal = static_cast<long long>(numVal);
                 unsigned long long uval;
@@ -535,6 +537,7 @@ namespace minta {
             // Scientific: E (upper) or e (lower)
             if (spec == "E" || spec == "e") {
                 if (!isNumericString(value)) return value;
+                char buf[64];
                 double numVal = parseDouble(value);
                 if (spec == "E") {
                     std::snprintf(buf, sizeof(buf), "%E", numVal);
@@ -554,6 +557,7 @@ namespace minta {
             // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
             if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
                 if (!isNumericString(value)) return value;
+                char buf[64];
                 double numVal = clampForLongLong(parseDouble(value));
                 int width = safeStoi(spec.substr(1), 1);
                 if (width > 50) width = 50;
@@ -638,7 +642,7 @@ namespace minta {
             m_logger.setContext(key, value);
         }
 
-        ~ContextScope() {
+        ~ContextScope() noexcept {
             m_logger.clearContext(m_key);
         }
 

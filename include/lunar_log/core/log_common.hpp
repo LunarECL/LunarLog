@@ -31,6 +31,10 @@ namespace detail {
 
         char buf[32];
         size_t pos = std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmBuf);
+        if (pos == 0) {
+            buf[0] = '\0';
+            pos = 0;
+        }
         std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>(nowMs.count()));
         return std::string(buf);
     }

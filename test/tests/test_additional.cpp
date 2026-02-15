@@ -18,9 +18,9 @@ public:
     }
 
     void write(const minta::LogEntry &entry) override {
-        if (m_formatter) {
+        if (formatter()) {
             std::lock_guard<std::mutex> lock(m_mutex);
-            m_output += m_formatter->format(entry) + "\n";
+            m_output += formatter()->format(entry) + "\n";
         }
     }
 

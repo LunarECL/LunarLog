@@ -24,10 +24,25 @@ namespace minta {
             m_transport = std::move(transport);
         }
 
+        IFormatter* formatter() const { return m_formatter.get(); }
+        ITransport* transport() const { return m_transport.get(); }
+
+    private:
         std::unique_ptr<IFormatter> m_formatter;
         std::unique_ptr<ITransport> m_transport;
 
         friend class LunarLog;
+    };
+
+    class BaseSink : public ISink {
+    public:
+        void write(const LogEntry &entry) override {
+            IFormatter* fmt = formatter();
+            ITransport* tp = transport();
+            if (fmt && tp) {
+                tp->write(fmt->format(entry));
+            }
+        }
     };
 } // namespace minta
 

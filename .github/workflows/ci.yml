@@ -79,7 +79,7 @@ jobs:
 
       - name: Generate coverage report
         run: |
-          lcov --capture --directory build --output-file coverage_raw.info \
+          lcov --capture --directory build --base-directory . --output-file coverage_raw.info \
             --no-external --ignore-errors mismatch
           lcov --remove coverage_raw.info \
             '*/build/_deps/*' \

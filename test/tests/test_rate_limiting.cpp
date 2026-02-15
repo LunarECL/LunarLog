@@ -3,6 +3,7 @@
 #include "utils/test_utils.hpp"
 #include <thread>
 #include <chrono>
+#include <algorithm>
 
 class RateLimitingTest : public ::testing::Test {
 protected:

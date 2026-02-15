@@ -21,7 +21,7 @@ public:
 
 TEST_F(Round7FixTest, ThrowingSinkDoesNotCrash) {
     minta::LunarLog logger(minta::LogLevel::TRACE, false);
-    logger.addCustomSink(std::make_unique<ThrowingSink>());
+    logger.addCustomSink(std::unique_ptr<ThrowingSink>(new ThrowingSink()));
 
     // This should NOT call std::terminate
     logger.info("This should not crash");
@@ -34,7 +34,7 @@ TEST_F(Round7FixTest, ThrowingSinkDoesNotCrash) {
 // M1: Throwing sink shouldn't block other logging after
 TEST_F(Round7FixTest, ThrowingSinkAllowsSubsequentLogs) {
     minta::LunarLog logger(minta::LogLevel::TRACE, false);
-    logger.addCustomSink(std::make_unique<ThrowingSink>());
+    logger.addCustomSink(std::unique_ptr<ThrowingSink>(new ThrowingSink()));
     logger.addSink<minta::FileSink>("test_log.txt");
 
     logger.info("Message through throwing + file sinks");

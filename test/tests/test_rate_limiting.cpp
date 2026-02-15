@@ -38,6 +38,7 @@ TEST_F(RateLimitingTest, ResetAfterRateLimit) {
 
     logger.info("This message should appear after the rate limit reset");
 
+    logger.flush();
     TestUtils::waitForFileContent("rate_limit_test_log.txt");
     std::string logContent = TestUtils::readLogFile("rate_limit_test_log.txt");
 

@@ -17,6 +17,6 @@
 #include "lunar_log/log_manager.hpp"
 #include "lunar_log/log_source.hpp"
 
-#define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __FUNCTION__
+#define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __func__
 
 #endif // LUNAR_LOG_HPP

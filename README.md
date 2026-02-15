@@ -76,10 +76,31 @@ public:
 logger.addSink<minta::FileSink, MyFormatter>("custom.log");
 ```
 
+## Suffix Formatting
+
+Placeholders support format specifiers after a colon: `{name:spec}`.
+
+| Specifier | Example | Output | Description |
+|-----------|---------|--------|-------------|
+| `.Nf` | `{val:.2f}` | `3.14` | Fixed-point with N decimal places |
+| `Nf` | `{val:4f}` | `3.1416` | Shorthand fixed-point |
+| `C` / `c` | `{val:C}` | `$42.50` | Currency format |
+| `X` / `x` | `{val:X}` | `FF` | Hexadecimal (upper/lower) |
+| `E` / `e` | `{val:e}` | `1.234568e+04` | Scientific notation |
+| `P` / `p` | `{val:P}` | `85.60%` | Percentage (value * 100) |
+| `0N` | `{val:04}` | `0042` | Zero-padded integer |
+
+```cpp
+logger.info("Price: {amount:C}, Discount: {pct:P}", 42.5, 0.15);
+// => Price: $42.50, Discount: 15.00%
+```
+
+Non-numeric values ignore numeric format specifiers and render as-is.
+
 ## Context Capture
 
 ```cpp
-logger.setCaptureContext(true);
+logger.setCaptureSourceLocation(true);
 logger.setContext("session_id", "abc123");
 logger.info("request received");
 
@@ -101,7 +122,7 @@ cd build && ctest --output-on-failure
 Supported compilers:
 - GCC (C++11, 14, 17)
 - Clang / AppleClang (C++17)
-- MSVC (C++17)
+- MSVC (C++17 required — tests use `<filesystem>`)
 
 ## CI
 

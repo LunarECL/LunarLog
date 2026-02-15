@@ -19,7 +19,7 @@ int main() {
     logger.fatal("Fatal error: {errorType}", "System crash");
 
     // Enable context capture
-    logger.setCaptureContext(true);
+    logger.setCaptureSourceLocation(true);
 
     // Custom context
     logger.setContext("session_id", "abc123");

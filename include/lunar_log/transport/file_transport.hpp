@@ -9,7 +9,7 @@
 namespace minta {
     class FileTransport : public ITransport {
     public:
-        explicit FileTransport(const std::string &filename) : m_filename(filename) {
+        explicit FileTransport(const std::string &filename) {
             m_file.open(filename, std::ios::app);
             if (!m_file.is_open()) {
                 throw std::runtime_error("FileTransport: failed to open file: " + filename);
@@ -25,7 +25,6 @@ namespace minta {
         }
 
     private:
-        std::string m_filename;
         std::ofstream m_file;
         std::mutex m_mutex;
     };

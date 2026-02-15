@@ -16,6 +16,7 @@ TEST_F(XmlFormatterTest, ValidXmlOutput) {
 
     logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
 
+    logger.flush();
     TestUtils::waitForFileContent("xml_formatter_log.txt");
     std::string logContent = TestUtils::readLogFile("xml_formatter_log.txt");
 

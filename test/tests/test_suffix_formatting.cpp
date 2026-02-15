@@ -14,6 +14,7 @@ TEST_F(SuffixFormattingTest, NoFormatSpec) {
 
     logger.info("Hello {name}", "world");
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Hello world") != std::string::npos);
@@ -25,6 +26,7 @@ TEST_F(SuffixFormattingTest, FixedPrecision) {
 
     logger.info("Value: {amount:.2f}", 3.14159);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Value: 3.14") != std::string::npos);
@@ -36,6 +38,7 @@ TEST_F(SuffixFormattingTest, FixedPrecisionShorthand) {
 
     logger.info("Pi is {pi:4f}", 3.14159);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Pi is 3.1416") != std::string::npos);
@@ -47,6 +50,7 @@ TEST_F(SuffixFormattingTest, CurrencyFormat) {
 
     logger.info("Price: {price:C}", 42.5);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Price: $42.50") != std::string::npos);
@@ -58,6 +62,7 @@ TEST_F(SuffixFormattingTest, CurrencyFormatLowercase) {
 
     logger.info("Price: {price:c}", 10.0);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Price: $10.00") != std::string::npos);
@@ -69,6 +74,7 @@ TEST_F(SuffixFormattingTest, HexUppercase) {
 
     logger.info("Hex: {val:X}", 255);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Hex: FF") != std::string::npos);
@@ -80,6 +86,7 @@ TEST_F(SuffixFormattingTest, HexLowercase) {
 
     logger.info("Hex: {val:x}", 255);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Hex: ff") != std::string::npos);
@@ -91,6 +98,7 @@ TEST_F(SuffixFormattingTest, ScientificNotationLowercase) {
 
     logger.info("Sci: {val:e}", 12345.6789);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("1.234568e+04") != std::string::npos ||
@@ -103,6 +111,7 @@ TEST_F(SuffixFormattingTest, ScientificNotationUppercase) {
 
     logger.info("Sci: {val:E}", 12345.6789);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("1.234568E+04") != std::string::npos ||
@@ -115,6 +124,7 @@ TEST_F(SuffixFormattingTest, Percentage) {
 
     logger.info("Rate: {rate:P}", 0.856);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Rate: 85.60%") != std::string::npos);
@@ -126,6 +136,7 @@ TEST_F(SuffixFormattingTest, PercentageLowercase) {
 
     logger.info("Rate: {rate:p}", 0.5);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Rate: 50.00%") != std::string::npos);
@@ -137,6 +148,7 @@ TEST_F(SuffixFormattingTest, ZeroPadded) {
 
     logger.info("ID: {id:04}", 42);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("ID: 0042") != std::string::npos);
@@ -148,6 +160,7 @@ TEST_F(SuffixFormattingTest, NonNumericWithFormat) {
 
     logger.info("Name: {name:.2f}", "alice");
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Name: alice") != std::string::npos);
@@ -159,6 +172,7 @@ TEST_F(SuffixFormattingTest, MixedFormats) {
 
     logger.info("{user} spent {amount:C} ({pct:P})", "Bob", 99.99, 0.5);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Bob spent $99.99 (50.00%)") != std::string::npos);
@@ -170,6 +184,7 @@ TEST_F(SuffixFormattingTest, NegativeCurrency) {
 
     logger.info("Loss: {val:C}", -5.0);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Loss: -$5.00") != std::string::npos);
@@ -181,6 +196,7 @@ TEST_F(SuffixFormattingTest, NegativeHex) {
 
     logger.info("Neg: {val:X}", -255);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Neg: -FF") != std::string::npos);
@@ -192,6 +208,7 @@ TEST_F(SuffixFormattingTest, MalformedSpecFallback) {
 
     logger.info("Val: {val:.f}", 3.14);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Val:") != std::string::npos);
@@ -203,6 +220,7 @@ TEST_F(SuffixFormattingTest, EmptySpec) {
 
     logger.info("Val: {val:}", 42);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Val: 42") != std::string::npos);
@@ -214,6 +232,7 @@ TEST_F(SuffixFormattingTest, ZeroPrecision) {
 
     logger.info("Rounded: {val:.0f}", 3.7);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Rounded: 4") != std::string::npos);
@@ -225,6 +244,7 @@ TEST_F(SuffixFormattingTest, JsonFormatterAppliesFormatSpec) {
 
     logger.info("Price: {amount:C}", 42.5);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_json_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_json_test.txt");
 
@@ -238,6 +258,7 @@ TEST_F(SuffixFormattingTest, XmlFormatterAppliesFormatSpec) {
 
     logger.info("Rate: {rate:P}", 0.25);
 
+    logger.flush();
     TestUtils::waitForFileContent("suffix_xml_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_xml_test.txt");
 

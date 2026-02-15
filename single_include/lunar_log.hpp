@@ -88,7 +88,7 @@ namespace minta {
         std::string templateStr;
         std::vector<std::pair<std::string, std::string>> arguments;
         std::string file;
-        int line;
+        int line = 0;
         std::string function;
         std::map<std::string, std::string> customContext;
     };
@@ -303,7 +303,7 @@ namespace minta {
 namespace minta {
     class FileTransport : public ITransport {
     public:
-        explicit FileTransport(const std::string &filename) : m_filename(filename) {
+        explicit FileTransport(const std::string &filename) {
             m_file.open(filename, std::ios::app);
             if (!m_file.is_open()) {
                 throw std::runtime_error("FileTransport: failed to open file: " + filename);
@@ -319,7 +319,6 @@ namespace minta {
         }
 
     private:
-        std::string m_filename;
         std::ofstream m_file;
         std::mutex m_mutex;
     };
@@ -450,6 +449,8 @@ namespace minta {
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <iomanip>
+#include <sstream>
 
 namespace minta {
     class LunarLog {
@@ -457,7 +458,7 @@ namespace minta {
         explicit LunarLog(LogLevel minLevel = LogLevel::INFO)
             : m_minLevel(minLevel)
             , m_isRunning(true)
-            , m_rateLimitWindowStart(std::chrono::steady_clock::now())
+            , m_rateLimitWindowStart(std::chrono::steady_clock::now().time_since_epoch().count())
             , m_logCount(0)
             , m_captureContext(false) {
             addSink<ConsoleSink>();
@@ -486,12 +487,22 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
-        void setCaptureContext(bool capture) {
+        void setCaptureSourceLocation(bool capture) {
             m_captureContext.store(capture, std::memory_order_relaxed);
         }
 
-        bool getCaptureContext() const {
+        bool getCaptureSourceLocation() const {
             return m_captureContext.load(std::memory_order_relaxed);
+        }
+
+        /// @deprecated Use setCaptureSourceLocation instead.
+        inline void setCaptureContext(bool capture) {
+            setCaptureSourceLocation(capture);
+        }
+
+        /// @deprecated Use getCaptureSourceLocation instead.
+        inline bool getCaptureContext() const {
+            return getCaptureSourceLocation();
         }
 
         void flush() {
@@ -579,7 +590,7 @@ namespace minta {
 
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_isRunning;
-        std::chrono::steady_clock::time_point m_rateLimitWindowStart;
+        std::atomic<long long> m_rateLimitWindowStart;
         std::atomic<size_t> m_logCount;
         std::mutex m_queueMutex;
         std::mutex m_contextMutex;
@@ -626,20 +637,23 @@ namespace minta {
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
-            auto validationResult = validatePlaceholders(messageTemplate, args...);
+            auto placeholders = extractPlaceholders(messageTemplate);
+            auto validationResult = validatePlaceholders(messageTemplate, placeholders, args...);
             std::string validatedTemplate = validationResult.first;
             std::vector<std::string> warnings = validationResult.second;
 
             auto now = std::chrono::system_clock::now();
-            std::string message = formatMessage(validatedTemplate, args...);
-            auto argumentPairs = mapArgumentsToPlaceholders(validatedTemplate, args...);
+            std::string message = formatMessage(validatedTemplate, placeholders, args...);
+            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, args...);
 
             bool captureCtx = m_captureContext.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
-            {
+            if (captureCtx || !m_customContext.empty()) {
                 std::lock_guard<std::mutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
             }
+
+            size_t warningCount = warnings.size();
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
@@ -654,6 +668,10 @@ namespace minta {
 
             lock.unlock();
             m_logCV.notify_one();
+
+            for (size_t i = 0; i < warningCount; ++i) {
+                m_logCount.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         void processLogQueue() {
@@ -671,6 +689,7 @@ namespace minta {
                     lock.lock();
                 }
 
+                lock.unlock();
                 m_flushCV.notify_all();
             }
 
@@ -683,15 +702,19 @@ namespace minta {
                     m_logManager.log(entry);
                     lock.lock();
                 }
+                lock.unlock();
                 m_flushCV.notify_all();
             }
         }
 
         bool rateLimitCheck() {
             auto now = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - m_rateLimitWindowStart).count();
+            long long nowNs = now.time_since_epoch().count();
+            long long windowStart = m_rateLimitWindowStart.load(std::memory_order_relaxed);
+            auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::duration(nowNs - windowStart)).count();
             if (duration >= kRateLimitWindowSeconds) {
-                m_rateLimitWindowStart = now;
+                m_rateLimitWindowStart.store(nowNs, std::memory_order_relaxed);
                 m_logCount.store(1, std::memory_order_relaxed);
                 return true;
             }
@@ -704,12 +727,10 @@ namespace minta {
 
         template<typename... Args>
         static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
-            const std::string &messageTemplate, const Args &... args) {
+            const std::string &messageTemplate, const std::vector<PlaceholderInfo> &placeholders, const Args &... args) {
             std::vector<std::string> warnings;
             std::set<std::string> uniquePlaceholders;
             std::vector<std::string> values{toString(args)...};
-
-            auto placeholders = extractPlaceholders(messageTemplate);
 
             for (const auto &ph : placeholders) {
                 if (ph.name.empty()) {
@@ -733,6 +754,10 @@ namespace minta {
             std::ostringstream oss;
             oss << value;
             return oss.str();
+        }
+
+        static std::string toString(bool value) {
+            return value ? "true" : "false";
         }
 
         static std::string toString(double value) {
@@ -898,7 +923,7 @@ namespace minta {
         }
 
         template<typename... Args>
-        static std::string formatMessage(const std::string &messageTemplate, const Args &... args) {
+        static std::string formatMessage(const std::string &messageTemplate, const std::vector<PlaceholderInfo> &placeholders, const Args &... args) {
             std::vector<std::string> values{toString(args)...};
             std::string result;
             result.reserve(messageTemplate.length());
@@ -914,7 +939,9 @@ namespace minta {
                         if (endPos == std::string::npos) {
                             result += messageTemplate[i];
                         } else if (valueIndex < values.size()) {
-                            std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
+                            std::string content = (valueIndex < placeholders.size())
+                                ? placeholders[valueIndex].fullContent
+                                : messageTemplate.substr(i + 1, endPos - i - 1);
                             auto parts = splitPlaceholder(content);
                             result += applyFormat(values[valueIndex++], parts.second);
                             i = endPos;
@@ -939,11 +966,9 @@ namespace minta {
 
         template<typename... Args>
         static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(
-            const std::string &messageTemplate, const Args &... args) {
+            const std::vector<PlaceholderInfo> &placeholders, const Args &... args) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
             std::vector<std::string> values{toString(args)...};
-
-            auto placeholders = extractPlaceholders(messageTemplate);
 
             size_t valueIndex = 0;
             for (const auto &ph : placeholders) {

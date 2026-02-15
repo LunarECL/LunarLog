@@ -21,6 +21,7 @@ TEST_F(CustomFormatterTest, UseCustomFormatter) {
 
     logger.info("This message should have a custom format");
 
+    logger.flush();
     TestUtils::waitForFileContent("custom_formatter_log.txt");
     std::string logContent = TestUtils::readLogFile("custom_formatter_log.txt");
 
@@ -34,6 +35,7 @@ TEST_F(CustomFormatterTest, MixCustomAndDefaultFormatters) {
 
     logger.info("This message should appear in both custom and default formats");
 
+    logger.flush();
     TestUtils::waitForFileContent("custom_formatter_log.txt");
     TestUtils::waitForFileContent("default_formatter_log.txt");
     std::string customLogContent = TestUtils::readLogFile("custom_formatter_log.txt");

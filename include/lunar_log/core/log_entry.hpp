@@ -15,7 +15,7 @@ namespace minta {
         std::string templateStr;
         std::vector<std::pair<std::string, std::string>> arguments;
         std::string file;
-        int line;
+        int line = 0;
         std::string function;
         std::map<std::string, std::string> customContext;
     };

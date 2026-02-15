@@ -15,6 +15,7 @@ TEST_F(MultipleSinksTest, LogToMultipleSinks) {
 
     logger.info("This message should appear in both logs");
 
+    logger.flush();
     TestUtils::waitForFileContent("test_log1.txt");
     TestUtils::waitForFileContent("test_log2.txt");
     std::string logContent1 = TestUtils::readLogFile("test_log1.txt");
@@ -31,6 +32,7 @@ TEST_F(MultipleSinksTest, DifferentFormattersForDifferentSinks) {
 
     logger.info("Test message for multiple formatters");
 
+    logger.flush();
     TestUtils::waitForFileContent("test_log1.txt");
     TestUtils::waitForFileContent("test_log2.json");
     std::string logContent1 = TestUtils::readLogFile("test_log1.txt");

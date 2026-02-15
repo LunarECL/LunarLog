@@ -16,6 +16,7 @@ TEST_F(JsonFormatterTest, ValidJsonOutput) {
 
     logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
 
+    logger.flush();
     TestUtils::waitForFileContent("json_formatter_log.txt");
     std::string logContent = TestUtils::readLogFile("json_formatter_log.txt");
 

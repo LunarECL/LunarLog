@@ -10,7 +10,12 @@
 namespace fs = std::filesystem;
 #else
 #include <sys/stat.h>
+#ifdef _MSC_VER
+#include <windows.h>
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #endif
 
 std::string TestUtils::readLogFile(const std::string &filename) {

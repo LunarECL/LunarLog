@@ -14,7 +14,7 @@ namespace minta {
             json << R"({)";
 
             json << R"("level":")" << getLevelString(entry.level) << R"(",)";
-            json << R"("timestamp":")" << formatTimestamp(entry.timestamp) << R"(",)";
+            json << R"("timestamp":")" << detail::formatTimestamp(entry.timestamp) << R"(",)";
             json << R"("message":")" << escapeJsonString(entry.message) << R"(")";
 
             if (!entry.file.empty()) {

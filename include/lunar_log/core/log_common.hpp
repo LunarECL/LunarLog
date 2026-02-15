@@ -36,8 +36,6 @@ namespace detail {
         return oss.str();
     }
 } // namespace detail
-
-    using detail::formatTimestamp;
 } // namespace minta
 
 #endif // LUNAR_LOG_COMMON_HPP

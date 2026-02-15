@@ -16,6 +16,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <cstdio>
+#include <climits>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 
@@ -36,6 +39,8 @@ namespace minta {
             m_logThread = std::thread(&LunarLog::processLogQueue, this);
         }
 
+        // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
+        // while other threads are still calling log methods is undefined behavior.
         ~LunarLog() {
             flush();
             m_isRunning = false;
@@ -86,8 +91,7 @@ namespace minta {
         template<typename SinkType, typename... Args>
         typename std::enable_if<std::is_base_of<ISink, SinkType>::value>::type
         addSink(Args &&... args) {
-            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
-            m_logManager.addSink(std::move(sink));
+            m_logManager.addSink(detail::make_unique<SinkType>(std::forward<Args>(args)...));
         }
 
         template<typename SinkType, typename FormatterType, typename... Args>
@@ -108,8 +112,14 @@ namespace minta {
         }
 
         template<typename... Args>
-        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+        void logWithSourceLocation(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
             logInternal(level, file, line, function, messageTemplate, args...);
+        }
+
+        /// @deprecated Use logWithSourceLocation instead.
+        template<typename... Args>
+        void logWithContext(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            logWithSourceLocation(level, file, line, function, messageTemplate, args...);
         }
 
         template<typename... Args>
@@ -213,17 +223,20 @@ namespace minta {
 
         template<typename... Args>
         void logInternal(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
+            if (!m_isRunning.load(std::memory_order_acquire)) return;
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
+            std::vector<std::string> values{toString(args)...};
+
             auto placeholders = extractPlaceholders(messageTemplate);
-            auto validationResult = validatePlaceholders(messageTemplate, placeholders, args...);
+            auto validationResult = validatePlaceholders(messageTemplate, placeholders, values);
             std::string validatedTemplate = validationResult.first;
             std::vector<std::string> warnings = validationResult.second;
 
             auto now = std::chrono::system_clock::now();
-            std::string message = formatMessage(validatedTemplate, placeholders, args...);
-            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, args...);
+            std::string message = formatMessage(validatedTemplate, placeholders, values);
+            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
 
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
@@ -232,8 +245,6 @@ namespace minta {
                 contextCopy = m_customContext;
             }
 
-            size_t warningCount = warnings.size();
-
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
                 level, std::move(message), now, validatedTemplate, std::move(argumentPairs),
@@ -241,16 +252,13 @@ namespace minta {
             });
 
             for (const auto& warning : warnings) {
+                if (!rateLimitCheck()) break;
                 m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {},
                                             captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", {}});
             }
 
             lock.unlock();
             m_logCV.notify_one();
-
-            for (size_t i = 0; i < warningCount; ++i) {
-                m_logCount.fetch_add(1, std::memory_order_relaxed);
-            }
         }
 
         void processLogQueue() {
@@ -294,12 +302,16 @@ namespace minta {
             auto now = std::chrono::steady_clock::now();
             long long nowNs = now.time_since_epoch().count();
             long long windowStart = m_rateLimitWindowStart.load(std::memory_order_relaxed);
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::duration(nowNs - windowStart)).count();
-            if (duration >= kRateLimitWindowSeconds) {
-                m_rateLimitWindowStart.store(nowNs, std::memory_order_relaxed);
-                m_logCount.store(1, std::memory_order_relaxed);
-                return true;
+
+            for (;;) {
+                auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::duration(nowNs - windowStart)).count();
+                if (duration < kRateLimitWindowSeconds) break;
+                if (m_rateLimitWindowStart.compare_exchange_weak(windowStart, nowNs,
+                        std::memory_order_relaxed, std::memory_order_relaxed)) {
+                    m_logCount.store(1, std::memory_order_relaxed);
+                    return true;
+                }
             }
             size_t count = m_logCount.fetch_add(1, std::memory_order_relaxed);
             if (count >= kRateLimitMaxLogs) {
@@ -308,12 +320,11 @@ namespace minta {
             return true;
         }
 
-        template<typename... Args>
         static std::pair<std::string, std::vector<std::string>> validatePlaceholders(
-            const std::string &messageTemplate, const std::vector<PlaceholderInfo> &placeholders, const Args &... args) {
+            const std::string &messageTemplate, const std::vector<PlaceholderInfo> &placeholders,
+            const std::vector<std::string> &values) {
             std::vector<std::string> warnings;
             std::set<std::string> uniquePlaceholders;
-            std::vector<std::string> values{toString(args)...};
 
             for (const auto &ph : placeholders) {
                 if (ph.name.empty()) {
@@ -409,10 +420,19 @@ namespace minta {
             return ok;
         }
 
+        static double clampForLongLong(double val) {
+            if (val != val) return 0.0;
+            static const double kMinLL = static_cast<double>(LLONG_MIN + 1);
+            static const double kMaxLL = static_cast<double>(LLONG_MAX);
+            if (val < kMinLL) return kMinLL;
+            if (val > kMaxLL) return kMaxLL;
+            return val;
+        }
+
         static std::string applyFormat(const std::string &value, const std::string &spec) {
             if (spec.empty()) return value;
 
-            std::ostringstream oss;
+            char buf[64];
 
             // Fixed-point: .Nf (e.g. ".2f", ".4f")
             if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
@@ -421,8 +441,8 @@ namespace minta {
                 std::string digits = spec.substr(1, spec.size() - 2);
                 int precision = safeStoi(digits, 6);
                 if (precision > 50) precision = 50;
-                oss << std::fixed << std::setprecision(precision) << numVal;
-                return oss.str();
+                std::snprintf(buf, sizeof(buf), "%.*f", precision, numVal);
+                return std::string(buf);
             }
 
             // Fixed-point shorthand: Nf (e.g. "2f", "4f")
@@ -431,8 +451,8 @@ namespace minta {
                 double numVal = parseDouble(value);
                 int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
                 if (precision > 50) precision = 50;
-                oss << std::fixed << std::setprecision(precision) << numVal;
-                return oss.str();
+                std::snprintf(buf, sizeof(buf), "%.*f", precision, numVal);
+                return std::string(buf);
             }
 
             // Currency: C or c
@@ -440,31 +460,33 @@ namespace minta {
                 if (!isNumericString(value)) return value;
                 double numVal = parseDouble(value);
                 if (numVal < 0) {
-                    oss << "-$" << std::fixed << std::setprecision(2) << -numVal;
+                    std::snprintf(buf, sizeof(buf), "-$%.2f", -numVal);
                 } else {
-                    oss << "$" << std::fixed << std::setprecision(2) << numVal;
+                    std::snprintf(buf, sizeof(buf), "$%.2f", numVal);
                 }
-                return oss.str();
+                return std::string(buf);
             }
 
             // Hex: X (upper) or x (lower)
             if (spec == "X" || spec == "x") {
                 if (!isNumericString(value)) return value;
-                double numVal = parseDouble(value);
+                double numVal = clampForLongLong(parseDouble(value));
                 long long intVal = static_cast<long long>(numVal);
                 unsigned long long uval;
+                std::string result;
                 if (intVal < 0) {
-                    oss << "-";
+                    result = "-";
                     uval = 0ULL - static_cast<unsigned long long>(intVal);
                 } else {
                     uval = static_cast<unsigned long long>(intVal);
                 }
                 if (spec == "X") {
-                    oss << std::uppercase << std::hex << uval;
+                    std::snprintf(buf, sizeof(buf), "%llX", uval);
                 } else {
-                    oss << std::hex << uval;
+                    std::snprintf(buf, sizeof(buf), "%llx", uval);
                 }
-                return oss.str();
+                result += buf;
+                return result;
             }
 
             // Scientific: E (upper) or e (lower)
@@ -472,35 +494,35 @@ namespace minta {
                 if (!isNumericString(value)) return value;
                 double numVal = parseDouble(value);
                 if (spec == "E") {
-                    oss << std::uppercase << std::scientific << numVal;
+                    std::snprintf(buf, sizeof(buf), "%E", numVal);
                 } else {
-                    oss << std::scientific << numVal;
+                    std::snprintf(buf, sizeof(buf), "%e", numVal);
                 }
-                return oss.str();
+                return std::string(buf);
             }
 
             // Percentage: P or p
             if (spec == "P" || spec == "p") {
                 if (!isNumericString(value)) return value;
                 double numVal = parseDouble(value);
-                oss << std::fixed << std::setprecision(2) << (numVal * 100.0) << "%";
-                return oss.str();
+                std::snprintf(buf, sizeof(buf), "%.2f%%", numVal * 100.0);
+                return std::string(buf);
             }
 
             // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
             if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
                 if (!isNumericString(value)) return value;
-                double numVal = parseDouble(value);
+                double numVal = clampForLongLong(parseDouble(value));
                 int width = safeStoi(spec.substr(1), 1);
                 if (width > 50) width = 50;
                 long long intVal = static_cast<long long>(numVal);
                 if (intVal < 0) {
                     unsigned long long absVal = 0ULL - static_cast<unsigned long long>(intVal);
-                    oss << "-" << std::setfill('0') << std::setw(width) << absVal;
+                    std::snprintf(buf, sizeof(buf), "-%0*llu", width, absVal);
                 } else {
-                    oss << std::setfill('0') << std::setw(width) << intVal;
+                    std::snprintf(buf, sizeof(buf), "%0*lld", width, intVal);
                 }
-                return oss.str();
+                return std::string(buf);
             }
 
             // Unknown spec — return value as-is
@@ -516,9 +538,8 @@ namespace minta {
             return std::make_pair(placeholder.substr(0, colonPos), placeholder.substr(colonPos + 1));
         }
 
-        template<typename... Args>
-        static std::string formatMessage(const std::string &messageTemplate, const std::vector<PlaceholderInfo> &placeholders, const Args &... args) {
-            std::vector<std::string> values{toString(args)...};
+        static std::string formatMessage(const std::string &messageTemplate,
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::string result;
             result.reserve(messageTemplate.length());
             size_t phIdx = 0;
@@ -529,7 +550,7 @@ namespace minta {
                     if (phIdx < values.size()) {
                         result += applyFormat(values[phIdx], placeholders[phIdx].spec);
                     } else {
-                        result += messageTemplate.substr(pos, placeholders[phIdx].endPos - pos + 1);
+                        result.append(messageTemplate, pos, placeholders[phIdx].endPos - pos + 1);
                     }
                     pos = placeholders[phIdx].endPos + 1;
                     ++phIdx;
@@ -548,17 +569,15 @@ namespace minta {
                         if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') break;
                         ++pos;
                     }
-                    result += messageTemplate.substr(litStart, pos - litStart);
+                    result.append(messageTemplate, litStart, pos - litStart);
                 }
             }
             return result;
         }
 
-        template<typename... Args>
         static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(
-            const std::vector<PlaceholderInfo> &placeholders, const Args &... args) {
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
-            std::vector<std::string> values{toString(args)...};
 
             size_t valueIndex = 0;
             for (const auto &ph : placeholders) {

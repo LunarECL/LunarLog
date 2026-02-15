@@ -13,7 +13,7 @@ namespace minta {
             std::ostringstream xml;
             xml << "<log_entry>";
             xml << "<level>" << getLevelString(entry.level) << "</level>";
-            xml << "<timestamp>" << formatTimestamp(entry.timestamp) << "</timestamp>";
+            xml << "<timestamp>" << detail::formatTimestamp(entry.timestamp) << "</timestamp>";
             xml << "<message>" << escapeXmlString(entry.message) << "</message>";
 
             if (!entry.file.empty()) {

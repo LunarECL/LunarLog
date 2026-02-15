@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LUNAR_LOG_TEST_UTILS_HPP
+#define LUNAR_LOG_TEST_UTILS_HPP
 
 #include <string>
 #include <vector>
@@ -15,3 +16,5 @@ private:
     static std::uintmax_t getFileSize(const std::string &filename);
     static void removeFile(const std::string &filename);
 };
+
+#endif // LUNAR_LOG_TEST_UTILS_HPP

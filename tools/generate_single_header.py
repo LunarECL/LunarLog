@@ -30,8 +30,8 @@ HEADERS = [
 
 LOCAL_INCLUDE = re.compile(r'^\s*#include\s+"[^"]*"')
 GUARD_IFNDEF = re.compile(r"^\s*#ifndef\s+\w+")
-GUARD_DEFINE = re.compile(r"^\s*#define\s+\w+_HPP")
-GUARD_ENDIF = re.compile(r"^\s*#endif\s*//\s*\w+_HPP")
+GUARD_DEFINE = re.compile(r"^\s*#define\s+\w+_(?:HPP|H)\b")
+GUARD_ENDIF = re.compile(r"^\s*#endif\s*//\s*\w+_(?:HPP|H)\b")
 
 
 def strip_guards_and_local_includes(lines):

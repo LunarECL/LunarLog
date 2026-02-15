@@ -10,7 +10,7 @@ namespace minta {
     public:
         std::string format(const LogEntry &entry) const override {
             std::ostringstream oss;
-            oss << formatTimestamp(entry.timestamp) << " "
+            oss << detail::formatTimestamp(entry.timestamp) << " "
                 << "[" << getLevelString(entry.level) << "] "
                 << entry.message;
 

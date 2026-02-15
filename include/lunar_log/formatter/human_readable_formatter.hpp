@@ -36,9 +36,13 @@ namespace minta {
                     result += '=';
                     // Quote values containing delimiters
                     if (ctx.second.find(',') != std::string::npos ||
-                        ctx.second.find('=') != std::string::npos) {
+                        ctx.second.find('=') != std::string::npos ||
+                        ctx.second.find('"') != std::string::npos) {
                         result += '"';
-                        result += ctx.second;
+                        for (char c : ctx.second) {
+                            if (c == '"') result += '\\';
+                            result += c;
+                        }
                         result += '"';
                     } else {
                         result += ctx.second;

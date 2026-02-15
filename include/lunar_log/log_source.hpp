@@ -572,7 +572,9 @@ namespace minta {
             // Percentage: P or p
             if (spec == "P" || spec == "p") {
                 if (!tryParseDouble(value, numVal)) return value;
-                return snprintfDouble("%.2f", numVal * 100.0) + "%";
+                double pct = numVal * 100.0;
+                if (!std::isfinite(pct)) pct = numVal;
+                return snprintfDouble("%.2f", pct) + "%";
             }
 
             // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately

@@ -30,6 +30,7 @@ TEST_F(SuffixFormattingTest, FixedPrecision) {
     TestUtils::waitForFileContent("suffix_format_test.txt");
     std::string logContent = TestUtils::readLogFile("suffix_format_test.txt");
     EXPECT_TRUE(logContent.find("Value: 3.14") != std::string::npos);
+    EXPECT_EQ(logContent.find("Value: 3.14159"), std::string::npos);
 }
 
 TEST_F(SuffixFormattingTest, FixedPrecisionShorthand) {

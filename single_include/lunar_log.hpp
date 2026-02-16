@@ -866,6 +866,11 @@ namespace minta {
             m_hasCustomContext.store(false, std::memory_order_release);
         }
 
+        /// Set the maximum number of cached template parse results.
+        /// Setting to 0 disables caching and clears existing entries.
+        /// Shrinking to a non-zero value does NOT trim existing entries —
+        /// they remain accessible for lookups but no new entries are
+        /// inserted until the map size drops below the new cap.
         void setTemplateCacheSize(size_t size) {
             std::lock_guard<std::mutex> lock(m_cacheMutex);
             m_templateCacheSize = size;
@@ -965,6 +970,9 @@ namespace minta {
                 if (m_templateCacheSize > 0) {
                     auto it = m_templateCache.find(messageTemplate);
                     if (it != m_templateCache.end()) {
+                        // Deep-copy the cached vector while holding the lock.
+                        // A shared_ptr<const vector> would eliminate this copy
+                        // if profiling shows cache-lock contention is measurable.
                         placeholders = it->second;
                         cacheHit = true;
                     }
@@ -974,6 +982,11 @@ namespace minta {
                 placeholders = extractPlaceholders(messageTemplate);
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
+                    // Soft cap: concurrent threads may each pass the size
+                    // check before any inserts, so the map can temporarily
+                    // hold up to N-1 extra entries (N = thread count).
+                    // This is by design — avoiding a hard cap keeps the
+                    // critical section short.
                     if (m_templateCache.size() < m_templateCacheSize) {
                         m_templateCache[messageTemplate] = placeholders;
                     }

@@ -11,6 +11,8 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **`@` and `$` operators** — `{@val}` for destructuring, `{$val}` for stringify
 - Built-in formatters: human-readable, JSON, XML
 - Multiple sinks (console, file) with independent formatters
+- **Structured template output** — JSON/XML include raw template + hash for log aggregation
+- **Template caching** — parsed templates are cached for repeated use
 - Thread-safe logging with atomic operations
 - Rate limiting to prevent log flooding
 - Context capture (global + scoped)
@@ -65,6 +67,45 @@ logger.info("User: {@id}, Tag: {$label}", 42, true);
 Operators combine with format specifiers: `{@amount:.2f}` formats the message as `3.14` but stores the raw value (`3.14159`) in properties.
 
 Invalid forms like `{@}`, `{@@x}`, `{@$x}`, and `{@ }` are treated as literal text.
+
+## Structured Template Output
+
+JSON and XML formatters include the raw message template alongside the rendered message. This enables log aggregation tools (Seq, Elasticsearch, Splunk) to group entries by template.
+
+```cpp
+logger.addSink<minta::FileSink, minta::JsonFormatter>("structured.log");
+logger.info("User {username} logged in from {ip}", "alice", "192.168.1.1");
+```
+
+**JSON output:**
+```json
+{
+  "level": "INFO",
+  "timestamp": "2026-02-16T12:00:00.000Z",
+  "messageTemplate": "User {username} logged in from {ip}",
+  "templateHash": "a1b2c3d4",
+  "message": "User alice logged in from 192.168.1.1",
+  "properties": { "username": "alice", "ip": "192.168.1.1" }
+}
+```
+
+The `templateHash` is an FNV-1a hash (8-char hex) for efficient grouping without string comparison.
+
+### Template Cache
+
+Parsed templates are cached to avoid re-parsing on repeated log calls. The cache holds up to 128 entries by default — once full, existing entries stay cached and new templates are parsed on every call.
+
+```cpp
+logger.setTemplateCacheSize(256);  // increase cache
+logger.setTemplateCacheSize(0);    // disable caching
+```
+
+### Placeholder Validation
+
+LunarLog warns about common template mistakes:
+- **Duplicate names:** `{name} and {name}` — same name appears twice
+- **Empty placeholders:** `{}`
+- **Whitespace-only names:** `{ }`
 
 ## Quick Start
 
@@ -145,29 +186,6 @@ public:
 
 logger.addSink<minta::FileSink, MyFormatter>("custom.log");
 ```
-
-## Suffix Formatting
-
-Placeholders support format specifiers after a colon: `{name:spec}`.
-
-| Specifier | Example | Output | Description |
-|-----------|---------|--------|-------------|
-| `.Nf` | `{val:.2f}` | `3.14` | Fixed-point with N decimal places |
-| `Nf` | `{val:4f}` | `3.1416` | Shorthand fixed-point |
-| `C` / `c` | `{val:C}` | `$42.50` | Currency format |
-| `X` / `x` | `{val:X}` | `FF` | Hexadecimal (upper/lower) |
-| `E` / `e` | `{val:e}` | `1.234568e+04` | Scientific notation |
-| `P` / `p` | `{val:P}` | `85.60%` | Percentage (value * 100) |
-| `0N` | `{val:04}` | `0042` | Zero-padded integer |
-
-```cpp
-logger.info("Price: {amount:C}, Discount: {pct:P}", 42.5, 0.15);
-// => Price: $42.50, Discount: 15.00%
-```
-
-Non-numeric values ignore numeric format specifiers and render as-is.
-
-**Zero-pad with negative numbers:** The `0N` specifier pads the absolute value to width N after the minus sign: `{val:04}` with `-5` produces `-0005`.
 
 ## Rate Limiting
 

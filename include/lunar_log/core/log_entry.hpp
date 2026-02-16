@@ -4,6 +4,7 @@
 #include "log_level.hpp"
 #include <string>
 #include <chrono>
+#include <cstdint>
 #include <vector>
 #include <map>
 
@@ -19,6 +20,7 @@ namespace minta {
         std::string message;
         std::chrono::system_clock::time_point timestamp;
         std::string templateStr;
+        uint32_t templateHash;
         // Maintained for backward compatibility with custom formatters.
         // Prefer `properties` for new code — it carries operator context (@/$).
         std::vector<std::pair<std::string, std::string>> arguments;

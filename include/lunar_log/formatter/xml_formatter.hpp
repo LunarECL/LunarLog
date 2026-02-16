@@ -4,6 +4,7 @@
 #include "formatter_interface.hpp"
 #include "../core/log_common.hpp"
 #include <string>
+#include <cstdio>
 
 namespace minta {
     class XmlFormatter : public IFormatter {
@@ -20,6 +21,14 @@ namespace minta {
             xml += "<message>";
             xml += escapeXmlString(entry.message);
             xml += "</message>";
+
+            if (!entry.templateStr.empty()) {
+                xml += "<MessageTemplate hash=\"";
+                xml += detail::toHexString(entry.templateHash);
+                xml += "\">";
+                xml += escapeXmlString(entry.templateStr);
+                xml += "</MessageTemplate>";
+            }
 
             if (!entry.file.empty()) {
                 xml += "<file>";

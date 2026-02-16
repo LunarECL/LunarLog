@@ -2,6 +2,7 @@
 #define LUNAR_LOG_SOURCE_HPP
 
 #include "core/log_entry.hpp"
+#include "core/log_common.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
@@ -13,6 +14,7 @@
 #include <type_traits>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
@@ -31,7 +33,8 @@ namespace minta {
             , m_logCount(0)
             , m_captureSourceLocation(false)
             , m_hasCustomContext(false)
-            , m_sinkWriteInProgress(false) {
+            , m_sinkWriteInProgress(false)
+            , m_templateCacheSize(128) {
             if (addDefaultConsoleSink) {
                 addSink<ConsoleSink>();
             }
@@ -172,6 +175,14 @@ namespace minta {
             m_hasCustomContext.store(false, std::memory_order_release);
         }
 
+        void setTemplateCacheSize(size_t size) {
+            std::lock_guard<std::mutex> lock(m_cacheMutex);
+            m_templateCacheSize = size;
+            if (size == 0) {
+                m_templateCache.clear();
+            }
+        }
+
     private:
         static constexpr size_t kRateLimitMaxLogs = 1000;
         static constexpr long long kRateLimitWindowSeconds = 1;
@@ -200,6 +211,10 @@ namespace minta {
             size_t endPos;
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
         };
+
+        std::mutex m_cacheMutex;
+        std::unordered_map<uint32_t, std::vector<PlaceholderInfo>> m_templateCache;
+        size_t m_templateCacheSize;
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
@@ -251,8 +266,31 @@ namespace minta {
 
             std::vector<std::string> values{toString(args)...};
 
-            auto placeholders = extractPlaceholders(messageTemplate);
-            std::vector<std::string> warnings = validatePlaceholders(placeholders, values);
+            uint32_t hash = detail::fnv1a(messageTemplate);
+            std::vector<PlaceholderInfo> placeholders;
+            bool cacheHit = false;
+            {
+                std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
+                if (m_templateCacheSize > 0) {
+                    auto it = m_templateCache.find(hash);
+                    if (it != m_templateCache.end()) {
+                        placeholders = it->second;
+                        cacheHit = true;
+                    }
+                }
+            }
+            if (!cacheHit) {
+                placeholders = extractPlaceholders(messageTemplate);
+                std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
+                if (m_templateCacheSize > 0) {
+                    if (m_templateCache.size() >= m_templateCacheSize) {
+                        m_templateCache.clear();
+                    }
+                    m_templateCache[hash] = placeholders;
+                }
+            }
+
+            std::vector<std::string> warnings = validatePlaceholders(messageTemplate, placeholders, values);
             std::string message = formatMessage(messageTemplate, placeholders, values);
             // Both representations are kept: arguments is simple name-value pairs
             // for backward compat; properties is the richer form with operator context.
@@ -267,16 +305,18 @@ namespace minta {
             }
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
+            // Fields must match LogEntry declaration order (aggregate init):
+            // level, message, timestamp, templateStr, templateHash, arguments,
+            // file, line, function, customContext, properties
             m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, messageTemplate, std::move(argumentPairs),
+                level, std::move(message), now, messageTemplate, hash, std::move(argumentPairs),
                 captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy),
                 std::move(properties)
             });
 
-            // Fields must match LogEntry declaration order (aggregate init):
-            // level, message, timestamp, templateStr, arguments, file, line, function, customContext, properties
             for (const auto& warning : warnings) {
-                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {},
+                uint32_t warnHash = detail::fnv1a(warning);
+                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, warnHash, {},
                                             captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", {}, {}});
             }
 
@@ -366,7 +406,15 @@ namespace minta {
             return true;
         }
 
+        static bool isWhitespaceOnly(const std::string &s) {
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (!std::isspace(static_cast<unsigned char>(s[i]))) return false;
+            }
+            return !s.empty();
+        }
+
         static std::vector<std::string> validatePlaceholders(
+            const std::string &templateStr,
             const std::vector<PlaceholderInfo> &placeholders,
             const std::vector<std::string> &values) {
             std::vector<std::string> warnings;
@@ -374,9 +422,11 @@ namespace minta {
 
             for (const auto &ph : placeholders) {
                 if (ph.name.empty()) {
-                    warnings.push_back("Warning: Empty placeholder found");
+                    warnings.push_back("Warning: Template \"" + templateStr + "\" has empty placeholder");
+                } else if (isWhitespaceOnly(ph.name)) {
+                    warnings.push_back("Warning: Template \"" + templateStr + "\" has whitespace-only placeholder name");
                 } else if (!uniquePlaceholders.insert(ph.name).second) {
-                    warnings.push_back("Warning: Repeated placeholder name: " + ph.name);
+                    warnings.push_back("Warning: Template \"" + templateStr + "\" has duplicate placeholder name: " + ph.name);
                 }
             }
 

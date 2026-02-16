@@ -75,6 +75,18 @@ namespace minta {
             m_hasFilters.store(false, std::memory_order_release);
         }
 
+        /// Set a per-sink locale for culture-specific formatting.
+        /// Forwards to the sink's formatter.
+        void setLocale(const std::string& locale) {
+            IFormatter* fmt = formatter();
+            if (fmt) fmt->setLocale(locale);
+        }
+
+        std::string getLocale() const {
+            IFormatter* fmt = formatter();
+            return fmt ? fmt->getLocale() : std::string();
+        }
+
         bool passesFilter(const LogEntry& entry) const {
             if (entry.level < m_minLevel.load(std::memory_order_relaxed)) {
                 return false;

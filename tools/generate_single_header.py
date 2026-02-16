@@ -14,6 +14,7 @@ HEADERS = [
     "lunar_log/core/log_level.hpp",
     "lunar_log/core/log_common.hpp",
     "lunar_log/core/log_entry.hpp",
+    "lunar_log/core/filter_rule.hpp",
     "lunar_log/formatter/formatter_interface.hpp",
     "lunar_log/formatter/human_readable_formatter.hpp",
     "lunar_log/formatter/json_formatter.hpp",

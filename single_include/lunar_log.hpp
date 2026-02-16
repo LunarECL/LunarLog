@@ -138,6 +138,218 @@ namespace minta {
 } // namespace minta
 
 
+// --- lunar_log/core/filter_rule.hpp ---
+
+#include <string>
+#include <stdexcept>
+
+namespace minta {
+
+    /// A single DSL filter rule parsed from a string.
+    ///
+    /// Supported syntax:
+    ///   level >= LEVEL  /  level == LEVEL  /  level != LEVEL
+    ///   message contains 'text'
+    ///   message startswith 'text'
+    ///   context has 'key'
+    ///   context key == 'value'
+    ///   template == 'exact template'
+    ///   template contains 'partial'
+    ///   not <rule>
+    ///
+    /// Multiple rules are AND-combined externally (each must return true).
+    class FilterRule {
+    public:
+        /// Parse a rule string into a FilterRule.
+        /// Throws std::invalid_argument on unrecognized syntax.
+        static FilterRule parse(const std::string& rule) {
+            std::string trimmed = trim(rule);
+            if (trimmed.empty()) {
+                throw std::invalid_argument("Empty filter rule");
+            }
+
+            bool negated = false;
+            if (startsWith(trimmed, "not ")) {
+                negated = true;
+                trimmed = trim(trimmed.substr(4));
+                if (trimmed.empty()) {
+                    throw std::invalid_argument("Empty rule after 'not'");
+                }
+            }
+
+            FilterRule r;
+            r.m_negated = negated;
+
+            // level >= LEVEL  /  level == LEVEL  /  level != LEVEL
+            if (startsWith(trimmed, "level ")) {
+                std::string rest = trim(trimmed.substr(6));
+                if (startsWith(rest, ">= ")) {
+                    r.m_type = RuleType::LevelGe;
+                    r.m_level = parseLevel(trim(rest.substr(3)));
+                } else if (startsWith(rest, "== ")) {
+                    r.m_type = RuleType::LevelEq;
+                    r.m_level = parseLevel(trim(rest.substr(3)));
+                } else if (startsWith(rest, "!= ")) {
+                    r.m_type = RuleType::LevelNe;
+                    r.m_level = parseLevel(trim(rest.substr(3)));
+                } else {
+                    throw std::invalid_argument("Invalid level operator in rule: " + rule);
+                }
+                return r;
+            }
+
+            // message contains 'text'  /  message startswith 'text'
+            if (startsWith(trimmed, "message ")) {
+                std::string rest = trim(trimmed.substr(8));
+                if (startsWith(rest, "contains ")) {
+                    r.m_type = RuleType::MessageContains;
+                    r.m_value = extractQuoted(trim(rest.substr(9)), rule);
+                } else if (startsWith(rest, "startswith ")) {
+                    r.m_type = RuleType::MessageStartsWith;
+                    r.m_value = extractQuoted(trim(rest.substr(11)), rule);
+                } else {
+                    throw std::invalid_argument("Invalid message operator in rule: " + rule);
+                }
+                return r;
+            }
+
+            // context has 'key'  /  context key == 'value'
+            if (startsWith(trimmed, "context ")) {
+                std::string rest = trim(trimmed.substr(8));
+                if (startsWith(rest, "has ")) {
+                    r.m_type = RuleType::ContextHas;
+                    r.m_value = extractQuoted(trim(rest.substr(4)), rule);
+                } else {
+                    size_t spacePos = rest.find(' ');
+                    if (spacePos == std::string::npos) {
+                        throw std::invalid_argument("Invalid context rule: " + rule);
+                    }
+                    std::string key = rest.substr(0, spacePos);
+                    std::string afterKey = trim(rest.substr(spacePos + 1));
+                    if (startsWith(afterKey, "== ")) {
+                        r.m_type = RuleType::ContextKeyEq;
+                        r.m_key = key;
+                        r.m_value = extractQuoted(trim(afterKey.substr(3)), rule);
+                    } else {
+                        throw std::invalid_argument("Invalid context operator in rule: " + rule);
+                    }
+                }
+                return r;
+            }
+
+            // template == 'exact template'  /  template contains 'partial'
+            if (startsWith(trimmed, "template ")) {
+                std::string rest = trim(trimmed.substr(9));
+                if (startsWith(rest, "== ")) {
+                    r.m_type = RuleType::TemplateEq;
+                    r.m_value = extractQuoted(trim(rest.substr(3)), rule);
+                } else if (startsWith(rest, "contains ")) {
+                    r.m_type = RuleType::TemplateContains;
+                    r.m_value = extractQuoted(trim(rest.substr(9)), rule);
+                } else {
+                    throw std::invalid_argument("Invalid template operator in rule: " + rule);
+                }
+                return r;
+            }
+
+            throw std::invalid_argument("Unrecognized filter rule: " + rule);
+        }
+
+        /// Evaluate this rule against a log entry.
+        /// Returns true if the entry passes (should be kept).
+        bool evaluate(const LogEntry& entry) const {
+            bool result = false;
+            switch (m_type) {
+                case RuleType::LevelGe:
+                    result = entry.level >= m_level;
+                    break;
+                case RuleType::LevelEq:
+                    result = entry.level == m_level;
+                    break;
+                case RuleType::LevelNe:
+                    result = entry.level != m_level;
+                    break;
+                case RuleType::MessageContains:
+                    result = entry.message.find(m_value) != std::string::npos;
+                    break;
+                case RuleType::MessageStartsWith:
+                    result = entry.message.size() >= m_value.size() &&
+                             entry.message.compare(0, m_value.size(), m_value) == 0;
+                    break;
+                case RuleType::ContextHas:
+                    result = entry.customContext.count(m_value) > 0;
+                    break;
+                case RuleType::ContextKeyEq:
+                    {
+                        auto it = entry.customContext.find(m_key);
+                        result = it != entry.customContext.end() && it->second == m_value;
+                    }
+                    break;
+                case RuleType::TemplateEq:
+                    result = entry.templateStr == m_value;
+                    break;
+                case RuleType::TemplateContains:
+                    result = entry.templateStr.find(m_value) != std::string::npos;
+                    break;
+            }
+            return m_negated ? !result : result;
+        }
+
+    private:
+        enum class RuleType {
+            LevelGe,
+            LevelEq,
+            LevelNe,
+            MessageContains,
+            MessageStartsWith,
+            ContextHas,
+            ContextKeyEq,
+            TemplateEq,
+            TemplateContains
+        };
+
+        RuleType m_type;
+        bool m_negated;
+        LogLevel m_level;
+        std::string m_value;
+        std::string m_key;
+
+        FilterRule() : m_type(RuleType::LevelGe), m_negated(false), m_level(LogLevel::TRACE) {}
+
+        static LogLevel parseLevel(const std::string& s) {
+            if (s == "TRACE") return LogLevel::TRACE;
+            if (s == "DEBUG") return LogLevel::DEBUG;
+            if (s == "INFO")  return LogLevel::INFO;
+            if (s == "WARN")  return LogLevel::WARN;
+            if (s == "ERROR") return LogLevel::ERROR;
+            if (s == "FATAL") return LogLevel::FATAL;
+            throw std::invalid_argument("Unknown log level: " + s);
+        }
+
+        /// Extract a single-quoted string value, e.g. 'hello world'.
+        static std::string extractQuoted(const std::string& s, const std::string& rule) {
+            if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') {
+                return s.substr(1, s.size() - 2);
+            }
+            throw std::invalid_argument("Expected single-quoted string in rule: " + rule);
+        }
+
+        static std::string trim(const std::string& s) {
+            size_t start = 0;
+            while (start < s.size() && (s[start] == ' ' || s[start] == '\t')) ++start;
+            size_t end = s.size();
+            while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) --end;
+            return s.substr(start, end - start);
+        }
+
+        static bool startsWith(const std::string& s, const std::string& prefix) {
+            return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+        }
+    };
+
+} // namespace minta
+
+
 // --- lunar_log/formatter/formatter_interface.hpp ---
 
 #include <string>
@@ -581,15 +793,73 @@ namespace minta {
 // --- lunar_log/sink/sink_interface.hpp ---
 
 #include <memory>
+#include <atomic>
+#include <mutex>
+#include <vector>
+#include <functional>
 
 namespace minta {
     class LunarLog;
 
+    using FilterPredicate = std::function<bool(const LogEntry&)>;
+
     class ISink {
     public:
+        ISink() : m_minLevel(LogLevel::TRACE) {}
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
+
+        void setMinLevel(LogLevel level) {
+            m_minLevel.store(level, std::memory_order_relaxed);
+        }
+
+        LogLevel getMinLevel() const {
+            return m_minLevel.load(std::memory_order_relaxed);
+        }
+
+        void setFilter(FilterPredicate filter) {
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            m_filter = std::move(filter);
+        }
+
+        void clearFilter() {
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            m_filter = nullptr;
+        }
+
+        void addFilterRule(const FilterRule& rule) {
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            m_filterRules.push_back(rule);
+        }
+
+        void addFilterRule(const std::string& ruleStr) {
+            FilterRule rule = FilterRule::parse(ruleStr);
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            m_filterRules.push_back(std::move(rule));
+        }
+
+        void clearFilterRules() {
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            m_filterRules.clear();
+        }
+
+        bool passesFilter(const LogEntry& entry) const {
+            if (entry.level < m_minLevel.load(std::memory_order_relaxed)) {
+                return false;
+            }
+
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            if (m_filter && !m_filter(entry)) {
+                return false;
+            }
+            for (const auto& rule : m_filterRules) {
+                if (!rule.evaluate(entry)) {
+                    return false;
+                }
+            }
+            return true;
+        }
 
     protected:
         void setFormatter(std::unique_ptr<IFormatter> formatter) {
@@ -606,6 +876,10 @@ namespace minta {
     private:
         std::unique_ptr<IFormatter> m_formatter;
         std::unique_ptr<ITransport> m_transport;
+        std::atomic<LogLevel> m_minLevel;
+        mutable std::mutex m_filterMutex;
+        FilterPredicate m_filter;
+        std::vector<FilterRule> m_filterRules;
 
         friend class LunarLog;
     };
@@ -656,6 +930,8 @@ namespace minta {
 #include <vector>
 #include <memory>
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include <stdexcept>
 
 namespace minta {
@@ -679,12 +955,58 @@ namespace minta {
             m_sinks.push_back(std::move(sink));
         }
 
-        void log(const LogEntry &entry) {
+        /// Filter pipeline: global predicate -> per-sink level -> per-sink predicate -> per-sink DSL rules.
+        /// Global min level is checked by the caller (LunarLog::logInternal) before enqueuing.
+        void log(const LogEntry &entry,
+                 const FilterPredicate& globalFilter,
+                 const std::vector<FilterRule>& globalFilterRules,
+                 std::mutex& globalFilterMutex) {
             if (!m_loggingStarted.load(std::memory_order_relaxed)) {
                 m_loggingStarted.store(true, std::memory_order_release);
             }
-            for (const auto &sink: m_sinks) {
-                sink->write(entry);
+
+            {
+                std::lock_guard<std::mutex> lock(globalFilterMutex);
+                if (globalFilter && !globalFilter(entry)) return;
+                for (const auto& rule : globalFilterRules) {
+                    if (!rule.evaluate(entry)) return;
+                }
+            }
+
+            for (const auto &sink : m_sinks) {
+                if (sink->passesFilter(entry)) {
+                    sink->write(entry);
+                }
+            }
+        }
+
+        void setSinkLevel(size_t index, LogLevel level) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->setMinLevel(level);
+            }
+        }
+
+        void setSinkFilter(size_t index, FilterPredicate filter) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->setFilter(std::move(filter));
+            }
+        }
+
+        void clearSinkFilter(size_t index) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->clearFilter();
+            }
+        }
+
+        void addSinkFilterRule(size_t index, const std::string& ruleStr) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->addFilterRule(ruleStr);
+            }
+        }
+
+        void clearSinkFilterRules(size_t index) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->clearFilterRules();
             }
         }
 
@@ -704,6 +1026,7 @@ namespace minta {
 #include <condition_variable>
 #include <type_traits>
 #include <set>
+#include <functional>
 #include <map>
 #include <unordered_map>
 #include <cstdlib>
@@ -848,6 +1171,47 @@ namespace minta {
             log(LogLevel::FATAL, messageTemplate, args...);
         }
 
+        void setFilter(FilterPredicate filter) {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilter = std::move(filter);
+        }
+
+        void clearFilter() {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilter = nullptr;
+        }
+
+        void addFilterRule(const std::string& ruleStr) {
+            FilterRule rule = FilterRule::parse(ruleStr);
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilterRules.push_back(std::move(rule));
+        }
+
+        void clearFilterRules() {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilterRules.clear();
+        }
+
+        void setSinkLevel(size_t sinkIndex, LogLevel level) {
+            m_logManager.setSinkLevel(sinkIndex, level);
+        }
+
+        void setSinkFilter(size_t sinkIndex, FilterPredicate filter) {
+            m_logManager.setSinkFilter(sinkIndex, std::move(filter));
+        }
+
+        void clearSinkFilter(size_t sinkIndex) {
+            m_logManager.clearSinkFilter(sinkIndex);
+        }
+
+        void addSinkFilterRule(size_t sinkIndex, const std::string& ruleStr) {
+            m_logManager.addSinkFilterRule(sinkIndex, ruleStr);
+        }
+
+        void clearSinkFilterRules(size_t sinkIndex) {
+            m_logManager.clearSinkFilterRules(sinkIndex);
+        }
+
         void setContext(const std::string& key, const std::string& value) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext[key] = value;
@@ -911,6 +1275,10 @@ namespace minta {
         std::mutex m_cacheMutex;
         std::unordered_map<std::string, std::vector<PlaceholderInfo>> m_templateCache;
         size_t m_templateCacheSize;
+
+        std::mutex m_globalFilterMutex;
+        FilterPredicate m_globalFilter;
+        std::vector<FilterRule> m_globalFilterRules;
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
@@ -1055,7 +1423,7 @@ namespace minta {
                     lock.unlock();
 
                     try {
-                        m_logManager.log(entry);
+                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }
@@ -1079,7 +1447,7 @@ namespace minta {
                     m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
                     try {
-                        m_logManager.log(entry);
+                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }

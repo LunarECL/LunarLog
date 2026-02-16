@@ -3,6 +3,7 @@
 
 #include "core/log_entry.hpp"
 #include "core/log_common.hpp"
+#include "core/filter_rule.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
@@ -13,6 +14,7 @@
 #include <condition_variable>
 #include <type_traits>
 #include <set>
+#include <functional>
 #include <map>
 #include <unordered_map>
 #include <cstdlib>
@@ -157,6 +159,47 @@ namespace minta {
             log(LogLevel::FATAL, messageTemplate, args...);
         }
 
+        void setFilter(FilterPredicate filter) {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilter = std::move(filter);
+        }
+
+        void clearFilter() {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilter = nullptr;
+        }
+
+        void addFilterRule(const std::string& ruleStr) {
+            FilterRule rule = FilterRule::parse(ruleStr);
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilterRules.push_back(std::move(rule));
+        }
+
+        void clearFilterRules() {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilterRules.clear();
+        }
+
+        void setSinkLevel(size_t sinkIndex, LogLevel level) {
+            m_logManager.setSinkLevel(sinkIndex, level);
+        }
+
+        void setSinkFilter(size_t sinkIndex, FilterPredicate filter) {
+            m_logManager.setSinkFilter(sinkIndex, std::move(filter));
+        }
+
+        void clearSinkFilter(size_t sinkIndex) {
+            m_logManager.clearSinkFilter(sinkIndex);
+        }
+
+        void addSinkFilterRule(size_t sinkIndex, const std::string& ruleStr) {
+            m_logManager.addSinkFilterRule(sinkIndex, ruleStr);
+        }
+
+        void clearSinkFilterRules(size_t sinkIndex) {
+            m_logManager.clearSinkFilterRules(sinkIndex);
+        }
+
         void setContext(const std::string& key, const std::string& value) {
             std::lock_guard<std::mutex> lock(m_contextMutex);
             m_customContext[key] = value;
@@ -220,6 +263,10 @@ namespace minta {
         std::mutex m_cacheMutex;
         std::unordered_map<std::string, std::vector<PlaceholderInfo>> m_templateCache;
         size_t m_templateCacheSize;
+
+        std::mutex m_globalFilterMutex;
+        FilterPredicate m_globalFilter;
+        std::vector<FilterRule> m_globalFilterRules;
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
@@ -364,7 +411,7 @@ namespace minta {
                     lock.unlock();
 
                     try {
-                        m_logManager.log(entry);
+                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }
@@ -388,7 +435,7 @@ namespace minta {
                     m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
                     try {
-                        m_logManager.log(entry);
+                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }

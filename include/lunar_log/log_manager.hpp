@@ -5,6 +5,8 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include <stdexcept>
 
 namespace minta {
@@ -28,12 +30,58 @@ namespace minta {
             m_sinks.push_back(std::move(sink));
         }
 
-        void log(const LogEntry &entry) {
+        /// Filter pipeline: global predicate -> per-sink level -> per-sink predicate -> per-sink DSL rules.
+        /// Global min level is checked by the caller (LunarLog::logInternal) before enqueuing.
+        void log(const LogEntry &entry,
+                 const FilterPredicate& globalFilter,
+                 const std::vector<FilterRule>& globalFilterRules,
+                 std::mutex& globalFilterMutex) {
             if (!m_loggingStarted.load(std::memory_order_relaxed)) {
                 m_loggingStarted.store(true, std::memory_order_release);
             }
-            for (const auto &sink: m_sinks) {
-                sink->write(entry);
+
+            {
+                std::lock_guard<std::mutex> lock(globalFilterMutex);
+                if (globalFilter && !globalFilter(entry)) return;
+                for (const auto& rule : globalFilterRules) {
+                    if (!rule.evaluate(entry)) return;
+                }
+            }
+
+            for (const auto &sink : m_sinks) {
+                if (sink->passesFilter(entry)) {
+                    sink->write(entry);
+                }
+            }
+        }
+
+        void setSinkLevel(size_t index, LogLevel level) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->setMinLevel(level);
+            }
+        }
+
+        void setSinkFilter(size_t index, FilterPredicate filter) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->setFilter(std::move(filter));
+            }
+        }
+
+        void clearSinkFilter(size_t index) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->clearFilter();
+            }
+        }
+
+        void addSinkFilterRule(size_t index, const std::string& ruleStr) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->addFilterRule(ruleStr);
+            }
+        }
+
+        void clearSinkFilterRules(size_t index) {
+            if (index < m_sinks.size()) {
+                m_sinks[index]->clearFilterRules();
             }
         }
 

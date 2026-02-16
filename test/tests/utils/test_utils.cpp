@@ -46,7 +46,8 @@ void TestUtils::cleanupLogFiles() {
         "context_test_log.txt", "default_formatter_log.txt",
         "suffix_format_test.txt", "suffix_json_test.txt", "suffix_xml_test.txt",
         "thread_safety_test.txt", "test_log2.json",
-        "custom_sink_test.txt", "source_loc_test.txt"
+        "custom_sink_test.txt", "source_loc_test.txt",
+        "operator_test.txt", "operator_json_test.txt", "operator_xml_test.txt"
     };
 
     for (const auto &filename : filesToRemove) {

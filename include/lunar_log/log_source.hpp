@@ -198,6 +198,7 @@ namespace minta {
             std::string spec;
             size_t startPos;
             size_t endPos;
+            char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
         };
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
@@ -211,8 +212,25 @@ namespace minta {
                     size_t endPos = messageTemplate.find('}', i);
                     if (endPos == std::string::npos) break;
                     std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
-                    auto parts = splitPlaceholder(content);
-                    placeholders.push_back({parts.first, content, parts.second, i, endPos});
+                    char op = 0;
+                    std::string nameContent = content;
+                    if (!content.empty() && (content[0] == '@' || content[0] == '$')) {
+                        op = content[0];
+                        // NOTE: content.substr(1) allocates a new string on each call.
+                        // This is acceptable for typical placeholder counts (< 10 per
+                        // template).  A C++17 string_view would eliminate this copy.
+                        nameContent = content.substr(1);
+                        // Per MessageTemplates spec: operator with empty name ({@}, {$}),
+                        // double operator ({@@x}), mixed operators ({@$x}), or
+                        // non-identifier start ({@ }) are all invalid — treat as literal.
+                        if (nameContent.empty() || nameContent[0] == '@' || nameContent[0] == '$'
+                            || !(std::isalnum(static_cast<unsigned char>(nameContent[0])) || nameContent[0] == '_')) {
+                            i = endPos;
+                            continue;
+                        }
+                    }
+                    auto parts = splitPlaceholder(nameContent);
+                    placeholders.push_back({parts.first, content, parts.second, i, endPos, op});
                     i = endPos;
                 } else if (messageTemplate[i] == '}') {
                     if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
@@ -236,7 +254,10 @@ namespace minta {
             auto placeholders = extractPlaceholders(messageTemplate);
             std::vector<std::string> warnings = validatePlaceholders(placeholders, values);
             std::string message = formatMessage(messageTemplate, placeholders, values);
+            // Both representations are kept: arguments is simple name-value pairs
+            // for backward compat; properties is the richer form with operator context.
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
+            auto properties = mapProperties(placeholders, values);
 
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
@@ -248,12 +269,15 @@ namespace minta {
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry{
                 level, std::move(message), now, messageTemplate, std::move(argumentPairs),
-                captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy)
+                captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy),
+                std::move(properties)
             });
 
+            // Fields must match LogEntry declaration order (aggregate init):
+            // level, message, timestamp, templateStr, arguments, file, line, function, customContext, properties
             for (const auto& warning : warnings) {
                 m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, {},
-                                            captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", {}});
+                                            captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", {}, {}});
             }
 
             lock.unlock();
@@ -416,12 +440,17 @@ namespace minta {
         static std::string toString(double value) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), "%.15g", value);
+            // Locale-safety: some locales use ',' as decimal separator;
+            // ensure consistent '.' for downstream parsers (e.g. JSON).
+            for (char *p = buf; *p; ++p) { if (*p == ',') *p = '.'; }
             return std::string(buf);
         }
 
         static std::string toString(float value) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(value));
+            // Locale-safety: same as toString(double).
+            for (char *p = buf; *p; ++p) { if (*p == ',') *p = '.'; }
             return std::string(buf);
         }
 
@@ -658,6 +687,31 @@ namespace minta {
             }
 
             return argumentPairs;
+        }
+
+        /// Map placeholders to PlaceholderProperty entries for structured formatters.
+        /// @param placeholders Parsed placeholder metadata (includes operator info).
+        /// @param values       Positional argument strings (from toString() conversion).
+        /// Properties is the richer representation: it carries operator context (@/$)
+        /// that arguments (simple name-value pairs) do not, enabling formatters to
+        /// choose type-aware serialization (e.g. JSON native types for @).
+        /// @note Properties are populated unconditionally — even when no operators
+        ///       are used — so that structured formatters (JSON, XML) always have
+        ///       access to placeholder names.  The per-message overhead is a single
+        ///       reserve + N moves for typical placeholder counts (< 10), which is
+        ///       negligible relative to I/O.
+        static std::vector<PlaceholderProperty> mapProperties(
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
+            std::vector<PlaceholderProperty> props;
+            props.reserve(std::min(placeholders.size(), values.size()));
+
+            size_t valueIndex = 0;
+            for (const auto &ph : placeholders) {
+                if (valueIndex >= values.size()) break;
+                props.push_back({ph.name, values[valueIndex++], ph.operator_});
+            }
+
+            return props;
         }
     };
 

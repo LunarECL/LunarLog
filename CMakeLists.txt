@@ -16,18 +16,56 @@ target_include_directories(LunarLog INTERFACE
 target_compile_features(LunarLog INTERFACE cxx_std_11)
 
 if(LUNARLOG_BUILD_EXAMPLES)
-    add_executable(BasicUsage examples/basic_usage.cpp)
-    target_link_libraries(BasicUsage PRIVATE LunarLog Threads::Threads)
-    set_target_properties(BasicUsage PROPERTIES
-            CXX_STANDARD ${LUNARLOG_CXX_STANDARD}
-            CXX_STANDARD_REQUIRED ON
-            CXX_EXTENSIONS OFF
+    set(EXAMPLE_TARGETS
+            BasicUsage
+            FormatSpecifiers
+            Operators
+            Filtering
+            CultureFormatting
+            CustomSink
+            CustomFormatter
+            ContextCapture
+            StructuredOutput
+            MultiSink
+            RateLimiting
+            ThreadSafety
     )
-    if(MSVC)
-        target_compile_options(BasicUsage PRIVATE /W4)
-    else()
-        target_compile_options(BasicUsage PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
+
+    set(EXAMPLE_SOURCES
+            examples/basic_usage.cpp
+            examples/format_specifiers.cpp
+            examples/operators.cpp
+            examples/filtering.cpp
+            examples/culture_formatting.cpp
+            examples/custom_sink.cpp
+            examples/custom_formatter.cpp
+            examples/context_capture.cpp
+            examples/structured_output.cpp
+            examples/multi_sink.cpp
+            examples/rate_limiting.cpp
+            examples/thread_safety.cpp
+    )
+
+    list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
+    math(EXPR EXAMPLE_LAST "${EXAMPLE_COUNT} - 1")
+
+    foreach(idx RANGE ${EXAMPLE_LAST})
+        list(GET EXAMPLE_TARGETS ${idx} TARGET_NAME)
+        list(GET EXAMPLE_SOURCES ${idx} SOURCE_FILE)
+
+        add_executable(${TARGET_NAME} ${SOURCE_FILE})
+        target_link_libraries(${TARGET_NAME} PRIVATE LunarLog Threads::Threads)
+        set_target_properties(${TARGET_NAME} PROPERTIES
+                CXX_STANDARD ${LUNARLOG_CXX_STANDARD}
+                CXX_STANDARD_REQUIRED ON
+                CXX_EXTENSIONS OFF
+        )
+        if(MSVC)
+            target_compile_options(${TARGET_NAME} PRIVATE /W4)
+        else()
+            target_compile_options(${TARGET_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+    endforeach()
 endif()
 
 if(LUNARLOG_BUILD_TESTS)

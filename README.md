@@ -4,6 +4,12 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 
 [![CI](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml)
 
+## Documentation
+
+- **[Examples](examples/)** — compilable examples covering every feature
+- **[Contributing Guide](CONTRIBUTING.md)** — build instructions, code style, PR process
+- **[GitHub Wiki](https://github.com/LunarECL/LunarLog/wiki)** — extended documentation and guides
+
 ## Features
 
 - Log levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL

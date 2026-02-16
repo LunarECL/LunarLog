@@ -122,6 +122,18 @@ namespace minta {
         std::string function;
         std::map<std::string, std::string> customContext;
         std::vector<PlaceholderProperty> properties;
+
+        LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
+                 std::string templateStr_, uint32_t templateHash_,
+                 std::vector<std::pair<std::string, std::string>> arguments_,
+                 std::string file_, int line_, std::string function_,
+                 std::map<std::string, std::string> customContext_,
+                 std::vector<PlaceholderProperty> properties_)
+            : level(level_), message(std::move(message_)), timestamp(timestamp_),
+              templateStr(std::move(templateStr_)), templateHash(templateHash_),
+              arguments(std::move(arguments_)),
+              file(std::move(file_)), line(line_), function(std::move(function_)),
+              customContext(std::move(customContext_)), properties(std::move(properties_)) {}
     };
 } // namespace minta
 
@@ -892,7 +904,7 @@ namespace minta {
         };
 
         std::mutex m_cacheMutex;
-        std::unordered_map<uint32_t, std::vector<PlaceholderInfo>> m_templateCache;
+        std::unordered_map<std::string, std::vector<PlaceholderInfo>> m_templateCache;
         size_t m_templateCacheSize;
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
@@ -951,7 +963,7 @@ namespace minta {
             {
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
-                    auto it = m_templateCache.find(hash);
+                    auto it = m_templateCache.find(messageTemplate);
                     if (it != m_templateCache.end()) {
                         placeholders = it->second;
                         cacheHit = true;
@@ -962,10 +974,9 @@ namespace minta {
                 placeholders = extractPlaceholders(messageTemplate);
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
-                    if (m_templateCache.size() >= m_templateCacheSize) {
-                        m_templateCache.clear();
+                    if (m_templateCache.size() < m_templateCacheSize) {
+                        m_templateCache[messageTemplate] = placeholders;
                     }
-                    m_templateCache[hash] = placeholders;
                 }
             }
 
@@ -984,19 +995,35 @@ namespace minta {
             }
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            // Fields must match LogEntry declaration order (aggregate init):
-            // level, message, timestamp, templateStr, templateHash, arguments,
-            // file, line, function, customContext, properties
-            m_logQueue.emplace(LogEntry{
-                level, std::move(message), now, messageTemplate, hash, std::move(argumentPairs),
-                captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", std::move(contextCopy),
-                std::move(properties)
-            });
+            m_logQueue.emplace(LogEntry(
+                /* level */         level,
+                /* message */       std::move(message),
+                /* timestamp */     now,
+                /* templateStr */   messageTemplate,
+                /* templateHash */  hash,
+                /* arguments */     std::move(argumentPairs),
+                /* file */          captureCtx ? file : "",
+                /* line */          captureCtx ? line : 0,
+                /* function */      captureCtx ? function : "",
+                /* customContext */ std::move(contextCopy),
+                /* properties */    std::move(properties)
+            ));
 
             for (const auto& warning : warnings) {
                 uint32_t warnHash = detail::fnv1a(warning);
-                m_logQueue.emplace(LogEntry{LogLevel::WARN, warning, now, warning, warnHash, {},
-                                            captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "", {}, {}});
+                m_logQueue.emplace(LogEntry(
+                    /* level */         LogLevel::WARN,
+                    /* message */       warning,
+                    /* timestamp */     now,
+                    /* templateStr */   warning,
+                    /* templateHash */  warnHash,
+                    /* arguments */     {},
+                    /* file */          captureCtx ? file : "",
+                    /* line */          captureCtx ? line : 0,
+                    /* function */      captureCtx ? function : "",
+                    /* customContext */ {},
+                    /* properties */    {}
+                ));
             }
 
             lock.unlock();

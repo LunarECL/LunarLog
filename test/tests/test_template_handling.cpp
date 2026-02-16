@@ -2,6 +2,10 @@
 #include "lunar_log.hpp"
 #include "utils/test_utils.hpp"
 #include <string>
+#include <thread>
+#include <vector>
+#include <sstream>
+#include <atomic>
 
 class TemplateHandlingTest : public ::testing::Test {
 protected:
@@ -277,4 +281,134 @@ TEST_F(TemplateHandlingTest, JsonConsistentHashAcrossEntries) {
     std::string hash2 = logContent.substr(second + 16, 8);
 
     EXPECT_EQ(hash1, hash2);
+}
+
+// --- Cache eviction: cap without eviction (L1) ---
+
+TEST_F(TemplateHandlingTest, CacheEvictionCapPreservesHotEntries) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.setTemplateCacheSize(10);
+    logger.addSink<minta::FileSink, minta::JsonFormatter>("template_eviction_test.txt");
+
+    for (int i = 0; i < 130; ++i) {
+        std::ostringstream tmpl;
+        tmpl << "Eviction test " << i << " {val}";
+        logger.info(tmpl.str(), std::to_string(i));
+    }
+
+    logger.flush();
+    TestUtils::waitForFileContent("template_eviction_test.txt");
+    std::string logContent = TestUtils::readLogFile("template_eviction_test.txt");
+
+    for (int i = 0; i < 130; ++i) {
+        std::ostringstream expected;
+        expected << "\"message\":\"Eviction test " << i << " " << i << "\"";
+        EXPECT_TRUE(logContent.find(expected.str()) != std::string::npos)
+            << "Missing message for i=" << i;
+    }
+}
+
+// --- Concurrent cache access ---
+
+TEST_F(TemplateHandlingTest, ConcurrentCacheAccess) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("template_concurrent_test.txt");
+
+    const int numThreads = 8;
+    const int logsPerThread = 50;
+    std::vector<std::thread> threads;
+    std::atomic<bool> go{false};
+
+    for (int t = 0; t < numThreads; ++t) {
+        threads.emplace_back([&logger, &go, t, logsPerThread]() {
+            while (!go.load(std::memory_order_acquire)) {}
+            for (int i = 0; i < logsPerThread; ++i) {
+                logger.info("Shared template {val}", std::to_string(t * 1000 + i));
+                std::ostringstream tmpl;
+                tmpl << "Thread " << t << " unique {val}";
+                logger.info(tmpl.str(), std::to_string(i));
+            }
+        });
+    }
+
+    go.store(true, std::memory_order_release);
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    logger.flush();
+    TestUtils::waitForFileContent("template_concurrent_test.txt");
+    std::string logContent = TestUtils::readLogFile("template_concurrent_test.txt");
+
+    EXPECT_FALSE(logContent.empty());
+    size_t sharedCount = 0;
+    size_t pos = 0;
+    while ((pos = logContent.find("Shared template ", pos)) != std::string::npos) {
+        ++sharedCount;
+        ++pos;
+    }
+    EXPECT_EQ(sharedCount, static_cast<size_t>(numThreads * logsPerThread));
+}
+
+// --- setTemplateCacheSize while logging ---
+
+TEST_F(TemplateHandlingTest, SetTemplateCacheSizeWhileLogging) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("template_resize_test.txt");
+
+    std::atomic<bool> done{false};
+
+    std::thread logThread([&logger, &done]() {
+        for (int i = 0; !done.load(std::memory_order_acquire); ++i) {
+            std::ostringstream tmpl;
+            tmpl << "Resize test " << (i % 20) << " {val}";
+            logger.info(tmpl.str(), std::to_string(i));
+        }
+    });
+
+    for (int sz = 1; sz <= 256; sz *= 2) {
+        logger.setTemplateCacheSize(static_cast<size_t>(sz));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    logger.setTemplateCacheSize(0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    logger.setTemplateCacheSize(128);
+
+    done.store(true, std::memory_order_release);
+    logThread.join();
+
+    logger.flush();
+    TestUtils::waitForFileContent("template_resize_test.txt");
+    std::string logContent = TestUtils::readLogFile("template_resize_test.txt");
+
+    EXPECT_FALSE(logContent.empty());
+    EXPECT_TRUE(logContent.find("Resize test") != std::string::npos);
+}
+
+// --- Operator + cache interaction ---
+
+TEST_F(TemplateHandlingTest, OperatorCacheInteraction) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink, minta::JsonFormatter>("template_opcache_test.txt");
+
+    logger.info("{@user} logged in", "alice");
+    logger.info("{@user} logged in", "bob");
+
+    logger.info("{} is empty", "val");
+    logger.info("{} is empty", "val2");
+
+    logger.flush();
+    TestUtils::waitForFileContent("template_opcache_test.txt");
+    std::string logContent = TestUtils::readLogFile("template_opcache_test.txt");
+
+    EXPECT_TRUE(logContent.find("\"message\":\"alice logged in\"") != std::string::npos);
+    EXPECT_TRUE(logContent.find("\"message\":\"bob logged in\"") != std::string::npos);
+
+    size_t alicePropPos = logContent.find("\"user\":\"alice\"");
+    EXPECT_NE(alicePropPos, std::string::npos) << "Expected destructured property for alice";
+    size_t bobPropPos = logContent.find("\"user\":\"bob\"");
+    EXPECT_NE(bobPropPos, std::string::npos) << "Expected destructured property for bob";
+
+    EXPECT_TRUE(logContent.find("\"message\":\"val is empty\"") != std::string::npos);
+    EXPECT_TRUE(logContent.find("\"message\":\"val2 is empty\"") != std::string::npos);
 }

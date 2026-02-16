@@ -4,6 +4,7 @@
 #include "lunar_log/core/log_common.hpp"
 #include "lunar_log/core/log_entry.hpp"
 #include "lunar_log/core/log_level.hpp"
+#include "lunar_log/core/filter_rule.hpp"
 #include "lunar_log/formatter/formatter_interface.hpp"
 #include "lunar_log/formatter/human_readable_formatter.hpp"
 #include "lunar_log/formatter/json_formatter.hpp"

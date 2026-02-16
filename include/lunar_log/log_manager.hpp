@@ -95,6 +95,11 @@ namespace minta {
             m_sinks[index]->clearAllFilters();
         }
 
+        void setSinkLocale(size_t index, const std::string& locale) {
+            requireValidIndex(index);
+            m_sinks[index]->setLocale(locale);
+        }
+
     private:
         void requireValidIndex(size_t index) const {
             if (index >= m_sinks.size()) {

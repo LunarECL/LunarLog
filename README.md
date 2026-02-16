@@ -19,6 +19,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **Filtering** — per-sink levels, predicate filters, DSL filter rules
 - Escaped brackets (`{{like this}}`)
 - Format specifiers: `{val:.2f}`, `{x:X}`, `{amt:C}`, `{rate:P}`, `{id:04}`, `{v:e}`
+- **Culture-specific formatting** — locale-aware numbers (`{:n}`), dates and times (`{:d}`, `{:T}`, etc.)
 
 ## Format Specifiers
 
@@ -43,6 +44,48 @@ logger.info("Sci: {v:e}", 1500.0);              // Sci: 1.500000e+03
 | `0N` | Zero-padded integer | `{:04}` → `0042` |
 
 Namespaced names work — the spec splits on the last colon: `{ns:key:.2f}`.
+
+## Culture-Specific Formatting
+
+Set a locale on the logger to enable locale-aware number and date/time formatting:
+
+```cpp
+logger.setLocale("de_DE");
+logger.info("Total: {amount:n}", 1234567.89);   // Total: 1.234.567,89
+logger.info("Date: {ts:D}", 1705312245);         // Date: Montag, Januar 15, 2024
+```
+
+| Spec | Description | Example (en_US) |
+|---|---|---|
+| `n` / `N` | Locale-aware number (thousand/decimal separators) | `{:n}` → `1,234,567.89` |
+| `d` | Short date | `{:d}` → `01/15/2024` |
+| `D` | Long date | `{:D}` → `Monday, January 15, 2024` |
+| `t` | Short time | `{:t}` → `10:30` |
+| `T` | Long time | `{:T}` → `10:30:45` |
+| `f` | Full date + short time | `{:f}` → `Monday, January 15, 2024 10:30` |
+| `F` | Full date + long time | `{:F}` → `Monday, January 15, 2024 10:30:45` |
+
+Date/time specs expect the value to be a Unix timestamp (seconds since epoch). Non-numeric values are returned as-is.
+
+The default locale is `"C"` (no culture-specific formatting). If a locale is not available on the system, it falls back to `"C"` automatically.
+
+### Per-Sink Locale
+
+Override the locale for individual sinks. The per-sink locale re-renders the message using that locale instead of the logger-level locale:
+
+```cpp
+logger.setLocale("en_US");
+logger.addSink<minta::FileSink>("report_de.log");
+logger.setSinkLocale(1, "de_DE");  // sink 1 uses German formatting
+
+logger.info("Total: {val:n}", 1234567.89);
+// sink 0 (en_US): Total: 1,234,567.89
+// sink 1 (de_DE): Total: 1.234.567,89
+```
+
+### Thread Safety
+
+`setLocale()` and `setSinkLocale()` are thread-safe and can be called concurrently with logging.
 
 ## Operators (`@` and `$`)
 
@@ -317,6 +360,12 @@ Supported compilers:
 ## CI
 
 Runs on every push — build matrix across GCC/Clang/MSVC, plus static analysis (cppcheck, clang-tidy) and test coverage.
+
+## Migration Notes
+
+### Format Specifiers `:d`, `:f`, `:t`
+
+The `:d`, `:f`, and `:t` format specifiers now produce locale-aware date/time output from Unix timestamps (see [Culture-Specific Formatting](#culture-specific-formatting) above). Previously these were no-ops that returned the value unchanged. If your templates use `{val:d}`, `{val:f}`, or `{val:t}` with non-timestamp values, the behavior has changed — non-numeric values are still returned as-is, but numeric values will now be interpreted as timestamps.
 
 ## License
 

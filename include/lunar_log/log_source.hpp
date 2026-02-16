@@ -254,6 +254,24 @@ namespace minta {
             }
         }
 
+        void setLocale(const std::string& locale) {
+            std::lock_guard<std::mutex> lock(m_localeMutex);
+            m_locale = locale;
+            m_hasLocale.store(locale != "C" && locale != "POSIX" && !locale.empty(), std::memory_order_release);
+        }
+
+        std::string getLocale() const {
+            std::lock_guard<std::mutex> lock(m_localeMutex);
+            return m_locale;
+        }
+
+        /// Set a per-sink locale. The sink's formatter will use this locale
+        /// to re-render culture-specific format specifiers, overriding the
+        /// logger-level locale for that sink only.
+        void setSinkLocale(size_t sinkIndex, const std::string& locale) {
+            m_logManager.setSinkLocale(sinkIndex, locale);
+        }
+
     private:
         static constexpr size_t kRateLimitMaxLogs = 1000;
         static constexpr long long kRateLimitWindowSeconds = 1;
@@ -292,43 +310,15 @@ namespace minta {
         FilterPredicate m_globalFilter;
         std::vector<FilterRule> m_globalFilterRules;
 
+        mutable std::mutex m_localeMutex;
+        std::atomic<bool> m_hasLocale{false};
+        std::string m_locale = "C";
+
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
-            for (size_t i = 0; i < messageTemplate.length(); ++i) {
-                if (messageTemplate[i] == '{') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '{') {
-                        ++i;
-                        continue;
-                    }
-                    size_t endPos = messageTemplate.find('}', i);
-                    if (endPos == std::string::npos) break;
-                    std::string content = messageTemplate.substr(i + 1, endPos - i - 1);
-                    char op = 0;
-                    std::string nameContent = content;
-                    if (!content.empty() && (content[0] == '@' || content[0] == '$')) {
-                        op = content[0];
-                        // NOTE: content.substr(1) allocates a new string on each call.
-                        // This is acceptable for typical placeholder counts (< 10 per
-                        // template).  A C++17 string_view would eliminate this copy.
-                        nameContent = content.substr(1);
-                        // Per MessageTemplates spec: operator with empty name ({@}, {$}),
-                        // double operator ({@@x}), mixed operators ({@$x}), or
-                        // non-identifier start ({@ }) are all invalid — treat as literal.
-                        if (nameContent.empty() || nameContent[0] == '@' || nameContent[0] == '$'
-                            || !(std::isalnum(static_cast<unsigned char>(nameContent[0])) || nameContent[0] == '_')) {
-                            i = endPos;
-                            continue;
-                        }
-                    }
-                    auto parts = splitPlaceholder(nameContent);
-                    placeholders.push_back({parts.first, content, parts.second, i, endPos, op});
-                    i = endPos;
-                } else if (messageTemplate[i] == '}') {
-                    if (i + 1 < messageTemplate.length() && messageTemplate[i + 1] == '}') {
-                        ++i;
-                    }
-                }
-            }
+            detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op});
+            });
             return placeholders;
         }
 
@@ -373,8 +363,14 @@ namespace minta {
                 }
             }
 
+            std::string localeCopy = "C";
+            if (m_hasLocale.load(std::memory_order_acquire)) {
+                std::lock_guard<std::mutex> localeLock(m_localeMutex);
+                localeCopy = m_locale;
+            }
+
             std::vector<std::string> warnings = validatePlaceholders(messageTemplate, placeholders, values);
-            std::string message = formatMessage(messageTemplate, placeholders, values);
+            std::string message = formatMessage(messageTemplate, placeholders, values, localeCopy);
             // Both representations are kept: arguments is simple name-value pairs
             // for backward compat; properties is the richer form with operator context.
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
@@ -399,7 +395,8 @@ namespace minta {
                 /* line */          captureCtx ? line : 0,
                 /* function */      captureCtx ? function : "",
                 /* customContext */ std::move(contextCopy),
-                /* properties */    std::move(properties)
+                /* properties */    std::move(properties),
+                /* locale */        std::move(localeCopy)
             ));
 
             for (const auto& warning : warnings) {
@@ -603,226 +600,45 @@ namespace minta {
             return std::string(buf);
         }
 
-        /// Safely parse an integer from a string. Returns fallback on failure.
+        // ----------------------------------------------------------------
+        // Format helpers — delegate to detail:: namespace implementations.
+        // Kept as private statics for internal use within LunarLog.
+        // ----------------------------------------------------------------
+
         static int safeStoi(const std::string &s, int fallback = 0) {
-            if (s.empty()) return fallback;
-            for (size_t i = 0; i < s.size(); ++i) {
-                if (!std::isdigit(static_cast<unsigned char>(s[i]))) return fallback;
-            }
-            try { return std::stoi(s); } catch (...) { return fallback; }
+            return detail::safeStoi(s, fallback);
         }
 
-        /// Try to parse a string as a double. Returns true on success and sets out.
-        /// Single strtod call replaces the old isNumericString+parseDouble pair.
         static bool tryParseDouble(const std::string &s, double &out) {
-            if (s.empty()) return false;
-            const char* start = s.c_str();
-            char* end = nullptr;
-            errno = 0;
-            double val = std::strtod(start, &end);
-            if (errno == ERANGE || end == start || static_cast<size_t>(end - start) != s.size()) {
-                errno = 0;
-                return false;
-            }
-            errno = 0;
-            if (std::isinf(val) || std::isnan(val)) return false;
-            out = val;
-            return true;
+            return detail::tryParseDouble(s, out);
         }
 
-        /// Kept for backward compat / simple cases.
         static bool isNumericString(const std::string &s) {
             double ignored;
-            return tryParseDouble(s, ignored);
+            return detail::tryParseDouble(s, ignored);
         }
 
         static double parseDouble(const std::string &s) {
             double val = 0.0;
-            tryParseDouble(s, val);
+            detail::tryParseDouble(s, val);
             return val;
         }
 
-        static double clampForLongLong(double val) {
-            if (val != val) return 0.0;
-            static const double kMinLL = static_cast<double>(LLONG_MIN + 1);
-            static const double kMaxLL = std::nextafter(static_cast<double>(LLONG_MAX), 0.0);
-            if (val < kMinLL) return kMinLL;
-            if (val > kMaxLL) return kMaxLL;
-            return val;
+        /// Apply a format spec to a value, with locale for culture-specific specs.
+        /// Delegates to detail::applyFormat which handles all specs including
+        /// culture-specific ones (:n, :N, :d, :D, :t, :T, :f, :F).
+        static std::string applyFormat(const std::string &value, const std::string &spec, const std::string &locale = "C") {
+            return detail::applyFormat(value, spec, locale);
         }
 
-        /// Format a double into a string using the given printf format.
-        /// Uses measure-first pattern to avoid truncation for extreme values.
-        static std::string snprintfDouble(const char* fmt, double val) {
-            int needed = std::snprintf(nullptr, 0, fmt, val);
-            if (needed < 0) return std::string();
-            if (static_cast<size_t>(needed) < 256) {
-                char stackBuf[256];
-                std::snprintf(stackBuf, sizeof(stackBuf), fmt, val);
-                return std::string(stackBuf);
-            }
-            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
-            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, val);
-            return std::string(heapBuf.data());
-        }
-
-        /// Format a double with precision into a string using the given printf format.
-        static std::string snprintfDoublePrecision(const char* fmt, int precision, double val) {
-            int needed = std::snprintf(nullptr, 0, fmt, precision, val);
-            if (needed < 0) return std::string();
-            if (static_cast<size_t>(needed) < 256) {
-                char stackBuf[256];
-                std::snprintf(stackBuf, sizeof(stackBuf), fmt, precision, val);
-                return std::string(stackBuf);
-            }
-            std::vector<char> heapBuf(static_cast<size_t>(needed) + 1);
-            std::snprintf(heapBuf.data(), heapBuf.size(), fmt, precision, val);
-            return std::string(heapBuf.data());
-        }
-
-        static std::string applyFormat(const std::string &value, const std::string &spec) {
-            if (spec.empty()) return value;
-
-            double numVal;
-
-            // Fixed-point: .Nf (e.g. ".2f", ".4f")
-            if (spec.size() >= 2 && spec[0] == '.' && spec.back() == 'f') {
-                if (!tryParseDouble(value, numVal)) return value;
-                std::string digits = spec.substr(1, spec.size() - 2);
-                int precision = safeStoi(digits, 6);
-                if (precision > 50) precision = 50;
-                return snprintfDoublePrecision("%.*f", precision, numVal);
-            }
-
-            // Fixed-point shorthand: Nf (e.g. "2f", "4f")
-            if (spec.size() >= 2 && spec.back() == 'f' && std::isdigit(static_cast<unsigned char>(spec[0]))) {
-                if (!tryParseDouble(value, numVal)) return value;
-                int precision = safeStoi(spec.substr(0, spec.size() - 1), 6);
-                if (precision > 50) precision = 50;
-                return snprintfDoublePrecision("%.*f", precision, numVal);
-            }
-
-            // Currency: C or c
-            if (spec == "C" || spec == "c") {
-                if (!tryParseDouble(value, numVal)) return value;
-                if (numVal < 0) {
-                    std::string formatted = snprintfDouble("%.2f", -numVal);
-                    if (formatted == "0.00") return "$0.00";
-                    return "-$" + formatted;
-                } else {
-                    std::string formatted = snprintfDouble("%.2f", numVal);
-                    return "$" + formatted;
-                }
-            }
-
-            // Hex: X (upper) or x (lower)
-            if (spec == "X" || spec == "x") {
-                if (!tryParseDouble(value, numVal)) return value;
-                char buf[64];
-                numVal = clampForLongLong(numVal);
-                long long intVal = static_cast<long long>(numVal);
-                unsigned long long uval;
-                std::string result;
-                if (intVal < 0) {
-                    result = "-";
-                    uval = 0ULL - static_cast<unsigned long long>(intVal);
-                } else {
-                    uval = static_cast<unsigned long long>(intVal);
-                }
-                if (spec == "X") {
-                    std::snprintf(buf, sizeof(buf), "%llX", uval);
-                } else {
-                    std::snprintf(buf, sizeof(buf), "%llx", uval);
-                }
-                result += buf;
-                return result;
-            }
-
-            // Scientific: E (upper) or e (lower)
-            if (spec == "E" || spec == "e") {
-                if (!tryParseDouble(value, numVal)) return value;
-                char buf[64];
-                if (spec == "E") {
-                    std::snprintf(buf, sizeof(buf), "%E", numVal);
-                } else {
-                    std::snprintf(buf, sizeof(buf), "%e", numVal);
-                }
-                return std::string(buf);
-            }
-
-            // Percentage: P or p
-            if (spec == "P" || spec == "p") {
-                if (!tryParseDouble(value, numVal)) return value;
-                double pct = numVal * 100.0;
-                if (!std::isfinite(pct)) pct = numVal;
-                return snprintfDouble("%.2f", pct) + "%";
-            }
-
-            // Zero-padded integer: 0N (e.g. "04", "08") — handle negative separately
-            if (spec.size() >= 2 && spec[0] == '0' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
-                if (!tryParseDouble(value, numVal)) return value;
-                char buf[64];
-                numVal = clampForLongLong(numVal);
-                int width = safeStoi(spec.substr(1), 1);
-                if (width > 50) width = 50;
-                long long intVal = static_cast<long long>(numVal);
-                if (intVal < 0) {
-                    unsigned long long absVal = 0ULL - static_cast<unsigned long long>(intVal);
-                    std::snprintf(buf, sizeof(buf), "-%0*llu", width, absVal);
-                } else {
-                    std::snprintf(buf, sizeof(buf), "%0*lld", width, intVal);
-                }
-                return std::string(buf);
-            }
-
-            // Unknown spec — return value as-is
-            return value;
-        }
-
-        /// Split "name:spec" into (name, spec). Returns (placeholder, "") if no colon.
         static std::pair<std::string, std::string> splitPlaceholder(const std::string &placeholder) {
-            size_t colonPos = placeholder.rfind(':');
-            if (colonPos == std::string::npos) {
-                return std::make_pair(placeholder, std::string());
-            }
-            return std::make_pair(placeholder.substr(0, colonPos), placeholder.substr(colonPos + 1));
+            return detail::splitPlaceholder(placeholder);
         }
 
         static std::string formatMessage(const std::string &messageTemplate,
-            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
-            std::string result;
-            result.reserve(messageTemplate.length());
-            size_t phIdx = 0;
-            size_t pos = 0;
-
-            while (pos < messageTemplate.length()) {
-                if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
-                    if (phIdx < values.size()) {
-                        result += applyFormat(values[phIdx], placeholders[phIdx].spec);
-                    } else {
-                        result.append(messageTemplate, pos, placeholders[phIdx].endPos - pos + 1);
-                    }
-                    pos = placeholders[phIdx].endPos + 1;
-                    ++phIdx;
-                } else if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') {
-                    result += '{';
-                    pos += 2;
-                } else if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') {
-                    result += '}';
-                    pos += 2;
-                } else {
-                    size_t litStart = pos;
-                    ++pos;
-                    while (pos < messageTemplate.length()) {
-                        if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) break;
-                        if (messageTemplate[pos] == '{' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '{') break;
-                        if (messageTemplate[pos] == '}' && pos + 1 < messageTemplate.length() && messageTemplate[pos + 1] == '}') break;
-                        ++pos;
-                    }
-                    result.append(messageTemplate, litStart, pos - litStart);
-                }
-            }
-            return result;
+            const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values,
+            const std::string &locale = "C") {
+            return detail::walkTemplate(messageTemplate, placeholders, values, locale);
         }
 
         static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(

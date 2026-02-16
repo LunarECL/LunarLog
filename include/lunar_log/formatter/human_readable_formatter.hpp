@@ -15,7 +15,7 @@ namespace minta {
             result += " [";
             result += getLevelString(entry.level);
             result += "] ";
-            result += entry.message;
+            result += localizedMessage(entry);
 
             if (!entry.file.empty()) {
                 result += " [";

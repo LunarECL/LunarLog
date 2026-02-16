@@ -51,7 +51,18 @@ void TestUtils::cleanupLogFiles() {
         "template_json_test.txt", "template_xml_test.txt",
         "template_validation_test.txt", "template_cache_test.txt",
         "template_concurrent_test.txt", "template_eviction_test.txt",
-        "template_resize_test.txt", "template_opcache_test.txt"
+        "template_resize_test.txt", "template_opcache_test.txt",
+        "culture_number_test.txt", "culture_number_locale_test.txt",
+        "culture_datetime_test.txt", "culture_default_test.txt",
+        "culture_sink0_test.txt", "culture_sink1_test.txt",
+        "culture_sinkdt0_test.txt", "culture_sinkdt1_test.txt",
+        "culture_json_test.txt", "culture_xml_test.txt",
+        "culture_thread_test.txt", "culture_invalid_test.txt",
+        "culture_same_locale_test.txt",
+        "culture_conc_sink_test.txt", "culture_locale_change_test.txt",
+        "culture_mixed_spec_test.txt",
+        "culture_multi0_test.txt", "culture_multi1_test.txt", "culture_multi2_test.txt",
+        "culture_reset_test.txt"
     };
 
     for (const auto &filename : filesToRemove) {

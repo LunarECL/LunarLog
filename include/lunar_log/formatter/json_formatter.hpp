@@ -15,7 +15,7 @@ namespace minta {
         std::string format(const LogEntry &entry) const override {
             std::string levelStr = getLevelString(entry.level);
             std::string tsStr = detail::formatTimestamp(entry.timestamp);
-            std::string msgEsc = escapeJsonString(entry.message);
+            std::string msgEsc = escapeJsonString(localizedMessage(entry));
 
             std::string json;
             json.reserve(64 + levelStr.size() + tsStr.size() + msgEsc.size());

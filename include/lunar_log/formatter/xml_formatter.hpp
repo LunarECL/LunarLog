@@ -19,7 +19,7 @@ namespace minta {
             xml += detail::formatTimestamp(entry.timestamp);
             xml += "</timestamp>";
             xml += "<message>";
-            xml += escapeXmlString(entry.message);
+            xml += escapeXmlString(localizedMessage(entry));
             xml += "</message>";
 
             if (!entry.templateStr.empty()) {

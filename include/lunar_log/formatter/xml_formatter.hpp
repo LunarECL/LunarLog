@@ -48,6 +48,26 @@ namespace minta {
                 xml += "</context>";
             }
 
+            if (!entry.properties.empty()) {
+                xml += "<properties>";
+                for (const auto &prop : entry.properties) {
+                    std::string safeName = sanitizeXmlName(prop.name);
+                    xml += "<";
+                    xml += safeName;
+                    if (prop.op == '@') {
+                        xml += " destructure=\"true\"";
+                    } else if (prop.op == '$') {
+                        xml += " stringify=\"true\"";
+                    }
+                    xml += ">";
+                    xml += escapeXmlString(prop.value);
+                    xml += "</";
+                    xml += safeName;
+                    xml += ">";
+                }
+                xml += "</properties>";
+            }
+
             xml += "</log_entry>";
             return xml;
         }

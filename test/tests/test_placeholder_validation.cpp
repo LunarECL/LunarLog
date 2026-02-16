@@ -18,7 +18,7 @@ TEST_F(PlaceholderValidationTest, EmptyPlaceholder) {
     TestUtils::waitForFileContent("validation_test_log.txt");
     std::string logContent = TestUtils::readLogFile("validation_test_log.txt");
 
-    EXPECT_TRUE(logContent.find("Warning: Empty placeholder found") != std::string::npos);
+    EXPECT_TRUE(logContent.find("has empty placeholder") != std::string::npos);
     EXPECT_TRUE(logContent.find("Empty placeholder: value") != std::string::npos);
 }
 
@@ -32,7 +32,7 @@ TEST_F(PlaceholderValidationTest, RepeatedPlaceholder) {
     TestUtils::waitForFileContent("validation_test_log.txt");
     std::string logContent = TestUtils::readLogFile("validation_test_log.txt");
 
-    EXPECT_TRUE(logContent.find("Warning: Repeated placeholder name: placeholder") != std::string::npos);
+    EXPECT_TRUE(logContent.find("has duplicate placeholder name: placeholder") != std::string::npos);
     EXPECT_TRUE(logContent.find("Repeated placeholder: value1 and value2") != std::string::npos);
 }
 

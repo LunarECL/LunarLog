@@ -27,6 +27,14 @@ namespace minta {
             json += msgEsc;
             json += '"';
 
+            if (!entry.templateStr.empty()) {
+                json += R"(,"messageTemplate":")";
+                json += escapeJsonString(entry.templateStr);
+                json += R"(","templateHash":")";
+                json += detail::toHexString(entry.templateHash);
+                json += '"';
+            }
+
             if (!entry.file.empty()) {
                 std::string fileEsc = escapeJsonString(entry.file);
                 std::string funcEsc = escapeJsonString(entry.function);

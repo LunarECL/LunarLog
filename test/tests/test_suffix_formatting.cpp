@@ -250,7 +250,7 @@ TEST_F(SuffixFormattingTest, JsonFormatterAppliesFormatSpec) {
     std::string logContent = TestUtils::readLogFile("suffix_json_test.txt");
 
     EXPECT_TRUE(logContent.find("\"message\":\"Price: $42.50\"") != std::string::npos);
-    EXPECT_TRUE(logContent.find("amount:C") == std::string::npos);
+    EXPECT_TRUE(logContent.find("\"message\":\"Price: {amount:C}\"") == std::string::npos);
 }
 
 TEST_F(SuffixFormattingTest, XmlFormatterAppliesFormatSpec) {
@@ -264,5 +264,5 @@ TEST_F(SuffixFormattingTest, XmlFormatterAppliesFormatSpec) {
     std::string logContent = TestUtils::readLogFile("suffix_xml_test.txt");
 
     EXPECT_TRUE(logContent.find("<message>Rate: 25.00%</message>") != std::string::npos);
-    EXPECT_TRUE(logContent.find("rate:P") == std::string::npos);
+    EXPECT_TRUE(logContent.find("<message>Rate: {rate:P}</message>") == std::string::npos);
 }

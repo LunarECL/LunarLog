@@ -60,6 +60,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_additional.cpp
             test/tests/test_round7_fixes.cpp
             test/tests/test_operators.cpp
+            test/tests/test_template_handling.cpp
             test/tests/utils/test_utils.cpp
     )
 

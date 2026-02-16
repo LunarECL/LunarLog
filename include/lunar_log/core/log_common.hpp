@@ -5,6 +5,7 @@
 #include <chrono>
 #include <ctime>
 #include <cstdio>
+#include <cstdint>
 #include <memory>
 
 namespace minta {
@@ -16,6 +17,23 @@ namespace detail {
 #else
         return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 #endif
+    }
+
+    /// FNV-1a hash (32-bit) for template grouping.
+    inline uint32_t fnv1a(const std::string &s) {
+        uint32_t hash = 0x811c9dc5u;
+        for (size_t i = 0; i < s.size(); ++i) {
+            hash ^= static_cast<uint32_t>(static_cast<unsigned char>(s[i]));
+            hash *= 0x01000193u;
+        }
+        return hash;
+    }
+
+    /// Format a uint32_t as an 8-char lowercase hex string.
+    inline std::string toHexString(uint32_t value) {
+        char buf[9];
+        std::snprintf(buf, sizeof(buf), "%08x", value);
+        return std::string(buf);
     }
 
     inline std::string formatTimestamp(const std::chrono::system_clock::time_point &time) {

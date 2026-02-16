@@ -4,6 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <vector>
+#include <stdexcept>
 
 class FilteringTest : public ::testing::Test {
 protected:
@@ -638,6 +639,136 @@ TEST_F(FilteringTest, ThreadSafeFilterChange) {
 
     SUCCEED();
 }
+
+// --- Empty Quoted String ---
+
+TEST_F(FilteringTest, DSLEmptyQuotedString) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.addFilterRule("message contains ''");
+
+    logger.info("Any message passes");
+    logger.info("");
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_NE(content.find("Any message passes"), std::string::npos);
+}
+
+// --- Out-of-Range Sink Index ---
+
+TEST_F(FilteringTest, SetSinkLevelOutOfRangeThrows) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    EXPECT_THROW(logger.setSinkLevel(99, minta::LogLevel::ERROR), std::out_of_range);
+}
+
+TEST_F(FilteringTest, SetSinkFilterOutOfRangeThrows) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    EXPECT_THROW(logger.setSinkFilter(99, [](const minta::LogEntry&) { return true; }), std::out_of_range);
+}
+
+TEST_F(FilteringTest, AddSinkFilterRuleOutOfRangeThrows) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    EXPECT_THROW(logger.addSinkFilterRule(99, "level >= WARN"), std::out_of_range);
+}
+
+TEST_F(FilteringTest, ClearSinkFilterOutOfRangeThrows) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    EXPECT_THROW(logger.clearSinkFilter(99), std::out_of_range);
+}
+
+TEST_F(FilteringTest, ClearSinkFilterRulesOutOfRangeThrows) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    EXPECT_THROW(logger.clearSinkFilterRules(99), std::out_of_range);
+}
+
+// --- Predicate That Throws ---
+
+TEST_F(FilteringTest, ThrowingPredicateDoesNotCrash) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("bad.log");
+    logger.addSink<minta::FileSink>("good.log");
+
+    logger.setSinkFilter(0, [](const minta::LogEntry&) -> bool {
+        throw std::runtime_error("filter exploded");
+    });
+
+    logger.info("Message after throwing filter");
+
+    logger.flush();
+    TestUtils::waitForFileContent("good.log");
+    std::string good = TestUtils::readLogFile("good.log");
+
+    EXPECT_NE(good.find("Message after throwing filter"), std::string::npos);
+}
+
+TEST_F(FilteringTest, ThrowingGlobalPredicateDoesNotCrash) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.setFilter([](const minta::LogEntry&) -> bool {
+        throw std::runtime_error("global filter exploded");
+    });
+
+    logger.info("Should not crash");
+    logger.flush();
+
+    SUCCEED();
+}
+
+// --- Context Key with Special Characters ---
+
+TEST_F(FilteringTest, ContextKeyWithSpecialCharacters) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.addFilterRule("context has 'x-request-id'");
+
+    logger.info("No special context");
+    logger.setContext("x-request-id", "abc-123");
+    logger.info("With special context");
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_EQ(content.find("No special context"), std::string::npos);
+    EXPECT_NE(content.find("With special context"), std::string::npos);
+}
+
+TEST_F(FilteringTest, ContextKeyWithDotsAndUnderscores) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.addFilterRule("context user.name == 'alice'");
+
+    logger.setContext("user.name", "bob");
+    logger.info("Bob message");
+    logger.setContext("user.name", "alice");
+    logger.info("Alice message");
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_EQ(content.find("Bob message"), std::string::npos);
+    EXPECT_NE(content.find("Alice message"), std::string::npos);
+}
+
+// --- Thread Safety: Change Filter While Logging (continued) ---
 
 TEST_F(FilteringTest, ThreadSafeSinkFilterChange) {
     minta::LunarLog logger(minta::LogLevel::TRACE, false);

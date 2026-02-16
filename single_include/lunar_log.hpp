@@ -162,6 +162,11 @@ namespace minta {
     public:
         /// Parse a rule string into a FilterRule.
         /// Throws std::invalid_argument on unrecognized syntax.
+        ///
+        /// String values are delimited by outer single quotes with no escape
+        /// sequences. Embedded quotes work by accident (outermost pair is
+        /// stripped). There is no way to match a value that both starts and
+        /// ends with a single quote.
         static FilterRule parse(const std::string& rule) {
             std::string trimmed = trim(rule);
             if (trimmed.empty()) {
@@ -290,6 +295,8 @@ namespace minta {
                     break;
                 case RuleType::TemplateContains:
                     result = entry.templateStr.find(m_value) != std::string::npos;
+                    break;
+                default:
                     break;
             }
             return m_negated ? !result : result;
@@ -805,7 +812,7 @@ namespace minta {
 
     class ISink {
     public:
-        ISink() : m_minLevel(LogLevel::TRACE) {}
+        ISink() : m_minLevel(LogLevel::TRACE), m_hasFilters(false) {}
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
@@ -818,35 +825,49 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
+        /// @note The predicate is invoked on the consumer thread while holding an
+        ///       internal mutex. It must be fast, non-blocking, and must NOT call
+        ///       any filter-modification methods on the same sink (deadlock).
+        ///       Filter predicates must capture state by value. Referenced
+        ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filter = std::move(filter);
+            m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filter = nullptr;
+            m_hasFilters.store(!m_filterRules.empty(), std::memory_order_release);
         }
 
-        void addFilterRule(const FilterRule& rule) {
+        void addFilterRule(FilterRule rule) {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filterRules.push_back(rule);
+            m_filterRules.push_back(std::move(rule));
+            m_hasFilters.store(true, std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filterRules.push_back(std::move(rule));
+            m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilterRules() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filterRules.clear();
+            m_hasFilters.store(static_cast<bool>(m_filter), std::memory_order_release);
         }
 
         bool passesFilter(const LogEntry& entry) const {
             if (entry.level < m_minLevel.load(std::memory_order_relaxed)) {
                 return false;
+            }
+
+            if (!m_hasFilters.load(std::memory_order_acquire)) {
+                return true;
             }
 
             std::lock_guard<std::mutex> lock(m_filterMutex);
@@ -877,6 +898,7 @@ namespace minta {
         std::unique_ptr<IFormatter> m_formatter;
         std::unique_ptr<ITransport> m_transport;
         std::atomic<LogLevel> m_minLevel;
+        std::atomic<bool> m_hasFilters;
         mutable std::mutex m_filterMutex;
         FilterPredicate m_filter;
         std::vector<FilterRule> m_filterRules;
@@ -955,64 +977,78 @@ namespace minta {
             m_sinks.push_back(std::move(sink));
         }
 
-        /// Filter pipeline: global predicate -> per-sink level -> per-sink predicate -> per-sink DSL rules.
-        /// Global min level is checked by the caller (LunarLog::logInternal) before enqueuing.
+        /// Filter pipeline: global min level (caller) -> global predicate -> global DSL rules
+        ///                -> per-sink min level -> per-sink predicate -> per-sink DSL rules.
         void log(const LogEntry &entry,
                  const FilterPredicate& globalFilter,
                  const std::vector<FilterRule>& globalFilterRules,
-                 std::mutex& globalFilterMutex) {
+                 std::mutex& globalFilterMutex,
+                 const std::atomic<bool>& hasGlobalFilters) {
             if (!m_loggingStarted.load(std::memory_order_relaxed)) {
                 m_loggingStarted.store(true, std::memory_order_release);
             }
 
-            {
-                std::lock_guard<std::mutex> lock(globalFilterMutex);
-                if (globalFilter && !globalFilter(entry)) return;
-                for (const auto& rule : globalFilterRules) {
-                    if (!rule.evaluate(entry)) return;
+            if (hasGlobalFilters.load(std::memory_order_acquire)) {
+                try {
+                    std::lock_guard<std::mutex> lock(globalFilterMutex);
+                    if (globalFilter && !globalFilter(entry)) return;
+                    for (const auto& rule : globalFilterRules) {
+                        if (!rule.evaluate(entry)) return;
+                    }
+                } catch (...) {
+                    // Bad global filter — block the entry rather than crash.
+                    return;
                 }
             }
 
             for (const auto &sink : m_sinks) {
-                if (sink->passesFilter(entry)) {
-                    sink->write(entry);
+                try {
+                    if (sink->passesFilter(entry)) {
+                        sink->write(entry);
+                    }
+                } catch (...) {
+                    // One bad sink must not prevent subsequent sinks from running.
                 }
             }
         }
 
         void setSinkLevel(size_t index, LogLevel level) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->setMinLevel(level);
-            }
+            requireValidIndex(index);
+            m_sinks[index]->setMinLevel(level);
         }
 
         void setSinkFilter(size_t index, FilterPredicate filter) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->setFilter(std::move(filter));
-            }
+            requireValidIndex(index);
+            m_sinks[index]->setFilter(std::move(filter));
         }
 
         void clearSinkFilter(size_t index) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->clearFilter();
-            }
+            requireValidIndex(index);
+            m_sinks[index]->clearFilter();
         }
 
         void addSinkFilterRule(size_t index, const std::string& ruleStr) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->addFilterRule(ruleStr);
-            }
+            requireValidIndex(index);
+            m_sinks[index]->addFilterRule(ruleStr);
         }
 
         void clearSinkFilterRules(size_t index) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->clearFilterRules();
-            }
+            requireValidIndex(index);
+            m_sinks[index]->clearFilterRules();
         }
 
     private:
+        void requireValidIndex(size_t index) const {
+            if (index >= m_sinks.size()) {
+                throw std::out_of_range("Sink index out of range");
+            }
+        }
+
         std::vector<std::unique_ptr<ISink> > m_sinks;
         std::atomic<bool> m_loggingStarted;
+        // NOTE: The global filter state (predicate, DSL rules, mutex) lives in
+        // LunarLog and is passed into log() by reference.  A future cleanup
+        // could bundle these into a GlobalFilterConfig struct owned here.
     };
 } // namespace minta
 
@@ -1048,7 +1084,8 @@ namespace minta {
             , m_captureSourceLocation(false)
             , m_hasCustomContext(false)
             , m_sinkWriteInProgress(false)
-            , m_templateCacheSize(128) {
+            , m_templateCacheSize(128)
+            , m_hasGlobalFilters(false) {
             if (addDefaultConsoleSink) {
                 addSink<ConsoleSink>();
             }
@@ -1171,25 +1208,34 @@ namespace minta {
             log(LogLevel::FATAL, messageTemplate, args...);
         }
 
+        /// @note The predicate is invoked on the consumer thread while holding an
+        ///       internal mutex. It must be fast, non-blocking, and must NOT call
+        ///       any filter-modification methods on the same logger (deadlock).
+        ///       Filter predicates must capture state by value. Referenced
+        ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
             m_globalFilter = std::move(filter);
+            m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
             m_globalFilter = nullptr;
+            m_hasGlobalFilters.store(!m_globalFilterRules.empty(), std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
             m_globalFilterRules.push_back(std::move(rule));
+            m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilterRules() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
             m_globalFilterRules.clear();
+            m_hasGlobalFilters.store(static_cast<bool>(m_globalFilter), std::memory_order_release);
         }
 
         void setSinkLevel(size_t sinkIndex, LogLevel level) {
@@ -1277,6 +1323,7 @@ namespace minta {
         size_t m_templateCacheSize;
 
         std::mutex m_globalFilterMutex;
+        std::atomic<bool> m_hasGlobalFilters;
         FilterPredicate m_globalFilter;
         std::vector<FilterRule> m_globalFilterRules;
 
@@ -1423,7 +1470,7 @@ namespace minta {
                     lock.unlock();
 
                     try {
-                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex);
+                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex, m_hasGlobalFilters);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }
@@ -1447,7 +1494,7 @@ namespace minta {
                     m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
                     try {
-                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex);
+                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex, m_hasGlobalFilters);
                     } catch (...) {
                         // Swallow — logging must not crash the application
                     }

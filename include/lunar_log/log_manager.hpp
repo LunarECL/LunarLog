@@ -30,64 +30,78 @@ namespace minta {
             m_sinks.push_back(std::move(sink));
         }
 
-        /// Filter pipeline: global predicate -> per-sink level -> per-sink predicate -> per-sink DSL rules.
-        /// Global min level is checked by the caller (LunarLog::logInternal) before enqueuing.
+        /// Filter pipeline: global min level (caller) -> global predicate -> global DSL rules
+        ///                -> per-sink min level -> per-sink predicate -> per-sink DSL rules.
         void log(const LogEntry &entry,
                  const FilterPredicate& globalFilter,
                  const std::vector<FilterRule>& globalFilterRules,
-                 std::mutex& globalFilterMutex) {
+                 std::mutex& globalFilterMutex,
+                 const std::atomic<bool>& hasGlobalFilters) {
             if (!m_loggingStarted.load(std::memory_order_relaxed)) {
                 m_loggingStarted.store(true, std::memory_order_release);
             }
 
-            {
-                std::lock_guard<std::mutex> lock(globalFilterMutex);
-                if (globalFilter && !globalFilter(entry)) return;
-                for (const auto& rule : globalFilterRules) {
-                    if (!rule.evaluate(entry)) return;
+            if (hasGlobalFilters.load(std::memory_order_acquire)) {
+                try {
+                    std::lock_guard<std::mutex> lock(globalFilterMutex);
+                    if (globalFilter && !globalFilter(entry)) return;
+                    for (const auto& rule : globalFilterRules) {
+                        if (!rule.evaluate(entry)) return;
+                    }
+                } catch (...) {
+                    // Bad global filter — block the entry rather than crash.
+                    return;
                 }
             }
 
             for (const auto &sink : m_sinks) {
-                if (sink->passesFilter(entry)) {
-                    sink->write(entry);
+                try {
+                    if (sink->passesFilter(entry)) {
+                        sink->write(entry);
+                    }
+                } catch (...) {
+                    // One bad sink must not prevent subsequent sinks from running.
                 }
             }
         }
 
         void setSinkLevel(size_t index, LogLevel level) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->setMinLevel(level);
-            }
+            requireValidIndex(index);
+            m_sinks[index]->setMinLevel(level);
         }
 
         void setSinkFilter(size_t index, FilterPredicate filter) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->setFilter(std::move(filter));
-            }
+            requireValidIndex(index);
+            m_sinks[index]->setFilter(std::move(filter));
         }
 
         void clearSinkFilter(size_t index) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->clearFilter();
-            }
+            requireValidIndex(index);
+            m_sinks[index]->clearFilter();
         }
 
         void addSinkFilterRule(size_t index, const std::string& ruleStr) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->addFilterRule(ruleStr);
-            }
+            requireValidIndex(index);
+            m_sinks[index]->addFilterRule(ruleStr);
         }
 
         void clearSinkFilterRules(size_t index) {
-            if (index < m_sinks.size()) {
-                m_sinks[index]->clearFilterRules();
-            }
+            requireValidIndex(index);
+            m_sinks[index]->clearFilterRules();
         }
 
     private:
+        void requireValidIndex(size_t index) const {
+            if (index >= m_sinks.size()) {
+                throw std::out_of_range("Sink index out of range");
+            }
+        }
+
         std::vector<std::unique_ptr<ISink> > m_sinks;
         std::atomic<bool> m_loggingStarted;
+        // NOTE: The global filter state (predicate, DSL rules, mutex) lives in
+        // LunarLog and is passed into log() by reference.  A future cleanup
+        // could bundle these into a GlobalFilterConfig struct owned here.
     };
 } // namespace minta
 

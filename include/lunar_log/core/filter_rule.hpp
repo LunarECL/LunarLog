@@ -25,6 +25,11 @@ namespace minta {
     public:
         /// Parse a rule string into a FilterRule.
         /// Throws std::invalid_argument on unrecognized syntax.
+        ///
+        /// String values are delimited by outer single quotes with no escape
+        /// sequences. Embedded quotes work by accident (outermost pair is
+        /// stripped). There is no way to match a value that both starts and
+        /// ends with a single quote.
         static FilterRule parse(const std::string& rule) {
             std::string trimmed = trim(rule);
             if (trimmed.empty()) {
@@ -153,6 +158,8 @@ namespace minta {
                     break;
                 case RuleType::TemplateContains:
                     result = entry.templateStr.find(m_value) != std::string::npos;
+                    break;
+                default:
                     break;
             }
             return m_negated ? !result : result;

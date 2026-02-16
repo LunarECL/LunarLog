@@ -19,7 +19,7 @@ namespace minta {
 
     class ISink {
     public:
-        ISink() : m_minLevel(LogLevel::TRACE) {}
+        ISink() : m_minLevel(LogLevel::TRACE), m_hasFilters(false) {}
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
@@ -32,35 +32,49 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
+        /// @note The predicate is invoked on the consumer thread while holding an
+        ///       internal mutex. It must be fast, non-blocking, and must NOT call
+        ///       any filter-modification methods on the same sink (deadlock).
+        ///       Filter predicates must capture state by value. Referenced
+        ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filter = std::move(filter);
+            m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filter = nullptr;
+            m_hasFilters.store(!m_filterRules.empty(), std::memory_order_release);
         }
 
-        void addFilterRule(const FilterRule& rule) {
+        void addFilterRule(FilterRule rule) {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filterRules.push_back(rule);
+            m_filterRules.push_back(std::move(rule));
+            m_hasFilters.store(true, std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filterRules.push_back(std::move(rule));
+            m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilterRules() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
             m_filterRules.clear();
+            m_hasFilters.store(static_cast<bool>(m_filter), std::memory_order_release);
         }
 
         bool passesFilter(const LogEntry& entry) const {
             if (entry.level < m_minLevel.load(std::memory_order_relaxed)) {
                 return false;
+            }
+
+            if (!m_hasFilters.load(std::memory_order_acquire)) {
+                return true;
             }
 
             std::lock_guard<std::mutex> lock(m_filterMutex);
@@ -91,6 +105,7 @@ namespace minta {
         std::unique_ptr<IFormatter> m_formatter;
         std::unique_ptr<ITransport> m_transport;
         std::atomic<LogLevel> m_minLevel;
+        std::atomic<bool> m_hasFilters;
         mutable std::mutex m_filterMutex;
         FilterPredicate m_filter;
         std::vector<FilterRule> m_filterRules;

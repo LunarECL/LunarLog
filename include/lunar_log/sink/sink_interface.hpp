@@ -68,6 +68,13 @@ namespace minta {
             m_hasFilters.store(static_cast<bool>(m_filter), std::memory_order_release);
         }
 
+        void clearAllFilters() {
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            m_filter = nullptr;
+            m_filterRules.clear();
+            m_hasFilters.store(false, std::memory_order_release);
+        }
+
         bool passesFilter(const LogEntry& entry) const {
             if (entry.level < m_minLevel.load(std::memory_order_relaxed)) {
                 return false;
@@ -77,11 +84,18 @@ namespace minta {
                 return true;
             }
 
-            std::lock_guard<std::mutex> lock(m_filterMutex);
-            if (m_filter && !m_filter(entry)) {
+            FilterPredicate filterCopy;
+            std::vector<FilterRule> rulesCopy;
+            {
+                std::lock_guard<std::mutex> lock(m_filterMutex);
+                filterCopy = m_filter;
+                rulesCopy = m_filterRules;
+            }
+
+            if (filterCopy && !filterCopy(entry)) {
                 return false;
             }
-            for (const auto& rule : m_filterRules) {
+            for (const auto& rule : rulesCopy) {
                 if (!rule.evaluate(entry)) {
                     return false;
                 }

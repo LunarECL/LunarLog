@@ -82,6 +82,9 @@ namespace minta {
             }
 
             // context has 'key'  /  context key == 'value'
+            // NOTE: Context keys containing spaces are not supported.
+            // The parser splits on whitespace, so "context my key == 'val'"
+            // would be misinterpreted.
             if (startsWith(trimmed, "context ")) {
                 std::string rest = trim(trimmed.substr(8));
                 if (startsWith(rest, "has ")) {
@@ -158,8 +161,6 @@ namespace minta {
                     break;
                 case RuleType::TemplateContains:
                     result = entry.templateStr.find(m_value) != std::string::npos;
-                    break;
-                default:
                     break;
             }
             return m_negated ? !result : result;

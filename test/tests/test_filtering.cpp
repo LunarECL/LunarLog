@@ -723,10 +723,13 @@ TEST_F(FilteringTest, ThrowingGlobalPredicateDoesNotCrash) {
         throw std::runtime_error("global filter exploded");
     });
 
-    logger.info("Should not crash");
+    logger.info("Should pass through");
     logger.flush();
 
-    SUCCEED();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_NE(content.find("Should pass through"), std::string::npos);
 }
 
 // --- Context Key with Special Characters ---
@@ -800,4 +803,69 @@ TEST_F(FilteringTest, ThreadSafeSinkFilterChange) {
     logger.flush();
 
     SUCCEED();
+}
+
+// --- L6: context key == when key is absent from entry ---
+
+TEST_F(FilteringTest, DSLContextKeyEqualsWhenKeyAbsent) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.addFilterRule("context env == 'production'");
+
+    logger.info("No context set");
+
+    logger.setContext("env", "production");
+    logger.info("With matching context");
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_EQ(content.find("No context set"), std::string::npos);
+    EXPECT_NE(content.find("With matching context"), std::string::npos);
+}
+
+// --- L7: global predicate + global DSL rule combined simultaneously ---
+
+TEST_F(FilteringTest, GlobalPredicateAndDSLRuleCombined) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.setFilter([](const minta::LogEntry& entry) {
+        return entry.level >= minta::LogLevel::WARN;
+    });
+
+    logger.addFilterRule("not message contains 'noisy'");
+
+    logger.info("Info blocked by predicate");
+    logger.warn("noisy heartbeat blocked by rule");
+    logger.warn("Important warning passes both");
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_EQ(content.find("Info blocked by predicate"), std::string::npos);
+    EXPECT_EQ(content.find("noisy heartbeat"), std::string::npos);
+    EXPECT_NE(content.find("Important warning passes both"), std::string::npos);
+}
+
+// --- L8: not template contains X (negation test) ---
+
+TEST_F(FilteringTest, DSLNegatedTemplateContains) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("test_log.txt");
+
+    logger.addFilterRule("not template contains 'heartbeat'");
+
+    logger.info("heartbeat {status}", "ok");
+    logger.info("User {name} logged in", "alice");
+
+    logger.flush();
+    TestUtils::waitForFileContent("test_log.txt");
+    std::string content = TestUtils::readLogFile("test_log.txt");
+
+    EXPECT_EQ(content.find("heartbeat"), std::string::npos);
+    EXPECT_NE(content.find("alice logged in"), std::string::npos);
 }

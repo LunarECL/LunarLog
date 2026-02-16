@@ -165,6 +165,8 @@ namespace minta {
         ///       any filter-modification methods on the same logger (deadlock).
         ///       Filter predicates must capture state by value. Referenced
         ///       objects must outlive the logger.
+        ///       If the global predicate throws, the entry is let through
+        ///       (fail-open) rather than silently dropped for all sinks.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
             m_globalFilter = std::move(filter);
@@ -190,6 +192,13 @@ namespace minta {
             m_hasGlobalFilters.store(static_cast<bool>(m_globalFilter), std::memory_order_release);
         }
 
+        void clearAllFilters() {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            m_globalFilter = nullptr;
+            m_globalFilterRules.clear();
+            m_hasGlobalFilters.store(false, std::memory_order_release);
+        }
+
         void setSinkLevel(size_t sinkIndex, LogLevel level) {
             m_logManager.setSinkLevel(sinkIndex, level);
         }
@@ -208,6 +217,10 @@ namespace minta {
 
         void clearSinkFilterRules(size_t sinkIndex) {
             m_logManager.clearSinkFilterRules(sinkIndex);
+        }
+
+        void clearAllSinkFilters(size_t sinkIndex) {
+            m_logManager.clearAllSinkFilters(sinkIndex);
         }
 
         void setContext(const std::string& key, const std::string& value) {

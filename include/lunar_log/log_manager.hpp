@@ -49,8 +49,8 @@ namespace minta {
                         if (!rule.evaluate(entry)) return;
                     }
                 } catch (...) {
-                    // Bad global filter — block the entry rather than crash.
-                    return;
+                    // Bad global filter — fail-open: let the entry through
+                    // rather than silently dropping it for all sinks.
                 }
             }
 
@@ -88,6 +88,11 @@ namespace minta {
         void clearSinkFilterRules(size_t index) {
             requireValidIndex(index);
             m_sinks[index]->clearFilterRules();
+        }
+
+        void clearAllSinkFilters(size_t index) {
+            requireValidIndex(index);
+            m_sinks[index]->clearAllFilters();
         }
 
     private:

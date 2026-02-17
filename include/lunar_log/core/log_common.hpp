@@ -481,7 +481,7 @@ namespace detail {
                 size_t commaPos = cleanName.find(',');
                 if (commaPos != std::string::npos) {
                     alignment = parseAlignment(cleanName.substr(commaPos + 1));
-                    cleanName = cleanName.substr(0, commaPos);
+                    cleanName.resize(commaPos);
                 }
                 int idxArg = -1;
                 if (isIndexedPlaceholder(cleanName)) {

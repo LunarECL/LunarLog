@@ -8,13 +8,14 @@
 #include <functional>
 #include <mutex>
 #include <stdexcept>
+#include <unordered_map>
+#include <string>
 
 namespace minta {
     class LogManager {
     public:
-        LogManager() : m_loggingStarted(false) {}
+        LogManager() : m_loggingStarted(false), m_nextAutoIndex(0) {}
 
-        // NOTE: addSink is not thread-safe after logging starts.
         // Add all sinks before any log calls are made.
         //
         // There is a TOCTOU race between the m_loggingStarted check and the
@@ -27,11 +28,56 @@ namespace minta {
             if (m_loggingStarted.load(std::memory_order_acquire)) {
                 throw std::logic_error("Cannot add sinks after logging has started");
             }
+            // Auto-name unnamed sinks, skipping collisions with user-named sinks
+            std::string autoName;
+            do {
+                autoName = "sink_" + std::to_string(m_nextAutoIndex++);
+            } while (m_sinkNames.count(autoName) > 0);
+            sink->setSinkName(autoName);
             m_sinks.push_back(std::move(sink));
+            m_sinkNames[autoName] = m_sinks.size() - 1;
+        }
+
+        /// Add a named sink. Throws std::invalid_argument if name is duplicate.
+        void addSink(const std::string& name, std::unique_ptr<ISink> sink) {
+            if (m_loggingStarted.load(std::memory_order_acquire)) {
+                throw std::logic_error("Cannot add sinks after logging has started");
+            }
+            if (m_sinkNames.count(name)) {
+                throw std::invalid_argument("Duplicate sink name: " + name);
+            }
+            sink->setSinkName(name);
+            m_sinks.push_back(std::move(sink));
+            m_sinkNames[name] = m_sinks.size() - 1;
+            m_nextAutoIndex++; // keep auto index advancing
+        }
+
+        /// Get sink index by name. Throws std::invalid_argument if not found.
+        size_t getSinkIndex(const std::string& name) const {
+            auto it = m_sinkNames.find(name);
+            if (it == m_sinkNames.end()) {
+                throw std::invalid_argument("Unknown sink name: " + name);
+            }
+            return it->second;
+        }
+
+        bool isLoggingStarted() const {
+            return m_loggingStarted.load(std::memory_order_acquire);
+        }
+
+        /// Get sink pointer by index.
+        ISink* getSink(size_t index) {
+            requireValidIndex(index);
+            return m_sinks[index].get();
+        }
+
+        const ISink* getSink(size_t index) const {
+            requireValidIndex(index);
+            return m_sinks[index].get();
         }
 
         /// Filter pipeline: global min level (caller) -> global predicate -> global DSL rules
-        ///                -> per-sink min level -> per-sink predicate -> per-sink DSL rules.
+        ///                -> per-sink tag routing -> per-sink min level -> per-sink predicate -> per-sink DSL rules.
         void log(const LogEntry &entry,
                  const FilterPredicate& globalFilter,
                  const std::vector<FilterRule>& globalFilterRules,
@@ -56,6 +102,7 @@ namespace minta {
 
             for (const auto &sink : m_sinks) {
                 try {
+                    if (!sink->shouldAcceptTags(entry.tags)) continue;
                     if (sink->passesFilter(entry)) {
                         sink->write(entry);
                     }
@@ -109,6 +156,8 @@ namespace minta {
 
         std::vector<std::unique_ptr<ISink> > m_sinks;
         std::atomic<bool> m_loggingStarted;
+        std::unordered_map<std::string, size_t> m_sinkNames;
+        size_t m_nextAutoIndex;
         // NOTE: The global filter state (predicate, DSL rules, mutex) lives in
         // LunarLog and is passed into log() by reference.  A future cleanup
         // could bundle these into a GlobalFilterConfig struct owned here.

@@ -42,6 +42,16 @@ namespace minta {
                 xml += "</function>";
             }
 
+            if (!entry.tags.empty()) {
+                xml += "<tags>";
+                for (const auto &tag : entry.tags) {
+                    xml += "<tag>";
+                    xml += escapeXmlString(tag);
+                    xml += "</tag>";
+                }
+                xml += "</tags>";
+            }
+
             if (!entry.customContext.empty()) {
                 xml += "<context>";
                 for (const auto &ctx : entry.customContext) {

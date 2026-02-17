@@ -101,6 +101,8 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_template_handling.cpp
             test/tests/test_filtering.cpp
             test/tests/test_culture_formatting.cpp
+            test/tests/test_named_sinks.cpp
+            test/tests/test_tag_routing.cpp
             test/tests/utils/test_utils.cpp
     )
 

@@ -24,6 +24,7 @@
 #include <climits>
 #include <cmath>
 #include <sstream>
+#include <list>
 
 namespace minta {
 
@@ -75,9 +76,19 @@ namespace detail {
         while (pos < messageTemplate.size() && (messageTemplate[pos] == ' ' || messageTemplate[pos] == '\t')) ++pos;
         return {tags, messageTemplate.substr(pos)};
     }
+    using ScopeFrame = std::vector<std::pair<std::string, std::string>>;
+    using ScopeStack = std::list<ScopeFrame>;
+    using ScopeFrameIter = ScopeStack::iterator;
+
+    inline ScopeStack& threadScopeStack() {
+        thread_local ScopeStack stack;
+        return stack;
+    }
+
 } // namespace detail
 
     class SinkProxy;
+    class LogScope;
 
     class LunarLog {
     public:
@@ -362,6 +373,8 @@ namespace detail {
             m_hasCustomContext.store(false, std::memory_order_release);
         }
 
+        LogScope scope(std::initializer_list<std::pair<std::string, std::string>> pairs);
+
         /// Set the maximum number of cached template parse results.
         /// Setting to 0 disables caching and clears existing entries.
         /// Shrinking to a non-zero value does NOT trim existing entries —
@@ -509,6 +522,15 @@ namespace detail {
             if (m_hasCustomContext.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
+            }
+
+            auto& scopeStack = detail::threadScopeStack();
+            if (!scopeStack.empty()) {
+                for (const auto& frame : scopeStack) {
+                    for (const auto& kv : frame) {
+                        contextCopy[kv.first] = kv.second;
+                    }
+                }
             }
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
@@ -820,6 +842,71 @@ namespace detail {
             return props;
         }
     };
+
+    /// RAII scoped context that injects key-value pairs into log entries
+    /// for the lifetime of the scope.
+    ///
+    /// NOTE: Scoped context is **thread-wide**, not per-logger instance.
+    /// All LunarLog instances on the same thread share the same scope stack.
+    /// If you use multiple loggers on one thread, scoped context will appear
+    /// in log entries from all of them. This is by design — most applications
+    /// use a single logger, and thread-wide scoping avoids the complexity of
+    /// passing logger pointers into scope objects.
+    class LogScope {
+    public:
+        LogScope(const LogScope&) = delete;
+        LogScope& operator=(const LogScope&) = delete;
+
+        LogScope(LogScope&& other) noexcept
+            : m_active(other.m_active), m_iter(other.m_iter) {
+            other.m_active = false;
+        }
+
+        LogScope& operator=(LogScope&& other) noexcept {
+            if (this != &other) {
+                if (m_active) {
+                    detail::threadScopeStack().erase(m_iter);
+                }
+                m_active = other.m_active;
+                m_iter = other.m_iter;
+                other.m_active = false;
+            }
+            return *this;
+        }
+
+        ~LogScope() noexcept {
+            if (m_active) {
+                detail::threadScopeStack().erase(m_iter);
+            }
+        }
+
+        /// Append a key-value pair to this scope's frame.
+        /// If the same key is added multiple times, the last value wins
+        /// (later entries overwrite earlier ones during collection).
+        LogScope& add(const std::string& key, const std::string& value) {
+            if (m_active) {
+                m_iter->emplace_back(key, value);
+            }
+            return *this;
+        }
+
+    private:
+        friend class LunarLog;
+
+        explicit LogScope(std::initializer_list<std::pair<std::string, std::string>> pairs)
+            : m_active(true) {
+            auto& stack = detail::threadScopeStack();
+            stack.emplace_back(pairs.begin(), pairs.end());
+            m_iter = std::prev(stack.end());
+        }
+
+        bool m_active = false;
+        detail::ScopeFrameIter m_iter;
+    };
+
+    inline LogScope LunarLog::scope(std::initializer_list<std::pair<std::string, std::string>> pairs) {
+        return LogScope(pairs);
+    }
 
     class ContextScope {
     public:

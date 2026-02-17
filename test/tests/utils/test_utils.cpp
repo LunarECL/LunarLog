@@ -84,7 +84,17 @@ void TestUtils::cleanupLogFiles() {
         "test_metrics_warn.txt", "test_fmtarg.txt",
         // Pipe transform tests
         "pipe_test.txt", "pipe_json.txt", "pipe_xml.txt",
-        "pipe_trunc_noop.txt", "pipe_json_noxf.txt", "pipe_xml_noxf.txt"
+        "pipe_trunc_noop.txt", "pipe_json_noxf.txt", "pipe_xml_noxf.txt",
+        // Scoped context tests
+        "scope_basic.txt", "scope_multi_keys.txt", "scope_nested.txt",
+        "scope_shadow.txt", "scope_vs_global.txt", "scope_threads.txt",
+        "scope_no_leak.txt", "scope_move_ctor.txt", "scope_move_assign.txt",
+        "scope_exception.txt", "scope_add.txt", "scope_add_chain.txt",
+        "scope_empty.txt", "scope_deep.txt", "scope_deep_diff.txt",
+        "scope_compat.txt", "scope_coexist.txt", "scope_json.txt",
+        "scope_xml.txt", "scope_globalctx.txt", "scope_moved_add.txt",
+        "scope_selfmove.txt", "scope_merge.txt",
+        "scope_dup_key.txt", "scope_multi_logger_a.txt", "scope_multi_logger_b.txt"
     };
 
     for (const auto &filename : filesToRemove) {

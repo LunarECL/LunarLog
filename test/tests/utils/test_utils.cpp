@@ -94,7 +94,23 @@ void TestUtils::cleanupLogFiles() {
         "scope_compat.txt", "scope_coexist.txt", "scope_json.txt",
         "scope_xml.txt", "scope_globalctx.txt", "scope_moved_add.txt",
         "scope_selfmove.txt", "scope_merge.txt",
-        "scope_dup_key.txt", "scope_multi_logger_a.txt", "scope_multi_logger_b.txt"
+        "scope_dup_key.txt", "scope_multi_logger_a.txt", "scope_multi_logger_b.txt",
+        "compact_level.txt", "compact_msg.txt", "compact_notmsg.txt",
+        "compact_ctxhas.txt", "compact_ctxeq.txt", "compact_tpl.txt",
+        "compact_nottpl.txt", "compact_multi.txt", "compact_quoted.txt",
+        "compact_ctxquoted.txt", "compact_clear.txt",
+        "compact_sink_level.txt", "compact_sink_all.txt",
+        "compact_sink_msg.txt", "compact_sink_multi.txt",
+        "compact_sink_ctx.txt", "compact_sink_ctxeq.txt",
+        "compact_sink_tpl.txt", "compact_sink_nottpl.txt",
+        "compact_sink_chain.txt", "compact_sink_clear.txt",
+        "compact_trace.txt", "compact_fatal.txt", "compact_casesens.txt",
+        "compact_mixed.txt", "compact_empty.txt",
+        "compact_ctxspecial.txt", "compact_ctxdots.txt",
+        "compact_3way.txt", "compact_negquoted.txt", "compact_tplquoted.txt",
+        "compact_stack.txt", "compact_sqkw.txt", "compact_ctxsq.txt",
+        "compact_json.txt",
+        "compact_warning_alias.txt", "compact_quoted_ctx_key.txt"
     };
 
     for (const auto &filename : filesToRemove) {

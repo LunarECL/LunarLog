@@ -124,6 +124,15 @@ namespace minta {
             m_hasFilters.store(true, std::memory_order_release);
         }
 
+        void addFilterRules(std::vector<FilterRule> rules) {
+            if (rules.empty()) return;
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            for (size_t i = 0; i < rules.size(); ++i) {
+                m_filterRules.push_back(std::move(rules[i]));
+            }
+            m_hasFilters.store(true, std::memory_order_release);
+        }
+
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_filterMutex);

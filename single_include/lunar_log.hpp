@@ -1457,6 +1457,15 @@ namespace minta {
             m_hasFilters.store(true, std::memory_order_release);
         }
 
+        void addFilterRules(std::vector<FilterRule> rules) {
+            if (rules.empty()) return;
+            std::lock_guard<std::mutex> lock(m_filterMutex);
+            for (size_t i = 0; i < rules.size(); ++i) {
+                m_filterRules.push_back(std::move(rules[i]));
+            }
+            m_hasFilters.store(true, std::memory_order_release);
+        }
+
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_filterMutex);
@@ -2080,6 +2089,21 @@ namespace detail {
             m_hasGlobalFilters.store(false, std::memory_order_release);
         }
 
+        /// Add compact filter rules (space-separated, AND-combined).
+        /// Syntax: "WARN+", "~keyword", "!~keyword", "ctx:key", "ctx:key=val",
+        /// "tpl:pattern", "!tpl:pattern". See Compact-Filter wiki page.
+        /// Thread-safe — acquires global filter mutex.
+        void filter(const std::string& compactExpr) {
+            std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            for (size_t i = 0; i < rules.size(); ++i) {
+                m_globalFilterRules.push_back(std::move(rules[i]));
+            }
+            if (!m_globalFilterRules.empty()) {
+                m_hasGlobalFilters.store(true, std::memory_order_release);
+            }
+        }
+
         void setSinkLevel(size_t sinkIndex, LogLevel level) {
             m_logManager.setSinkLevel(sinkIndex, level);
         }
@@ -2691,6 +2715,14 @@ namespace detail {
 
         SinkProxy& filterRule(const std::string& dsl) {
             m_sink->addFilterRule(dsl);
+            return *this;
+        }
+
+        /// Add compact filter rules to this sink.
+        /// Thread safety: uses ISink::addFilterRules for atomic batch addition.
+        SinkProxy& filter(const std::string& compactExpr) {
+            std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
+            m_sink->addFilterRules(std::move(rules));
             return *this;
         }
 

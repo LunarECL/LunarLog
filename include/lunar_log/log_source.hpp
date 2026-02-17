@@ -4,6 +4,7 @@
 #include "core/log_entry.hpp"
 #include "core/log_common.hpp"
 #include "core/filter_rule.hpp"
+#include "core/compact_filter.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
@@ -329,6 +330,21 @@ namespace detail {
             m_globalFilter = nullptr;
             m_globalFilterRules.clear();
             m_hasGlobalFilters.store(false, std::memory_order_release);
+        }
+
+        /// Add compact filter rules (space-separated, AND-combined).
+        /// Syntax: "WARN+", "~keyword", "!~keyword", "ctx:key", "ctx:key=val",
+        /// "tpl:pattern", "!tpl:pattern". See Compact-Filter wiki page.
+        /// Thread-safe — acquires global filter mutex.
+        void filter(const std::string& compactExpr) {
+            std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            for (size_t i = 0; i < rules.size(); ++i) {
+                m_globalFilterRules.push_back(std::move(rules[i]));
+            }
+            if (!m_globalFilterRules.empty()) {
+                m_hasGlobalFilters.store(true, std::memory_order_release);
+            }
         }
 
         void setSinkLevel(size_t sinkIndex, LogLevel level) {
@@ -942,6 +958,14 @@ namespace detail {
 
         SinkProxy& filterRule(const std::string& dsl) {
             m_sink->addFilterRule(dsl);
+            return *this;
+        }
+
+        /// Add compact filter rules to this sink.
+        /// Thread safety: uses ISink::addFilterRules for atomic batch addition.
+        SinkProxy& filter(const std::string& compactExpr) {
+            std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
+            m_sink->addFilterRules(std::move(rules));
             return *this;
         }
 

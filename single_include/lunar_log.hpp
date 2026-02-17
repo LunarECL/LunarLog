@@ -1698,11 +1698,14 @@ namespace minta {
             // Do not collapse by placeholder name: duplicate names may carry
             // distinct positional values (e.g. "{x} {x}" with args 1,2).
             namedOrdinal = 0;
+            size_t argCursor = 0;
             for (size_t i = 0; i < spans.size(); ++i) {
-                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
-                if (spans[i].indexedArg < 0) ++namedOrdinal;
-                if (slot < values.size() && i < entry.arguments.size()) {
-                    values[slot] = entry.arguments[i].second;
+                const auto &ph = spans[i];
+                size_t slot = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (slot < values.size() && argCursor < entry.arguments.size()) {
+                    values[slot] = entry.arguments[argCursor].second;
+                    ++argCursor;
                 }
             }
             return detail::walkTemplate(entry.templateStr, spans, values, localeCopy);

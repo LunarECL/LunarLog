@@ -145,7 +145,8 @@ void TestUtils::cleanupLogFiles() {
         "indexed_mixed.txt", "indexed_no_dup_warning.txt", "indexed_transform.txt",
         "indexed_no_mismatch_warning.txt", "indexed_mixed_reverse.txt",
         "indexed_structured.json", "indexed_structured.xml", "indexed_overflow.txt",
-        "culture_dup_slot_sink0.txt", "culture_dup_slot_sink1.txt", "culture_sci_double_test.txt"
+        "culture_dup_slot_sink0.txt", "culture_dup_slot_sink1.txt", "culture_sci_double_test.txt",
+        "culture_outofrange_sink0.txt", "culture_outofrange_sink1.txt"
     };
 
     for (const auto &filename : filesToRemove) {

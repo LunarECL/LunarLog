@@ -368,6 +368,33 @@ TEST_F(CultureFormattingTest, PerSinkLocaleRerenderPreservesDuplicateNamedSlots)
         << "Sink1 must not collapse duplicate names to first value. Got: " << sink1;
 }
 
+TEST_F(CultureFormattingTest, PerSinkLocaleOutOfRangeIndexedThenNamedKeepsArgumentAlignment) {
+    if (!isLocaleAvailable("de_DE")) {
+        GTEST_SKIP() << "de_DE locale not available on this system";
+    }
+
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("culture_outofrange_sink0.txt");
+    logger.addSink<minta::FileSink>("culture_outofrange_sink1.txt");
+
+    logger.setLocale("C");
+    logger.setSinkLocale(1, "de_DE");
+
+    // Out-of-range indexed placeholder should not shift mapping for the later named slot.
+    logger.info("Align: {5} {name}", "Alice");
+
+    logger.flush();
+    TestUtils::waitForFileContent("culture_outofrange_sink0.txt");
+    TestUtils::waitForFileContent("culture_outofrange_sink1.txt");
+
+    std::string sink0 = TestUtils::readLogFile("culture_outofrange_sink0.txt");
+    std::string sink1 = TestUtils::readLogFile("culture_outofrange_sink1.txt");
+
+    EXPECT_NE(sink0.find("Alice"), std::string::npos)
+        << "Sink0 should render named value from slot 0. Got: " << sink0;
+    EXPECT_NE(sink1.find("Alice"), std::string::npos)
+        << "Sink1 (re-rendered locale) should render the same named value. Got: " << sink1;
+}
 TEST_F(CultureFormattingTest, PerSinkLocaleJsonFormatter) {
     if (!isLocaleAvailable("en_US")) {
         GTEST_SKIP() << "en_US locale not available on this system";

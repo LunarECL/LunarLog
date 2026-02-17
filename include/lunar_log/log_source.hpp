@@ -85,20 +85,6 @@ namespace detail {
         return stack;
     }
 
-    /// Collect all scoped context pairs into a map.
-    /// When the same key appears in multiple frames, the **outermost** (earliest
-    /// pushed) frame's value is overwritten by inner frames — i.e., inner scopes
-    /// shadow outer scopes for duplicate keys.
-    inline std::map<std::string, std::string> collectScopedContext() {
-        std::map<std::string, std::string> result;
-        auto& stack = threadScopeStack();
-        for (const auto& frame : stack) {
-            for (const auto& kv : frame) {
-                result[kv.first] = kv.second;
-            }
-        }
-        return result;
-    }
 } // namespace detail
 
     class SinkProxy;
@@ -540,9 +526,10 @@ namespace detail {
 
             auto& scopeStack = detail::threadScopeStack();
             if (!scopeStack.empty()) {
-                auto scopedCtx = detail::collectScopedContext();
-                for (auto& kv : scopedCtx) {
-                    contextCopy[kv.first] = std::move(kv.second);
+                for (const auto& frame : scopeStack) {
+                    for (const auto& kv : frame) {
+                        contextCopy[kv.first] = kv.second;
+                    }
                 }
             }
 
@@ -893,6 +880,9 @@ namespace detail {
             }
         }
 
+        /// Append a key-value pair to this scope's frame.
+        /// If the same key is added multiple times, the last value wins
+        /// (later entries overwrite earlier ones during collection).
         LogScope& add(const std::string& key, const std::string& value) {
             if (m_active) {
                 m_iter->emplace_back(key, value);
@@ -910,7 +900,7 @@ namespace detail {
             m_iter = std::prev(stack.end());
         }
 
-        bool m_active;
+        bool m_active = false;
         detail::ScopeFrameIter m_iter;
     };
 

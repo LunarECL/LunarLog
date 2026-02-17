@@ -6,6 +6,7 @@
 #include "lunar_log/core/log_level.hpp"
 #include "lunar_log/core/filter_rule.hpp"
 #include "lunar_log/core/compact_filter.hpp"
+#include "lunar_log/core/rolling_policy.hpp"
 #include "lunar_log/transform/pipe_transform.hpp"
 #include "lunar_log/formatter/formatter_interface.hpp"
 #include "lunar_log/formatter/human_readable_formatter.hpp"
@@ -17,6 +18,7 @@
 #include "lunar_log/sink/sink_interface.hpp"
 #include "lunar_log/sink/console_sink.hpp"
 #include "lunar_log/sink/file_sink.hpp"
+#include "lunar_log/sink/rolling_file_sink.hpp"
 #include "lunar_log/log_manager.hpp"
 #include "lunar_log/log_source.hpp"
 

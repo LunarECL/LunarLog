@@ -15,6 +15,9 @@ HEADERS = [
     "lunar_log/core/log_common.hpp",
     "lunar_log/core/log_entry.hpp",
     "lunar_log/core/filter_rule.hpp",
+    "lunar_log/core/compact_filter.hpp",
+    "lunar_log/core/rolling_policy.hpp",
+    "lunar_log/transform/pipe_transform.hpp",
     "lunar_log/formatter/formatter_interface.hpp",
     "lunar_log/formatter/human_readable_formatter.hpp",
     "lunar_log/formatter/json_formatter.hpp",
@@ -25,6 +28,7 @@ HEADERS = [
     "lunar_log/sink/sink_interface.hpp",
     "lunar_log/sink/console_sink.hpp",
     "lunar_log/sink/file_sink.hpp",
+    "lunar_log/sink/rolling_file_sink.hpp",
     "lunar_log/log_manager.hpp",
     "lunar_log/log_source.hpp",
 ]

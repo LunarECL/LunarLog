@@ -292,6 +292,23 @@ logger.info("{revenue:.2f|comma}", 9876543.21);
 // Step 2 (comma):     "9,876,543.21"
 ```
 
+## Compact Filters
+
+Grep-inspired shorthand for common filter patterns:
+
+```cpp
+logger.filter("WARN+ ~timeout !~heartbeat");     // level + keyword + negation
+logger.filter("ctx:env=prod");                    // context key=value
+logger.sink("errors").filter("ERROR+");           // per-sink
+
+// Equivalent to:
+// logger.addFilterRule("level >= WARN");
+// logger.addFilterRule("message contains 'timeout'");
+// logger.addFilterRule("not message contains 'heartbeat'");
+```
+
+Space-separated = AND. See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Compact-Filter) for full syntax.
+
 ## Quick Start
 
 ```cpp

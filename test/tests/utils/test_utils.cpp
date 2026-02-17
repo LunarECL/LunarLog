@@ -110,7 +110,34 @@ void TestUtils::cleanupLogFiles() {
         "compact_3way.txt", "compact_negquoted.txt", "compact_tplquoted.txt",
         "compact_stack.txt", "compact_sqkw.txt", "compact_ctxsq.txt",
         "compact_json.txt",
-        "compact_warning_alias.txt", "compact_quoted_ctx_key.txt"
+        "compact_warning_alias.txt", "compact_quoted_ctx_key.txt",
+        // Rolling file tests
+        "roll_size.log", "roll_size.001.log", "roll_size.002.log",
+        "roll_size.003.log", "roll_size.004.log", "roll_size.005.log",
+        "roll_max.log", "roll_max.001.log", "roll_max.002.log",
+        "roll_max.003.log", "roll_max.004.log", "roll_max.005.log",
+        "roll_name.log", "roll_name.001.log", "roll_name.002.log",
+        "roll_lazy.log",
+        "roll_conc.log", "roll_conc.001.log", "roll_conc.002.log",
+        "roll_conc.003.log", "roll_conc.004.log", "roll_conc.005.log",
+        "roll_conc.006.log", "roll_conc.007.log", "roll_conc.008.log",
+        "roll_conc.009.log", "roll_conc.010.log",
+        "roll_json.log", "roll_json.001.log", "roll_json.002.log",
+        "roll_xml.log", "roll_xml.001.log", "roll_xml.002.log",
+        "roll_noext", "roll_noext.001", "roll_noext.002",
+        "roll_daily.log", "roll_hourly.log",
+        "roll_custom.log", "roll_custom.001.log", "roll_custom.002.log",
+        "roll_hybrid.log", "roll_hybrid.001.log", "roll_hybrid.002.log",
+        "roll_hybrid.003.log",
+        "roll_tmpl.log", "roll_tmpl.001.log", "roll_tmpl.002.log",
+        "roll_tmpl_json.log", "roll_tmpl_json.001.log", "roll_tmpl_json.002.log",
+        "roll_named.log", "roll_named.001.log", "roll_named.002.log",
+        "roll_named_fmt.log", "roll_named_fmt.001.log",
+        "roll_total.log", "roll_total.001.log", "roll_total.002.log",
+        "roll_total.003.log", "roll_total.004.log", "roll_total.005.log",
+        // Discovery restart test
+        "roll_restart.log", "roll_restart.001.log", "roll_restart.002.log",
+        "roll_restart.003.log", "roll_restart.004.log", "roll_restart.005.log"
     };
 
     for (const auto &filename : filesToRemove) {

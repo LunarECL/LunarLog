@@ -420,6 +420,7 @@ namespace detail {
             size_t startPos;
             size_t endPos;
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
+            std::vector<detail::Transform> transforms;
         };
 
         std::mutex m_cacheMutex;
@@ -438,7 +439,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms});
             });
             return placeholders;
         }
@@ -801,7 +802,19 @@ namespace detail {
             size_t valueIndex = 0;
             for (const auto &ph : placeholders) {
                 if (valueIndex >= values.size()) break;
-                props.push_back({ph.name, values[valueIndex++], ph.operator_});
+                char effectiveOp = ph.operator_;
+                std::vector<std::string> transformSpecs;
+                for (size_t ti = 0; ti < ph.transforms.size(); ++ti) {
+                    const auto &t = ph.transforms[ti];
+                    if (t.name == "expand") effectiveOp = '@';
+                    else if (t.name == "str") effectiveOp = '$';
+                    if (t.arg.empty()) {
+                        transformSpecs.push_back(t.name);
+                    } else {
+                        transformSpecs.push_back(t.name + ":" + t.arg);
+                    }
+                }
+                props.push_back({ph.name, values[valueIndex++], effectiveOp, std::move(transformSpecs)});
             }
 
             return props;

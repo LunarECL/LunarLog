@@ -93,6 +93,33 @@ namespace minta {
                     first = false;
                 }
                 json += '}';
+
+                bool hasTransforms = false;
+                for (const auto &prop : entry.properties) {
+                    if (!prop.transforms.empty()) { hasTransforms = true; break; }
+                }
+                if (hasTransforms) {
+                    json += R"(,"transforms":{)";
+                    bool firstProp = true;
+                    for (const auto &prop : entry.properties) {
+                        if (prop.transforms.empty()) continue;
+                        if (!firstProp) json += ',';
+                        json += '"';
+                        json += escapeJsonString(prop.name);
+                        json += R"(":[)";
+                        bool firstT = true;
+                        for (const auto &t : prop.transforms) {
+                            if (!firstT) json += ',';
+                            json += '"';
+                            json += escapeJsonString(t);
+                            json += '"';
+                            firstT = false;
+                        }
+                        json += ']';
+                        firstProp = false;
+                    }
+                    json += '}';
+                }
             }
 
             json += '}';

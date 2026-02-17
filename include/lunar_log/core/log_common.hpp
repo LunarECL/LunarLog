@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "../transform/pipe_transform.hpp"
+
 namespace minta {
 namespace detail {
     template<typename T, typename... Args>
@@ -362,6 +364,7 @@ namespace detail {
         std::string fullContent;
         std::string spec;
         char op;  // '@', '$', or 0
+        std::vector<Transform> transforms;
     };
 
     template<typename Callback>
@@ -386,8 +389,15 @@ namespace detail {
                         continue;
                     }
                 }
-                auto parts = splitPlaceholder(nameContent);
-                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op});
+                std::string nameSpec = nameContent;
+                std::vector<Transform> transforms;
+                size_t pipePos = nameContent.find('|');
+                if (pipePos != std::string::npos) {
+                    nameSpec = nameContent.substr(0, pipePos);
+                    transforms = parseTransforms(nameContent.substr(pipePos + 1));
+                }
+                auto parts = splitPlaceholder(nameSpec);
+                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms)});
                 i = endPos;
             } else if (templateStr[i] == '}') {
                 if (i + 1 < templateStr.length() && templateStr[i + 1] == '}') {
@@ -418,7 +428,11 @@ namespace detail {
         while (pos < templateStr.length()) {
             if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
                 if (phIdx < values.size()) {
-                    result += applyFormat(values[phIdx], placeholders[phIdx].spec, locale);
+                    std::string formatted = applyFormat(values[phIdx], placeholders[phIdx].spec, locale);
+                    if (!placeholders[phIdx].transforms.empty()) {
+                        formatted = applyTransforms(formatted, placeholders[phIdx].transforms);
+                    }
+                    result += formatted;
                 } else {
                     result.append(templateStr, pos, placeholders[phIdx].endPos - pos + 1);
                 }

@@ -105,19 +105,20 @@ namespace minta {
         static std::string sanitizeXmlName(const std::string &input) {
             if (input.empty()) return "_";
             std::string result;
-            result.reserve(input.size());
+            result.reserve(input.size() + 1);
             for (size_t i = 0; i < input.size(); ++i) {
                 char c = input[i];
                 bool valid = (c == '_' || c == ':') ||
                              (c >= 'A' && c <= 'Z') ||
                              (c >= 'a' && c <= 'z') ||
-                             (i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'));
+                             (c >= '0' && c <= '9') || c == '-' || c == '.';
                 result += valid ? c : '_';
             }
-            // Safety net: the loop above already replaces invalid start chars with '_',
-            // so this check for a leading digit/dash/dot is unreachable with the
-            // current logic. Kept as defensive validation in case the loop changes.
-            if (result.empty() || result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
+            if (result.empty()) return "_";
+            // XML element names cannot start with a digit, '-' or '.'.
+            // Prefix with '_' instead of replacing the whole name so numeric
+            // indexed keys like "0", "1" remain distinct as "_0", "_1".
+            if (result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
                 result.insert(result.begin(), '_');
             }
             return result;

@@ -114,6 +114,25 @@ namespace detail {
         try { return std::stoi(s); } catch (...) { return fallback; }
     }
 
+    /// Parse non-negative integer index safely with overflow clamping.
+    /// Returns false if the input is empty or contains non-digits.
+    inline bool tryParseIndex(const std::string &s, int &out) {
+        if (s.empty()) return false;
+        unsigned long long v = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (!std::isdigit(c)) return false;
+            unsigned int digit = static_cast<unsigned int>(c - '0');
+            if (v > (static_cast<unsigned long long>(INT_MAX) - digit) / 10ULL) {
+                out = INT_MAX;
+                return true;
+            }
+            v = v * 10ULL + digit;
+        }
+        out = static_cast<int>(v);
+        return true;
+    }
+
     /// Try to parse a string as a double. Returns true on success and sets out.
     inline bool tryParseDouble(const std::string &s, double &out) {
         if (s.empty()) return false;
@@ -391,6 +410,16 @@ namespace detail {
     // operator stripping, validation, and name/spec splitting.
     // ----------------------------------------------------------------
 
+    /// Return true when every character in @p name is an ASCII digit.
+    /// Used to distinguish indexed placeholders ({0}, {1}) from named ones ({user}).
+    inline bool isIndexedPlaceholder(const std::string &name) {
+        if (name.empty()) return false;
+        for (size_t i = 0; i < name.size(); ++i) {
+            if (!std::isdigit(static_cast<unsigned char>(name[i]))) return false;
+        }
+        return true;
+    }
+
     struct ParsedPlaceholder {
         size_t startPos;
         size_t endPos;
@@ -399,7 +428,14 @@ namespace detail {
         std::string spec;
         char op;  // '@', '$', or 0
         std::vector<Transform> transforms;
+        int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
     };
+
+    inline size_t resolveValueSlot(int indexedArg, size_t namedOrdinal) {
+        return indexedArg >= 0
+            ? static_cast<size_t>(indexedArg)
+            : namedOrdinal;
+    }
 
     template<typename Callback>
     inline void forEachPlaceholder(const std::string &templateStr, Callback callback) {
@@ -431,7 +467,12 @@ namespace detail {
                     transforms = parseTransforms(nameContent.substr(pipePos + 1));
                 }
                 auto parts = splitPlaceholder(nameSpec);
-                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms)});
+                int idxArg = -1;
+                if (isIndexedPlaceholder(parts.first)) {
+                    int parsed = -1;
+                    if (tryParseIndex(parts.first, parsed)) idxArg = parsed;
+                }
+                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms), idxArg});
                 i = endPos;
             } else if (templateStr[i] == '}') {
                 if (i + 1 < templateStr.length() && templateStr[i + 1] == '}') {
@@ -458,15 +499,22 @@ namespace detail {
         result.reserve(templateStr.length());
         size_t phIdx = 0;
         size_t pos = 0;
+        size_t namedOrdinal = 0;
 
         while (pos < templateStr.length()) {
             if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
-                if (phIdx < values.size()) {
-                    std::string formatted = applyFormat(values[phIdx], placeholders[phIdx].spec, locale);
+                size_t valueIdx = resolveValueSlot(placeholders[phIdx].indexedArg, namedOrdinal);
+                if (placeholders[phIdx].indexedArg < 0) {
+                    ++namedOrdinal;
+                }
+                if (valueIdx < values.size()) {
+                    std::string formatted = applyFormat(values[valueIdx], placeholders[phIdx].spec, locale);
                     if (!placeholders[phIdx].transforms.empty()) {
                         formatted = applyTransforms(formatted, placeholders[phIdx].transforms);
                     }
                     result += formatted;
+                } else if (placeholders[phIdx].indexedArg >= 0) {
+                    // Indexed out-of-range renders as empty string
                 } else {
                     result.append(templateStr, pos, placeholders[phIdx].endPos - pos + 1);
                 }
@@ -1634,12 +1682,30 @@ namespace minta {
                     return entry.message;
                 }
             }
-            std::vector<std::string> values;
-            values.reserve(entry.properties.size());
-            for (const auto &prop : entry.properties) {
-                values.push_back(prop.value);
+            std::vector<detail::ParsedPlaceholder> spans;
+            detail::forEachPlaceholder(entry.templateStr, [&](const detail::ParsedPlaceholder& ph) {
+                spans.push_back(ph);
+            });
+            size_t maxSlot = 0;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < spans.size(); ++i) {
+                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
+                if (spans[i].indexedArg < 0) ++namedOrdinal;
+                if (slot + 1 > maxSlot) maxSlot = slot + 1;
             }
-            return detail::reformatMessage(entry.templateStr, values, localeCopy);
+            std::vector<std::string> values(maxSlot);
+            // Use slot/placeholder order as captured in entry.arguments.
+            // Do not collapse by placeholder name: duplicate names may carry
+            // distinct positional values (e.g. "{x} {x}" with args 1,2).
+            namedOrdinal = 0;
+            for (size_t i = 0; i < spans.size(); ++i) {
+                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
+                if (spans[i].indexedArg < 0) ++namedOrdinal;
+                if (slot < values.size() && i < entry.arguments.size()) {
+                    values[slot] = entry.arguments[i].second;
+                }
+            }
+            return detail::walkTemplate(entry.templateStr, spans, values, localeCopy);
         }
 
     private:
@@ -2035,19 +2101,20 @@ namespace minta {
         static std::string sanitizeXmlName(const std::string &input) {
             if (input.empty()) return "_";
             std::string result;
-            result.reserve(input.size());
+            result.reserve(input.size() + 1);
             for (size_t i = 0; i < input.size(); ++i) {
                 char c = input[i];
                 bool valid = (c == '_' || c == ':') ||
                              (c >= 'A' && c <= 'Z') ||
                              (c >= 'a' && c <= 'z') ||
-                             (i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'));
+                             (c >= '0' && c <= '9') || c == '-' || c == '.';
                 result += valid ? c : '_';
             }
-            // Safety net: the loop above already replaces invalid start chars with '_',
-            // so this check for a leading digit/dash/dot is unreachable with the
-            // current logic. Kept as defensive validation in case the loop changes.
-            if (result.empty() || result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
+            if (result.empty()) return "_";
+            // XML element names cannot start with a digit, '-' or '.'.
+            // Prefix with '_' instead of replacing the whole name so numeric
+            // indexed keys like "0", "1" remain distinct as "_0", "_1".
+            if (result[0] == '-' || result[0] == '.' || (result[0] >= '0' && result[0] <= '9')) {
                 result.insert(result.begin(), '_');
             }
             return result;
@@ -3488,6 +3555,7 @@ namespace detail {
             size_t endPos;
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
             std::vector<detail::Transform> transforms;
+            int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
         };
 
         std::mutex m_cacheMutex;
@@ -3506,7 +3574,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg});
             });
             return placeholders;
         }
@@ -3730,14 +3798,32 @@ namespace detail {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has empty placeholder");
                 } else if (isWhitespaceOnly(ph.name)) {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has whitespace-only placeholder name");
-                } else if (!uniquePlaceholders.insert(ph.name).second) {
+                } else if (ph.indexedArg < 0 && !uniquePlaceholders.insert(ph.name).second) {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has duplicate placeholder name: " + ph.name);
                 }
             }
 
-            if (placeholders.size() < values.size()) {
+            std::set<size_t> usedSlots;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t slot = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                usedSlots.insert(slot);
+            }
+
+            if (usedSlots.size() < values.size()) {
                 warnings.push_back("Warning: More values provided than placeholders");
-            } else if (placeholders.size() > values.size()) {
+            }
+
+            bool hasMissingSlot = false;
+            for (std::set<size_t>::const_iterator it = usedSlots.begin(); it != usedSlots.end(); ++it) {
+                if (*it >= values.size()) {
+                    hasMissingSlot = true;
+                    break;
+                }
+            }
+            if (hasMissingSlot) {
                 warnings.push_back("Warning: More placeholders than provided values");
             }
 
@@ -3854,10 +3940,14 @@ namespace detail {
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
 
-            size_t valueIndex = 0;
-            for (const auto &ph : placeholders) {
-                if (valueIndex >= values.size()) break;
-                argumentPairs.emplace_back(ph.name, values[valueIndex++]);
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t valueIdx = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (valueIdx < values.size()) {
+                    argumentPairs.emplace_back(ph.name, values[valueIdx]);
+                }
             }
 
             return argumentPairs;
@@ -3877,11 +3967,16 @@ namespace detail {
         static std::vector<PlaceholderProperty> mapProperties(
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<PlaceholderProperty> props;
-            props.reserve(std::min(placeholders.size(), values.size()));
+            props.reserve(placeholders.size());
+            std::set<std::string> seen;
 
-            size_t valueIndex = 0;
-            for (const auto &ph : placeholders) {
-                if (valueIndex >= values.size()) break;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t valueIdx = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (valueIdx >= values.size()) continue;
+                if (!seen.insert(ph.name).second) continue;
                 char effectiveOp = ph.operator_;
                 std::vector<std::string> transformSpecs;
                 for (size_t ti = 0; ti < ph.transforms.size(); ++ti) {
@@ -3894,7 +3989,7 @@ namespace detail {
                         transformSpecs.push_back(t.name + ":" + t.arg);
                     }
                 }
-                props.push_back({ph.name, values[valueIndex++], effectiveOp, std::move(transformSpecs)});
+                props.push_back({ph.name, values[valueIdx], effectiveOp, std::move(transformSpecs)});
             }
 
             return props;

@@ -51,12 +51,30 @@ namespace minta {
                     return entry.message;
                 }
             }
-            std::vector<std::string> values;
-            values.reserve(entry.properties.size());
-            for (const auto &prop : entry.properties) {
-                values.push_back(prop.value);
+            std::vector<detail::ParsedPlaceholder> spans;
+            detail::forEachPlaceholder(entry.templateStr, [&](const detail::ParsedPlaceholder& ph) {
+                spans.push_back(ph);
+            });
+            size_t maxSlot = 0;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < spans.size(); ++i) {
+                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
+                if (spans[i].indexedArg < 0) ++namedOrdinal;
+                if (slot + 1 > maxSlot) maxSlot = slot + 1;
             }
-            return detail::reformatMessage(entry.templateStr, values, localeCopy);
+            std::vector<std::string> values(maxSlot);
+            // Use slot/placeholder order as captured in entry.arguments.
+            // Do not collapse by placeholder name: duplicate names may carry
+            // distinct positional values (e.g. "{x} {x}" with args 1,2).
+            namedOrdinal = 0;
+            for (size_t i = 0; i < spans.size(); ++i) {
+                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
+                if (spans[i].indexedArg < 0) ++namedOrdinal;
+                if (slot < values.size() && i < entry.arguments.size()) {
+                    values[slot] = entry.arguments[i].second;
+                }
+            }
+            return detail::walkTemplate(entry.templateStr, spans, values, localeCopy);
         }
 
     private:

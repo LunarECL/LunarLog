@@ -175,6 +175,29 @@ LunarLog warns about common template mistakes:
 - **Empty placeholders:** `{}`
 - **Whitespace-only names:** `{ }`
 
+### Indexed Placeholders (`{0}`, `{1}`, ...)
+
+LunarLog keeps the MessageTemplate style (name-value behavior) and also supports indexed placeholders `{0}`, `{1}`, ... These index-based placeholders map directly to explicit value slots.
+
+Indexed placeholders bind to explicit argument positions and can be freely reused:
+
+```cpp
+logger.info("{0} sent {1} to {0}", "alice", 42);  // alice sent 42 to alice
+```
+
+When mixed with named placeholders, semantics are stable:
+- **Indexed** placeholders use their explicit slot (`{1}` -> arg 1)
+- **Named** placeholders consume slots sequentially in named-placeholder order (`{name}` first named slot, then `{other}`)
+
+So reverse-order mixes remain deterministic:
+
+```cpp
+logger.info("{1} then {name} then {0}", "A", "B");
+// => B then A then A
+```
+
+When using the same named placeholder multiple times (e.g. `{x} {x}`), duplicate named warning behavior and per-sink locale rendering keep per-slot values stable via slot-based re-rendering internals.
+
 ## Named Sinks
 
 Give sinks human-readable names with `named()` instead of tracking indices. Use `SinkProxy` to configure them fluently:

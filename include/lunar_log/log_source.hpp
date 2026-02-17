@@ -450,6 +450,7 @@ namespace detail {
             size_t endPos;
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
             std::vector<detail::Transform> transforms;
+            int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
         };
 
         std::mutex m_cacheMutex;
@@ -468,7 +469,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg});
             });
             return placeholders;
         }
@@ -692,14 +693,32 @@ namespace detail {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has empty placeholder");
                 } else if (isWhitespaceOnly(ph.name)) {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has whitespace-only placeholder name");
-                } else if (!uniquePlaceholders.insert(ph.name).second) {
+                } else if (ph.indexedArg < 0 && !uniquePlaceholders.insert(ph.name).second) {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has duplicate placeholder name: " + ph.name);
                 }
             }
 
-            if (placeholders.size() < values.size()) {
+            std::set<size_t> usedSlots;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t slot = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                usedSlots.insert(slot);
+            }
+
+            if (usedSlots.size() < values.size()) {
                 warnings.push_back("Warning: More values provided than placeholders");
-            } else if (placeholders.size() > values.size()) {
+            }
+
+            bool hasMissingSlot = false;
+            for (std::set<size_t>::const_iterator it = usedSlots.begin(); it != usedSlots.end(); ++it) {
+                if (*it >= values.size()) {
+                    hasMissingSlot = true;
+                    break;
+                }
+            }
+            if (hasMissingSlot) {
                 warnings.push_back("Warning: More placeholders than provided values");
             }
 
@@ -816,10 +835,14 @@ namespace detail {
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
 
-            size_t valueIndex = 0;
-            for (const auto &ph : placeholders) {
-                if (valueIndex >= values.size()) break;
-                argumentPairs.emplace_back(ph.name, values[valueIndex++]);
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t valueIdx = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (valueIdx < values.size()) {
+                    argumentPairs.emplace_back(ph.name, values[valueIdx]);
+                }
             }
 
             return argumentPairs;
@@ -839,11 +862,16 @@ namespace detail {
         static std::vector<PlaceholderProperty> mapProperties(
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<PlaceholderProperty> props;
-            props.reserve(std::min(placeholders.size(), values.size()));
+            props.reserve(placeholders.size());
+            std::set<std::string> seen;
 
-            size_t valueIndex = 0;
-            for (const auto &ph : placeholders) {
-                if (valueIndex >= values.size()) break;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t valueIdx = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (valueIdx >= values.size()) continue;
+                if (!seen.insert(ph.name).second) continue;
                 char effectiveOp = ph.operator_;
                 std::vector<std::string> transformSpecs;
                 for (size_t ti = 0; ti < ph.transforms.size(); ++ti) {
@@ -856,7 +884,7 @@ namespace detail {
                         transformSpecs.push_back(t.name + ":" + t.arg);
                     }
                 }
-                props.push_back({ph.name, values[valueIndex++], effectiveOp, std::move(transformSpecs)});
+                props.push_back({ph.name, values[valueIdx], effectiveOp, std::move(transformSpecs)});
             }
 
             return props;

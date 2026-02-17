@@ -335,6 +335,39 @@ TEST_F(CultureFormattingTest, PerSinkLocaleOverrideDateTime) {
     EXPECT_NE(sink1.find("Time:"), std::string::npos);
 }
 
+TEST_F(CultureFormattingTest, PerSinkLocaleRerenderPreservesDuplicateNamedSlots) {
+    if (!isLocaleAvailable("en_US")) {
+        GTEST_SKIP() << "en_US locale not available on this system";
+    }
+
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addSink<minta::FileSink>("culture_dup_slot_sink0.txt");  // sink 0: en_US at log time
+    logger.addSink<minta::FileSink>("culture_dup_slot_sink1.txt");  // sink 1: re-render to C
+
+    logger.setLocale("en_US");
+    logger.setSinkLocale(1, "C");
+
+    // Duplicate placeholder name intentionally maps to two positional values.
+    logger.info("Dup: {x:n} | {x:n}", 1000.5, 2000.75);
+
+    logger.flush();
+    TestUtils::waitForFileContent("culture_dup_slot_sink0.txt");
+    TestUtils::waitForFileContent("culture_dup_slot_sink1.txt");
+
+    std::string sink0 = TestUtils::readLogFile("culture_dup_slot_sink0.txt");
+    std::string sink1 = TestUtils::readLogFile("culture_dup_slot_sink1.txt");
+
+    EXPECT_NE(sink0.find("Dup: 1,000.5 | 2,000.75"), std::string::npos)
+        << "Sink0 must keep logger locale formatting. Got: " << sink0;
+
+    // Re-rendered C-locale message must preserve original slot values,
+    // not collapse duplicate name {x} to one value.
+    EXPECT_NE(sink1.find("Dup: 1000.5 | 2000.75"), std::string::npos)
+        << "Sink1 re-render must preserve duplicate-name slot values. Got: " << sink1;
+    EXPECT_EQ(sink1.find("Dup: 1000.5 | 1000.5"), std::string::npos)
+        << "Sink1 must not collapse duplicate names to first value. Got: " << sink1;
+}
+
 TEST_F(CultureFormattingTest, PerSinkLocaleJsonFormatter) {
     if (!isLocaleAvailable("en_US")) {
         GTEST_SKIP() << "en_US locale not available on this system";

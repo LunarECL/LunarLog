@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <map>
 
 namespace minta {
     class IFormatter {
@@ -64,17 +63,15 @@ namespace minta {
                 if (slot + 1 > maxSlot) maxSlot = slot + 1;
             }
             std::vector<std::string> values(maxSlot);
-            std::map<std::string, std::string> propValues;
-            for (size_t i = 0; i < entry.properties.size(); ++i) {
-                propValues[entry.properties[i].name] = entry.properties[i].value;
-            }
+            // Use slot/placeholder order as captured in entry.arguments.
+            // Do not collapse by placeholder name: duplicate names may carry
+            // distinct positional values (e.g. "{x} {x}" with args 1,2).
             namedOrdinal = 0;
             for (size_t i = 0; i < spans.size(); ++i) {
                 size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
                 if (spans[i].indexedArg < 0) ++namedOrdinal;
-                std::map<std::string, std::string>::const_iterator it = propValues.find(spans[i].name);
-                if (slot < values.size() && it != propValues.end()) {
-                    values[slot] = it->second;
+                if (slot < values.size() && i < entry.arguments.size()) {
+                    values[slot] = entry.arguments[i].second;
                 }
             }
             return detail::walkTemplate(entry.templateStr, spans, values, localeCopy);

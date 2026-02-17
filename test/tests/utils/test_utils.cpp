@@ -147,7 +147,26 @@ void TestUtils::cleanupLogFiles() {
         "indexed_structured.json", "indexed_structured.xml", "indexed_overflow.txt",
         "culture_dup_slot_sink0.txt", "culture_dup_slot_sink1.txt", "culture_sci_double_test.txt",
         "culture_outofrange_sink0.txt", "culture_outofrange_sink1.txt",
-        "align_test.txt", "align_json.txt", "align_xml.txt"
+        "align_test.txt", "align_json.txt", "align_xml.txt",
+        // Compact JSON formatter tests
+        "cjson_basic.txt", "cjson_info.txt", "cjson_warn.txt",
+        "cjson_error.txt", "cjson_trace.txt", "cjson_debug.txt",
+        "cjson_fatal.txt", "cjson_timestamp.txt", "cjson_rendered.txt",
+        "cjson_no_rendered.txt", "cjson_hash.txt", "cjson_flat.txt",
+        "cjson_at_escape.txt", "cjson_esc_quotes.txt", "cjson_esc_backslash.txt",
+        "cjson_esc_newline.txt", "cjson_esc_ctrl.txt", "cjson_esc_unicode.txt",
+        "cjson_destruct.txt", "cjson_stringify.txt", "cjson_tags.txt",
+        "cjson_multi_tags.txt", "cjson_context.txt", "cjson_scoped.txt",
+        "cjson_format_spec.txt", "cjson_pipe.txt", "cjson_indexed.txt",
+        "cjson_align.txt", "cjson_plain.txt", "cjson_singleline.txt",
+        "cjson_combined.txt", "cjson_proxy.txt", "cjson_escaped_braces.txt",
+        "cjson_toggle.txt",
+        "cjson_collision.txt", "cjson_tags_collision.txt",
+        "cjson_destruct_empty.txt", "cjson_destruct_nan.txt",
+        "cjson_destruct_inf.txt", "cjson_destruct_negzero.txt",
+        "cjson_no_level.txt", "cjson_no_m.txt", "cjson_no_hash.txt",
+        "cjson_no_src.txt", "cjson_no_transforms.txt",
+        "cjson_no_ctx_wrapper.txt"
     };
 
     for (const auto &filename : filesToRemove) {

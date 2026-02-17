@@ -1851,7 +1851,7 @@ namespace minta {
 } // namespace minta
 
 
-// --- lunar_log/formatter/json_formatter.hpp ---
+// --- lunar_log/formatter/json_detail.hpp ---
 
 #include <string>
 #include <cstdio>
@@ -1859,13 +1859,138 @@ namespace minta {
 #include <cerrno>
 #include <cmath>
 
+// Platform-specific includes for locale-independent strtod.
+// strtod_l / _strtod_l lets us parse with the "C" locale regardless
+// of the process-wide locale set via setlocale().
+#if defined(_MSC_VER)
+    #include <locale.h>
+#elif defined(__APPLE__)
+    #include <xlocale.h>
+#elif defined(__GLIBC__) || defined(__FreeBSD__)
+    #include <locale.h>
+#endif
+
+namespace minta {
+namespace detail {
+namespace json {
+
+    /// Locale-independent strtod.  Prevents the global C locale from
+    /// interfering with JSON number parsing (e.g. locales that use ','
+    /// as the decimal separator would cause plain strtod to reject "3.14").
+    ///
+    /// Uses strtod_l / _strtod_l where available (glibc, macOS, MSVC).
+    /// Falls back to plain strtod on other platforms -- the output-side
+    /// comma-to-dot replacement still produces valid JSON, but '.' in
+    /// the *input* may be misinterpreted under a non-"C" locale on those
+    /// platforms.
+    inline double strtodLocaleIndependent(const char* str, char** endptr) {
+#if defined(_MSC_VER)
+        static _locale_t c_locale = _create_locale(_LC_ALL, "C");
+        return _strtod_l(str, endptr, c_locale);
+#elif defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
+        static locale_t c_locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);
+        return strtod_l(str, endptr, c_locale);
+#else
+        return std::strtod(str, endptr);
+#endif
+    }
+
+    /// Escape a string for inclusion in JSON output.
+    /// Handles special characters (quotes, backslash, control chars).
+    /// UTF-8 multi-byte sequences (>= 0x80) pass through unescaped.
+    inline std::string escapeJsonString(const std::string &input) {
+        std::string result;
+        result.reserve(input.size());
+        for (char c : input) {
+            switch (c) {
+                case '"': result += R"(\")"; break;
+                case '\\': result += R"(\\)"; break;
+                case '\b': result += R"(\b)"; break;
+                case '\f': result += R"(\f)"; break;
+                case '\n': result += R"(\n)"; break;
+                case '\r': result += R"(\r)"; break;
+                case '\t': result += R"(\t)"; break;
+                default:
+                    if ('\x00' <= c && c <= '\x1f') {
+                        char buf[8];
+                        std::snprintf(buf, sizeof(buf), "\\u%04x",
+                                     static_cast<unsigned char>(c));
+                        result += buf;
+                    } else {
+                        result += c;
+                    }
+            }
+        }
+        return result;
+    }
+
+    /// Attempt to emit a JSON-native value for @ (destructure) properties.
+    /// Values arrive as strings (post-toString conversion), so original type
+    /// info is lost.  This function uses string-based heuristics: "true"/"false"
+    /// become JSON booleans, numeric-looking strings become JSON numbers.
+    /// Known limitation: a string argument "true" becomes boolean true, and
+    /// "3.14" becomes number 3.14.  Use the $ (stringify) operator to force
+    /// string representation when this coercion is undesirable.
+    /// Note: nullptr/"(null)" is emitted as the string "(null)", not JSON null,
+    /// since the MessageTemplates spec does not mandate null handling.
+    inline std::string toJsonNativeValue(const std::string &value) {
+        if (value == "true" || value == "false") {
+            return value;
+        }
+
+        if (value.empty()) {
+            return "\"\"";
+        }
+
+        const char* start = value.c_str();
+        char* end = nullptr;
+        errno = 0;
+        double numVal = strtodLocaleIndependent(start, &end);
+        if (errno == 0 && end != start
+            && static_cast<size_t>(end - start) == value.size()
+            && std::isfinite(numVal)) {
+            // Re-serialize from the parsed double to guarantee valid JSON.
+            // strtod accepts inputs like "+42", " 42", "0x1A" which are
+            // NOT valid JSON numbers, so we cannot return the original string.
+            char buf[64];
+            if (numVal == static_cast<double>(static_cast<long long>(numVal))
+                && std::fabs(numVal) < 1e15) {
+                std::snprintf(buf, sizeof(buf), "%lld",
+                             static_cast<long long>(numVal));
+            } else {
+                std::snprintf(buf, sizeof(buf), "%.15g", numVal);
+            }
+            // Locale-safety: some locales use ',' as decimal separator.
+            // Replace with '.' to guarantee valid JSON numbers.
+            for (char *p = buf; *p; ++p) {
+                if (*p == ',') *p = '.';
+            }
+            return std::string(buf);
+        }
+        errno = 0;
+
+        std::string result = "\"";
+        result += escapeJsonString(value);
+        result += '"';
+        return result;
+    }
+
+} // namespace json
+} // namespace detail
+} // namespace minta
+
+
+// --- lunar_log/formatter/json_formatter.hpp ---
+
+#include <string>
+
 namespace minta {
     class JsonFormatter : public IFormatter {
     public:
         std::string format(const LogEntry &entry) const override {
             std::string levelStr = getLevelString(entry.level);
             std::string tsStr = detail::formatTimestamp(entry.timestamp);
-            std::string msgEsc = escapeJsonString(localizedMessage(entry));
+            std::string msgEsc = detail::json::escapeJsonString(localizedMessage(entry));
 
             std::string json;
             json.reserve(64 + levelStr.size() + tsStr.size() + msgEsc.size());
@@ -1879,15 +2004,15 @@ namespace minta {
 
             if (!entry.templateStr.empty()) {
                 json += R"(,"messageTemplate":")";
-                json += escapeJsonString(entry.templateStr);
+                json += detail::json::escapeJsonString(entry.templateStr);
                 json += R"(","templateHash":")";
                 json += detail::toHexString(entry.templateHash);
                 json += '"';
             }
 
             if (!entry.file.empty()) {
-                std::string fileEsc = escapeJsonString(entry.file);
-                std::string funcEsc = escapeJsonString(entry.function);
+                std::string fileEsc = detail::json::escapeJsonString(entry.file);
+                std::string funcEsc = detail::json::escapeJsonString(entry.function);
                 json += R"(,"file":")";
                 json += fileEsc;
                 json += R"(","line":)";
@@ -1903,9 +2028,9 @@ namespace minta {
                 for (const auto &ctx : entry.customContext) {
                     if (!first) json += ',';
                     json += '"';
-                    json += escapeJsonString(ctx.first);
+                    json += detail::json::escapeJsonString(ctx.first);
                     json += R"(":")";
-                    json += escapeJsonString(ctx.second);
+                    json += detail::json::escapeJsonString(ctx.second);
                     json += '"';
                     first = false;
                 }
@@ -1918,7 +2043,7 @@ namespace minta {
                 for (const auto &tag : entry.tags) {
                     if (!first) json += ',';
                     json += '"';
-                    json += escapeJsonString(tag);
+                    json += detail::json::escapeJsonString(tag);
                     json += '"';
                     first = false;
                 }
@@ -1931,13 +2056,13 @@ namespace minta {
                 for (const auto &prop : entry.properties) {
                     if (!first) json += ',';
                     json += '"';
-                    json += escapeJsonString(prop.name);
+                    json += detail::json::escapeJsonString(prop.name);
                     json += R"(":)";
                     if (prop.op == '@') {
-                        json += toJsonNativeValue(prop.value);
+                        json += detail::json::toJsonNativeValue(prop.value);
                     } else {
                         json += '"';
-                        json += escapeJsonString(prop.value);
+                        json += detail::json::escapeJsonString(prop.value);
                         json += '"';
                     }
                     first = false;
@@ -1955,13 +2080,13 @@ namespace minta {
                         if (prop.transforms.empty()) continue;
                         if (!firstProp) json += ',';
                         json += '"';
-                        json += escapeJsonString(prop.name);
+                        json += detail::json::escapeJsonString(prop.name);
                         json += R"(":[)";
                         bool firstT = true;
                         for (const auto &t : prop.transforms) {
                             if (!firstT) json += ',';
                             json += '"';
-                            json += escapeJsonString(t);
+                            json += detail::json::escapeJsonString(t);
                             json += '"';
                             firstT = false;
                         }
@@ -1976,77 +2101,178 @@ namespace minta {
             return json;
         }
 
-    private:
-        /// Attempt to emit a JSON-native value for @ (destructure) properties.
-        /// Values arrive as strings (post-toString conversion), so original type
-        /// info is lost. This function uses string-based heuristics: "true"/"false"
-        /// become JSON booleans, numeric-looking strings become JSON numbers.
-        /// Known limitation: a string argument "true" becomes boolean true, and
-        /// "3.14" becomes number 3.14.  Use the $ (stringify) operator to force
-        /// string representation when this coercion is undesirable.
-        /// Note: nullptr/"(null)" is emitted as the string "(null)", not JSON null,
-        /// since the MessageTemplates spec does not mandate null handling.
-        static std::string toJsonNativeValue(const std::string &value) {
-            if (value == "true" || value == "false") {
-                return value;
-            }
+    };
+} // namespace minta
 
-            if (value.empty()) {
-                return "\"\"";
-            }
 
-            const char* start = value.c_str();
-            char* end = nullptr;
-            errno = 0;
-            double numVal = std::strtod(start, &end);
-            if (errno == 0 && end != start && static_cast<size_t>(end - start) == value.size()
-                && std::isfinite(numVal)) {
-                // Re-serialize from the parsed double to guarantee valid JSON.
-                // strtod accepts inputs like "+42", " 42", "0x1A" which are
-                // NOT valid JSON numbers, so we cannot return the original string.
-                char buf[64];
-                if (numVal == static_cast<double>(static_cast<long long>(numVal))
-                    && std::fabs(numVal) < 1e15) {
-                    std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(numVal));
-                } else {
-                    std::snprintf(buf, sizeof(buf), "%.15g", numVal);
-                }
-                // Locale-safety: some locales use ',' as decimal separator.
-                // Replace with '.' to guarantee valid JSON numbers.
-                for (char *p = buf; *p; ++p) { if (*p == ',') *p = '.'; }
-                return std::string(buf);
-            }
-            errno = 0;
+// --- lunar_log/formatter/compact_json_formatter.hpp ---
 
-            std::string result = "\"";
-            result += escapeJsonString(value);
-            result += '"';
-            return result;
+#include <string>
+#include <cstdio>
+#include <atomic>
+
+namespace minta {
+    /// Compact JSON formatter producing single-line JSONL output optimized for
+    /// log pipelines (ELK, Datadog, Loki).  Uses short property names with @
+    /// prefix following the CLEF (Compact Log Event Format) convention.
+    ///
+    /// System fields:
+    ///   @t  = timestamp (ISO 8601, UTC, ms precision)
+    ///   @l  = level (3-char: TRC, DBG, INF, WRN, ERR, FTL; omitted for INFO)
+    ///   @mt = message template
+    ///   @m  = rendered message (optional, off by default)
+    ///   @i  = template hash (included when template is present)
+    ///   @x  = exception info (reserved for future use)
+    ///
+    /// Properties and context are flattened to top level.  User property names
+    /// starting with @ are escaped to @@ to prevent collision with system fields.
+    /// The @l field is omitted for INFO level (parsers assume INFO when absent).
+    class CompactJsonFormatter : public IFormatter {
+    public:
+        CompactJsonFormatter() : m_includeRenderedMessage(false) {}
+
+        /// Enable/disable the @m (rendered message) field.
+        /// Default is false (off).  Thread-safe.
+        void includeRenderedMessage(bool include) {
+            m_includeRenderedMessage.store(include, std::memory_order_relaxed);
         }
 
-        static std::string escapeJsonString(const std::string &input) {
-            std::string result;
-            result.reserve(input.size());
-            for (char c : input) {
-                switch (c) {
-                    case '"': result += R"(\")"; break;
-                    case '\\': result += R"(\\)"; break;
-                    case '\b': result += R"(\b)"; break;
-                    case '\f': result += R"(\f)"; break;
-                    case '\n': result += R"(\n)"; break;
-                    case '\r': result += R"(\r)"; break;
-                    case '\t': result += R"(\t)"; break;
-                    default:
-                        if ('\x00' <= c && c <= '\x1f') {
-                            char buf[8];
-                            std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                            result += buf;
-                        } else {
-                            result += c;
-                        }
+        bool isRenderedMessageIncluded() const {
+            return m_includeRenderedMessage.load(std::memory_order_relaxed);
+        }
+
+        std::string format(const LogEntry &entry) const override {
+            std::string json;
+            json.reserve(128);
+
+            // @t - timestamp (ISO 8601, UTC, ms precision)
+            json += R"({"@t":")";
+            json += formatTimestampUtc(entry.timestamp);
+            json += '"';
+
+            // @l - level (omitted for INFO)
+            if (entry.level != LogLevel::INFO) {
+                json += R"(,"@l":")";
+                json += getCompactLevel(entry.level);
+                json += '"';
+            }
+
+            // @mt - message template (always present)
+            json += R"(,"@mt":")";
+            if (!entry.templateStr.empty()) {
+                json += detail::json::escapeJsonString(entry.templateStr);
+            } else {
+                json += detail::json::escapeJsonString(entry.message);
+            }
+            json += '"';
+
+            // @i - template hash (when template is present)
+            if (!entry.templateStr.empty()) {
+                json += R"(,"@i":")";
+                json += detail::toHexString(entry.templateHash);
+                json += '"';
+            }
+
+            // @m - rendered message (optional, off by default)
+            if (m_includeRenderedMessage.load(std::memory_order_relaxed)) {
+                json += R"(,"@m":")";
+                json += detail::json::escapeJsonString(localizedMessage(entry));
+                json += '"';
+            }
+
+            // Flatten properties to top level
+            for (const auto &prop : entry.properties) {
+                json += ',';
+                json += '"';
+                json += escapePropertyName(prop.name);
+                json += R"(":)";
+                if (prop.op == '@') {
+                    json += detail::json::toJsonNativeValue(prop.value);
+                } else {
+                    json += '"';
+                    json += detail::json::escapeJsonString(prop.value);
+                    json += '"';
                 }
             }
-            return result;
+
+            // Flatten context to top level
+            for (const auto &ctx : entry.customContext) {
+                json += ',';
+                json += '"';
+                json += escapePropertyName(ctx.first);
+                json += R"(":)";
+                json += '"';
+                json += detail::json::escapeJsonString(ctx.second);
+                json += '"';
+            }
+
+            // Tags
+            if (!entry.tags.empty()) {
+                json += R"(,"tags":[)";
+                bool first = true;
+                for (const auto &tag : entry.tags) {
+                    if (!first) json += ',';
+                    json += '"';
+                    json += detail::json::escapeJsonString(tag);
+                    json += '"';
+                    first = false;
+                }
+                json += ']';
+            }
+
+            json += '}';
+            return json;
+        }
+
+    private:
+        std::atomic<bool> m_includeRenderedMessage;
+
+        /// Format timestamp as ISO 8601 UTC with millisecond precision.
+        /// Example: "2026-02-16T12:00:00.000Z"
+        static std::string formatTimestampUtc(const std::chrono::system_clock::time_point &time) {
+            auto epoch = std::chrono::system_clock::to_time_t(time);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                time.time_since_epoch()) % 1000;
+
+            std::tm tmBuf;
+#if defined(_MSC_VER)
+            gmtime_s(&tmBuf, &epoch);
+#else
+            gmtime_r(&epoch, &tmBuf);
+#endif
+
+            char buf[32];
+            size_t pos = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmBuf);
+            if (pos == 0) {
+                buf[0] = '\0';
+            }
+            // Defensive: ensure non-negative milliseconds for pre-epoch time points
+            std::snprintf(buf + pos, sizeof(buf) - pos, ".%03dZ",
+                         static_cast<int>((ms.count() + 1000) % 1000));
+            return std::string(buf);
+        }
+
+        /// Return 3-character level abbreviation.
+        static const char* getCompactLevel(LogLevel level) {
+            switch (level) {
+                case LogLevel::TRACE: return "TRC";
+                case LogLevel::DEBUG: return "DBG";
+                case LogLevel::INFO:  return "INF";
+                case LogLevel::WARN:  return "WRN";
+                case LogLevel::ERROR: return "ERR";
+                case LogLevel::FATAL: return "FTL";
+                default: return "INF";
+            }
+        }
+
+        /// Escape a property name for use as a JSON key.
+        /// Names starting with @ are escaped to @@ to avoid collision with
+        /// system fields (@t, @l, @mt, etc.).
+        static std::string escapePropertyName(const std::string &name) {
+            if (!name.empty() && name[0] == '@') {
+                return "@" + detail::json::escapeJsonString(name);
+            }
+            return detail::json::escapeJsonString(name);
         }
     };
 } // namespace minta

@@ -52,6 +52,7 @@ namespace minta {
 #include <unordered_map>
 #include <utility>
 
+
 namespace minta {
 namespace detail {
     template<typename T, typename... Args>
@@ -396,6 +397,7 @@ namespace detail {
         std::string fullContent;
         std::string spec;
         char op;  // '@', '$', or 0
+        std::vector<Transform> transforms;
     };
 
     template<typename Callback>
@@ -420,8 +422,15 @@ namespace detail {
                         continue;
                     }
                 }
-                auto parts = splitPlaceholder(nameContent);
-                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op});
+                std::string nameSpec = nameContent;
+                std::vector<Transform> transforms;
+                size_t pipePos = nameContent.find('|');
+                if (pipePos != std::string::npos) {
+                    nameSpec = nameContent.substr(0, pipePos);
+                    transforms = parseTransforms(nameContent.substr(pipePos + 1));
+                }
+                auto parts = splitPlaceholder(nameSpec);
+                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms)});
                 i = endPos;
             } else if (templateStr[i] == '}') {
                 if (i + 1 < templateStr.length() && templateStr[i + 1] == '}') {
@@ -452,7 +461,11 @@ namespace detail {
         while (pos < templateStr.length()) {
             if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
                 if (phIdx < values.size()) {
-                    result += applyFormat(values[phIdx], placeholders[phIdx].spec, locale);
+                    std::string formatted = applyFormat(values[phIdx], placeholders[phIdx].spec, locale);
+                    if (!placeholders[phIdx].transforms.empty()) {
+                        formatted = applyTransforms(formatted, placeholders[phIdx].transforms);
+                    }
+                    result += formatted;
                 } else {
                     result.append(templateStr, pos, placeholders[phIdx].endPos - pos + 1);
                 }
@@ -510,6 +523,7 @@ namespace minta {
         std::string name;
         std::string value;
         char op;  // '@' (destructure), '$' (stringify), or 0 (none)
+        std::vector<std::string> transforms;
     };
 
     struct LogEntry {
@@ -986,6 +1000,33 @@ namespace minta {
                     first = false;
                 }
                 json += '}';
+
+                bool hasTransforms = false;
+                for (const auto &prop : entry.properties) {
+                    if (!prop.transforms.empty()) { hasTransforms = true; break; }
+                }
+                if (hasTransforms) {
+                    json += R"(,"transforms":{)";
+                    bool firstProp = true;
+                    for (const auto &prop : entry.properties) {
+                        if (prop.transforms.empty()) continue;
+                        if (!firstProp) json += ',';
+                        json += '"';
+                        json += escapeJsonString(prop.name);
+                        json += R"(":[)";
+                        bool firstT = true;
+                        for (const auto &t : prop.transforms) {
+                            if (!firstT) json += ',';
+                            json += '"';
+                            json += escapeJsonString(t);
+                            json += '"';
+                            firstT = false;
+                        }
+                        json += ']';
+                        firstProp = false;
+                    }
+                    json += '}';
+                }
             }
 
             json += '}';
@@ -1144,6 +1185,16 @@ namespace minta {
                         xml += " destructure=\"true\"";
                     } else if (prop.op == '$') {
                         xml += " stringify=\"true\"";
+                    }
+                    if (!prop.transforms.empty()) {
+                        xml += " transforms=\"";
+                        bool firstT = true;
+                        for (const auto &t : prop.transforms) {
+                            if (!firstT) xml += '|';
+                            xml += escapeXmlString(t);
+                            firstT = false;
+                        }
+                        xml += '"';
                     }
                     xml += ">";
                     xml += escapeXmlString(prop.value);
@@ -2118,6 +2169,7 @@ namespace detail {
             size_t startPos;
             size_t endPos;
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
+            std::vector<detail::Transform> transforms;
         };
 
         std::mutex m_cacheMutex;
@@ -2136,7 +2188,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms});
             });
             return placeholders;
         }
@@ -2499,7 +2551,19 @@ namespace detail {
             size_t valueIndex = 0;
             for (const auto &ph : placeholders) {
                 if (valueIndex >= values.size()) break;
-                props.push_back({ph.name, values[valueIndex++], ph.operator_});
+                char effectiveOp = ph.operator_;
+                std::vector<std::string> transformSpecs;
+                for (size_t ti = 0; ti < ph.transforms.size(); ++ti) {
+                    const auto &t = ph.transforms[ti];
+                    if (t.name == "expand") effectiveOp = '@';
+                    else if (t.name == "str") effectiveOp = '$';
+                    if (t.arg.empty()) {
+                        transformSpecs.push_back(t.name);
+                    } else {
+                        transformSpecs.push_back(t.name + ":" + t.arg);
+                    }
+                }
+                props.push_back({ph.name, values[valueIndex++], effectiveOp, std::move(transformSpecs)});
             }
 
             return props;

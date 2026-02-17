@@ -27,6 +27,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **Filtering** — per-sink levels, predicate filters, DSL filter rules
 - Escaped brackets (`{{like this}}`)
 - Format specifiers: `{val:.2f}`, `{x:X}`, `{amt:C}`, `{rate:P}`, `{id:04}`, `{v:e}`
+- **Pipe transforms** — `{name|upper}`, `{name|comma}`, `{name|truncate:20}` — 18 built-in transforms with chaining
 - **Culture-specific formatting** — locale-aware numbers (`{:n}`), dates and times (`{:d}`, `{:T}`, etc.)
 
 ## Format Specifiers
@@ -220,6 +221,76 @@ logger.info("General message");
 ```
 
 **Tag routing runs before** per-sink level and DSL filters in the pipeline: global filters → tag routing → per-sink level → per-sink filters.
+
+## Pipe Transforms
+
+Apply post-format transformations to placeholder values with the `|` (pipe) operator:
+
+```cpp
+logger.info("User: {name|upper}", "alice");               // User: ALICE
+logger.info("Size: {bytes|bytes}", 1048576);               // Size: 1.0 MB
+logger.info("Elapsed: {ms|duration}", 3661000);            // Elapsed: 1h 1m 1s
+logger.info("Total: {amount:.2f|comma}", 1234567.89);     // Total: 1,234,567.89
+```
+
+### Syntax
+
+- **Single transform:** `{name|transform}`
+- **Chaining (left-to-right):** `{name|trim|upper|truncate:20}`
+- **With format spec (spec applied first):** `{name:.2f|comma}`
+- **With operators:** `{@name|upper}`, `{$name|quote}`
+
+### Built-in Transforms
+
+**String transforms:**
+
+| Transform | Description | Example |
+|-----------|-------------|---------|
+| `upper` | ASCII uppercase | `{v\|upper}` — `"hello"` → `HELLO` |
+| `lower` | ASCII lowercase | `{v\|lower}` — `"HELLO"` → `hello` |
+| `trim` | Strip leading/trailing whitespace | `{v\|trim}` — `"  hi  "` → `hi` |
+| `truncate:N` | Limit to N UTF-8 chars, append … | `{v\|truncate:5}` — `"Hello World"` → `Hello…` |
+| `pad:N` | Right-pad with spaces to N chars | `{v\|pad:10}` — `"hi"` → `hi········` |
+| `padl:N` | Left-pad with spaces to N chars | `{v\|padl:8}` — `"42"` → `······42` |
+| `quote` | Wrap in double quotes | `{v\|quote}` — `hello` → `"hello"` |
+
+**Number transforms:**
+
+| Transform | Description | Example |
+|-----------|-------------|---------|
+| `comma` | Thousands separator | `{v\|comma}` — `1234567` → `1,234,567` |
+| `hex` | Hex with 0x prefix | `{v\|hex}` — `255` → `0xff` |
+| `oct` | Octal with 0 prefix | `{v\|oct}` — `8` → `010` |
+| `bin` | Binary with 0b prefix | `{v\|bin}` — `10` → `0b1010` |
+| `bytes` | Human-readable byte size | `{v\|bytes}` — `1048576` → `1.0 MB` |
+| `duration` | Human-readable time from ms | `{v\|duration}` — `3661000` → `1h 1m 1s` |
+| `pct` | Percentage (×100, append %) | `{v\|pct}` — `0.856` → `85.6%` |
+
+**Structural transforms:**
+
+| Transform | Description | Example |
+|-----------|-------------|---------|
+| `json` | JSON serialization | `{v\|json}` — `hello` → `"hello"` |
+| `type` | Detected type name | `{v\|type}` — `42` → `int` |
+| `expand` | Operator alias for `@` (destructure) | Affects JSON/XML properties |
+| `str` | Operator alias for `$` (stringify) | Affects JSON/XML properties |
+
+Non-numeric values pass through number transforms unchanged. Unknown transforms are ignored (fail-open).
+
+### Chaining
+
+Transforms are applied left-to-right. Format specifiers are applied **before** pipe transforms:
+
+```cpp
+logger.info("{val|trim|upper|truncate:10}", "  Hello, World!  ");
+// Step 1 (trim):        "Hello, World!"
+// Step 2 (upper):       "HELLO, WORLD!"
+// Step 3 (truncate:10): "HELLO, WOR…"
+
+logger.info("{revenue:.2f|comma}", 9876543.21);
+// Step 1 (spec .2f):  "9876543.21"
+// Step 2 (comma):     "9,876,543.21"
+```
 
 ## Quick Start
 

@@ -31,6 +31,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             ThreadSafety
             NamedSinks
             TagRouting
+            PipeTransforms
     )
 
     set(EXAMPLE_SOURCES
@@ -48,6 +49,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/thread_safety.cpp
             examples/named_sinks.cpp
             examples/tag_routing.cpp
+            examples/pipe_transforms.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)

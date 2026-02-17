@@ -10,6 +10,8 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <set>
+#include <string>
 #include <functional>
 
 namespace minta {
@@ -19,10 +21,77 @@ namespace minta {
 
     class ISink {
     public:
-        ISink() : m_minLevel(LogLevel::TRACE), m_hasFilters(false) {}
+        ISink() : m_minLevel(LogLevel::TRACE), m_hasFilters(false), m_hasTagFilters(false) {}
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
+
+        // --- Named sink support ---
+        void setSinkName(const std::string& name) { m_sinkName = name; }
+        const std::string& getSinkName() const { return m_sinkName; }
+
+        // --- Tag routing ---
+        void addOnlyTag(const std::string& tag) {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            m_onlyTags.insert(tag);
+            m_hasTagFilters.store(true, std::memory_order_release);
+        }
+        void addExceptTag(const std::string& tag) {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            m_exceptTags.insert(tag);
+            m_hasTagFilters.store(true, std::memory_order_release);
+        }
+        void clearOnlyTags() {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            m_onlyTags.clear();
+            m_hasTagFilters.store(!m_exceptTags.empty(), std::memory_order_release);
+        }
+        void clearExceptTags() {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            m_exceptTags.clear();
+            m_hasTagFilters.store(!m_onlyTags.empty(), std::memory_order_release);
+        }
+        void clearTagFilters() {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            m_onlyTags.clear();
+            m_exceptTags.clear();
+            m_hasTagFilters.store(false, std::memory_order_release);
+        }
+        std::set<std::string> getOnlyTags() const {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            return m_onlyTags;
+        }
+        std::set<std::string> getExceptTags() const {
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            return m_exceptTags;
+        }
+
+        /// Check if this sink should accept an entry based on tag routing.
+        /// Rules:
+        ///   - If sink has only() tags: accept only if entry has at least one matching tag
+        ///   - If sink has except() tags: reject if entry has any matching tag
+        ///   - only() takes precedence over except()
+        ///   - Entries without tags go to sinks that have NO only() filter
+        bool shouldAcceptTags(const std::vector<std::string>& entryTags) const {
+            if (!m_hasTagFilters.load(std::memory_order_acquire)) {
+                return true;
+            }
+            std::lock_guard<std::mutex> lock(m_tagMutex);
+            if (!m_onlyTags.empty()) {
+                // only() mode: entry must have at least one matching tag
+                for (const auto& tag : entryTags) {
+                    if (m_onlyTags.count(tag)) return true;
+                }
+                return false; // no matching tag
+            }
+            if (!m_exceptTags.empty()) {
+                // except() mode: reject if entry has any matching tag
+                for (const auto& tag : entryTags) {
+                    if (m_exceptTags.count(tag)) return false;
+                }
+            }
+            return true;
+        }
 
         void setMinLevel(LogLevel level) {
             m_minLevel.store(level, std::memory_order_relaxed);
@@ -136,7 +205,14 @@ namespace minta {
         FilterPredicate m_filter;
         std::vector<FilterRule> m_filterRules;
 
+        std::string m_sinkName;
+        std::atomic<bool> m_hasTagFilters;
+        mutable std::mutex m_tagMutex;
+        std::set<std::string> m_onlyTags;
+        std::set<std::string> m_exceptTags;
+
         friend class LunarLog;
+        friend class SinkProxy;
     };
 
     class BaseSink : public ISink {

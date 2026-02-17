@@ -62,6 +62,19 @@ namespace minta {
                 json += '}';
             }
 
+            if (!entry.tags.empty()) {
+                json += R"(,"tags":[)";
+                bool first = true;
+                for (const auto &tag : entry.tags) {
+                    if (!first) json += ',';
+                    json += '"';
+                    json += escapeJsonString(tag);
+                    json += '"';
+                    first = false;
+                }
+                json += ']';
+            }
+
             if (!entry.properties.empty()) {
                 json += R"(,"properties":{)";
                 bool first = true;

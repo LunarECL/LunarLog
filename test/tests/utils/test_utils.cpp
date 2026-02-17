@@ -62,7 +62,26 @@ void TestUtils::cleanupLogFiles() {
         "culture_conc_sink_test.txt", "culture_locale_change_test.txt",
         "culture_mixed_spec_test.txt",
         "culture_multi0_test.txt", "culture_multi1_test.txt", "culture_multi2_test.txt",
-        "culture_reset_test.txt"
+        "culture_reset_test.txt",
+        // Named sinks tests
+        "test_named1.txt", "test_dup1.txt", "test_dup2.txt",
+        "test_errors.txt", "test_chained.txt", "test_auto0.txt",
+        "test_named_json.txt", "test_all.txt", "test_err_only.txt",
+        "test_idx.txt", "test_filtered.txt", "test_clr.txt",
+        "test_unnamed.txt", "test_named_mix.txt", "test_unnamed2.txt",
+        "test_locale.txt", "test_empty_name.txt", "test_empty_name2.txt",
+        "test_pre.txt", "test_post.txt", "test_fmt.txt", "test_fmt_throw.txt",
+        "test_pred_filter.txt",
+        "test_collision_named.txt", "test_collision_auto.txt",
+        "test_multi_proxy.txt", "test_trace.txt", "test_info_lvl.txt",
+        "test_error_lvl.txt", "test_spec_json.txt",
+        // Tag routing tests
+        "test_metrics.txt", "test_all_tags.txt", "test_no_debug.txt",
+        "test_mixed_tags.txt", "test_specific.txt", "test_general.txt",
+        "test_combo.txt", "test_audit.txt", "test_human_tags.txt",
+        "test_json_tags.txt", "test_xml_tags.txt", "test_clear_tags.txt",
+        "test_exc.txt", "test_notag1.txt", "test_notag2.txt",
+        "test_metrics_warn.txt", "test_fmtarg.txt"
     };
 
     for (const auto &filename : filesToRemove) {

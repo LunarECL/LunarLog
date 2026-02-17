@@ -26,6 +26,59 @@
 #include <sstream>
 
 namespace minta {
+
+    /// Tag type for disambiguating named-sink overloads from unnamed ones (H3).
+    /// Use: logger.addSink<ConsoleSink>(named("console"))
+    /// This prevents SFINAE ambiguity when SinkType is constructible from std::string.
+    struct SinkName {
+        std::string value;
+        explicit SinkName(const std::string& n) : value(n) {}
+        explicit SinkName(const char* n) : value(n) {}
+    };
+
+    /// Convenience factory for SinkName.
+    inline SinkName named(const std::string& name) { return SinkName(name); }
+    inline SinkName named(const char* name) { return SinkName(name); }
+
+namespace detail {
+    /// Parse [bracketed] tag prefixes from a message template.
+    /// Tags must be at the start, contain only alphanumeric, hyphens, underscores.
+    /// Brackets must be immediately adjacent: "[a][b] msg" parses two tags,
+    /// but "[a] [b] msg" only parses one because the space breaks the scan.
+    /// Returns the tags and the remaining message (stripped of tag prefixes).
+    inline std::pair<std::vector<std::string>, std::string> parseTags(const std::string& messageTemplate) {
+        std::vector<std::string> tags;
+        size_t pos = 0;
+        while (pos < messageTemplate.size() && messageTemplate[pos] == '[') {
+            size_t close = messageTemplate.find(']', pos + 1);
+            if (close == std::string::npos) break;
+            std::string tag = messageTemplate.substr(pos + 1, close - pos - 1);
+            // Validate tag: alphanumeric + hyphens + underscores only
+            bool valid = !tag.empty();
+            for (size_t i = 0; i < tag.size() && valid; ++i) {
+                char c = tag[i];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+                    valid = false;
+                }
+            }
+            if (!valid) break;
+            tags.push_back(std::move(tag));
+            pos = close + 1;
+        }
+        // Fast path: no tags found — pair construction still copies
+        // messageTemplate, but avoids the substr + whitespace-strip work.
+        if (tags.empty()) {
+            return {tags, messageTemplate};
+        }
+        // Strip leading whitespace (spaces and tabs) after tags
+        while (pos < messageTemplate.size() && (messageTemplate[pos] == ' ' || messageTemplate[pos] == '\t')) ++pos;
+        return {tags, messageTemplate.substr(pos)};
+    }
+} // namespace detail
+
+    class SinkProxy;
+
     class LunarLog {
     public:
         explicit LunarLog(LogLevel minLevel = LogLevel::INFO, bool addDefaultConsoleSink = true)
@@ -96,23 +149,91 @@ namespace minta {
             });
         }
 
+        /// Add an unnamed sink (auto-named "sink_0", "sink_1", etc.).
+        /// SFINAE: only viable when SinkType is constructible from Args.
         template<typename SinkType, typename... Args>
-        typename std::enable_if<std::is_base_of<ISink, SinkType>::value>::type
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value
+        >::type
         addSink(Args &&... args) {
             m_logManager.addSink(detail::make_unique<SinkType>(std::forward<Args>(args)...));
         }
 
+        /// Add an unnamed sink with a custom formatter.
         template<typename SinkType, typename FormatterType, typename... Args>
-        typename std::enable_if<std::is_base_of<ISink, SinkType>::value && std::is_base_of<IFormatter, FormatterType>::value>::type
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value
+        >::type
         addSink(Args &&... args) {
             auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
             sink->setFormatter(detail::make_unique<FormatterType>());
             m_logManager.addSink(std::move(sink));
         }
 
+        /// Add a named sink: addSink<ConsoleSink>(named("console"))
+        /// Uses SinkName tag type to avoid SFINAE ambiguity with unnamed overloads.
+        template<typename SinkType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value
+        >::type
+        addSink(const SinkName& sinkName, Args &&... args) {
+            m_logManager.addSink(sinkName.value, detail::make_unique<SinkType>(std::forward<Args>(args)...));
+        }
+
+        /// Add a named sink with a custom formatter:
+        /// addSink<FileSink, JsonFormatter>(named("json-out"), "app.jsonl")
+        template<typename SinkType, typename FormatterType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value
+        >::type
+        addSink(const SinkName& sinkName, Args &&... args) {
+            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
+            sink->setFormatter(detail::make_unique<FormatterType>());
+            m_logManager.addSink(sinkName.value, std::move(sink));
+        }
+
+        /// Convenience: addSink<SinkType>("name", args...) still works via
+        /// const std::string& overload. This is unambiguous because SinkName
+        /// is explicit-only from string, so implicit conversions go here.
+        template<typename SinkType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value
+        >::type
+        addSink(const std::string& name, Args &&... args) {
+            m_logManager.addSink(name, detail::make_unique<SinkType>(std::forward<Args>(args)...));
+        }
+
+        /// Named sink with formatter via string name.
+        template<typename SinkType, typename FormatterType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value
+        >::type
+        addSink(const std::string& name, Args &&... args) {
+            auto sink = detail::make_unique<SinkType>(std::forward<Args>(args)...);
+            sink->setFormatter(detail::make_unique<FormatterType>());
+            m_logManager.addSink(name, std::move(sink));
+        }
+
         void addCustomSink(std::unique_ptr<ISink> sink) {
             m_logManager.addSink(std::move(sink));
         }
+
+        void addCustomSink(const std::string& name, std::unique_ptr<ISink> sink) {
+            m_logManager.addSink(name, std::move(sink));
+        }
+
+        /// Get a SinkProxy for configuring a named sink.
+        /// Throws std::invalid_argument if name is not found.
+        SinkProxy sink(const std::string& name);
 
         template<typename... Args>
         void log(LogLevel level, const std::string &messageTemplate, const Args &... args) {
@@ -332,13 +453,19 @@ namespace minta {
 
             std::vector<std::string> values{toString(args)...};
 
-            uint32_t hash = detail::fnv1a(messageTemplate);
+            // Parse tags from message template
+            auto tagResult = detail::parseTags(messageTemplate);
+            std::vector<std::string> entryTags = std::move(tagResult.first);
+            // Use stripped template for formatting if tags were found
+            const std::string& effectiveTemplate = entryTags.empty() ? messageTemplate : tagResult.second;
+
+            uint32_t hash = detail::fnv1a(effectiveTemplate);
             std::vector<PlaceholderInfo> placeholders;
             bool cacheHit = false;
             {
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
-                    auto it = m_templateCache.find(messageTemplate);
+                    auto it = m_templateCache.find(effectiveTemplate);
                     if (it != m_templateCache.end()) {
                         // Deep-copy the cached vector while holding the lock.
                         // A shared_ptr<const vector> would eliminate this copy
@@ -349,7 +476,7 @@ namespace minta {
                 }
             }
             if (!cacheHit) {
-                placeholders = extractPlaceholders(messageTemplate);
+                placeholders = extractPlaceholders(effectiveTemplate);
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     // Soft cap: concurrent threads may each pass the size
@@ -358,7 +485,7 @@ namespace minta {
                     // This is by design — avoiding a hard cap keeps the
                     // critical section short.
                     if (m_templateCache.size() < m_templateCacheSize) {
-                        m_templateCache[messageTemplate] = placeholders;
+                        m_templateCache[effectiveTemplate] = placeholders;
                     }
                 }
             }
@@ -369,8 +496,8 @@ namespace minta {
                 localeCopy = m_locale;
             }
 
-            std::vector<std::string> warnings = validatePlaceholders(messageTemplate, placeholders, values);
-            std::string message = formatMessage(messageTemplate, placeholders, values, localeCopy);
+            std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, placeholders, values);
+            std::string message = formatMessage(effectiveTemplate, placeholders, values, localeCopy);
             // Both representations are kept: arguments is simple name-value pairs
             // for backward compat; properties is the richer form with operator context.
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
@@ -388,7 +515,7 @@ namespace minta {
                 /* level */         level,
                 /* message */       std::move(message),
                 /* timestamp */     now,
-                /* templateStr */   messageTemplate,
+                /* templateStr */   effectiveTemplate,
                 /* templateHash */  hash,
                 /* arguments */     std::move(argumentPairs),
                 /* file */          captureCtx ? file : "",
@@ -396,6 +523,7 @@ namespace minta {
                 /* function */      captureCtx ? function : "",
                 /* customContext */ std::move(contextCopy),
                 /* properties */    std::move(properties),
+                /* tags */          std::move(entryTags),
                 /* locale */        std::move(localeCopy)
             ));
 
@@ -700,6 +828,83 @@ namespace minta {
         LunarLog& m_logger;
         std::string m_key;
     };
+
+    /// Fluent proxy for configuring a named sink.
+    class SinkProxy {
+    public:
+        explicit SinkProxy(ISink* sink, bool loggingStarted = false)
+            : m_sink(sink), m_loggingStarted(loggingStarted) {}
+
+        SinkProxy& level(LogLevel lvl) {
+            m_sink->setMinLevel(lvl);
+            return *this;
+        }
+
+        SinkProxy& filterRule(const std::string& dsl) {
+            m_sink->addFilterRule(dsl);
+            return *this;
+        }
+
+        SinkProxy& locale(const std::string& loc) {
+            m_sink->setLocale(loc);
+            return *this;
+        }
+
+        SinkProxy& formatter(std::unique_ptr<IFormatter> f) {
+            if (m_loggingStarted) {
+                throw std::logic_error("Cannot change formatter after logging has started");
+            }
+            m_sink->setFormatter(std::move(f));
+            return *this;
+        }
+
+        SinkProxy& filter(FilterPredicate pred) {
+            m_sink->setFilter(std::move(pred));
+            return *this;
+        }
+
+        SinkProxy& clearFilter() {
+            m_sink->clearFilter();
+            return *this;
+        }
+
+        SinkProxy& clearFilterRules() {
+            m_sink->clearFilterRules();
+            return *this;
+        }
+
+        SinkProxy& only(const std::string& tag) {
+            m_sink->addOnlyTag(tag);
+            return *this;
+        }
+
+        SinkProxy& except(const std::string& tag) {
+            m_sink->addExceptTag(tag);
+            return *this;
+        }
+
+        /// Clear predicate filter and DSL filter rules on this sink.
+        /// Does NOT clear tag filters (only/except); use clearTagFilters() for those.
+        SinkProxy& clearFilters() {
+            m_sink->clearAllFilters();
+            return *this;
+        }
+
+        SinkProxy& clearTagFilters() {
+            m_sink->clearTagFilters();
+            return *this;
+        }
+
+    private:
+        ISink* m_sink;
+        bool m_loggingStarted;
+    };
+
+    inline SinkProxy LunarLog::sink(const std::string& name) {
+        size_t idx = m_logManager.getSinkIndex(name);
+        return SinkProxy(m_logManager.getSink(idx), m_logManager.isLoggingStarted());
+    }
+
 } // namespace minta
 
 #endif // LUNAR_LOG_SOURCE_HPP

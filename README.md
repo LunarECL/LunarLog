@@ -471,6 +471,36 @@ LunarLog is designed for concurrent use from multiple threads with the following
 - **`setFilter` / `clearFilter` / `addFilterRule` / `clearFilterRules` / `clearAllFilters`** and their per-sink equivalents are thread-safe and can be called concurrently with logging.
 - **`ContextScope`** must not outlive the `LunarLog` instance it references. It holds a reference to the logger and calls `clearContext` in its destructor, so destroying the logger first is undefined behavior.
 
+## Scoped Context (LogScope)
+
+RAII scoped context — inject key-value pairs into log entries for the lifetime of the scope:
+
+```cpp
+{
+    auto scope = logger.scope({{"requestId", "req-001"}, {"userId", "u-42"}});
+    scope.add("role", "admin");
+    logger.info("Processing request");
+    // Output: Processing request [requestId=req-001, userId=u-42, role=admin]
+}
+// All context removed automatically
+logger.info("No context here");
+```
+
+Nested scopes stack; inner scopes shadow outer scopes for duplicate keys:
+
+```cpp
+{
+    auto outer = logger.scope({{"env", "outer"}});
+    {
+        auto inner = logger.scope({{"env", "inner"}});
+        logger.info("Shadowed");  // env=inner
+    }
+    logger.info("Restored");      // env=outer
+}
+```
+
+`LogScope` is move-only, thread-wide, and exception-safe. See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Scoped-Context) for the full guide.
+
 ## Context Capture
 
 ```cpp

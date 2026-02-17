@@ -177,6 +177,8 @@ LunarLog warns about common template mistakes:
 
 ### Indexed Placeholders (`{0}`, `{1}`, ...)
 
+LunarLog keeps the MessageTemplate style (name-value behavior) and also supports indexed placeholders `{0}`, `{1}`, ... These index-based placeholders map directly to explicit value slots.
+
 Indexed placeholders bind to explicit argument positions and can be freely reused:
 
 ```cpp
@@ -193,6 +195,8 @@ So reverse-order mixes remain deterministic:
 logger.info("{1} then {name} then {0}", "A", "B");
 // => B then A then A
 ```
+
+When using the same named placeholder multiple times (e.g. `{x} {x}`), duplicate named warning behavior and per-sink locale rendering keep per-slot values stable via slot-based re-rendering internals.
 
 ## Named Sinks
 

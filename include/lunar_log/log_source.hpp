@@ -450,6 +450,7 @@ namespace detail {
             size_t endPos;
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
             std::vector<detail::Transform> transforms;
+            int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
         };
 
         std::mutex m_cacheMutex;
@@ -468,7 +469,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg});
             });
             return placeholders;
         }
@@ -692,7 +693,7 @@ namespace detail {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has empty placeholder");
                 } else if (isWhitespaceOnly(ph.name)) {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has whitespace-only placeholder name");
-                } else if (!uniquePlaceholders.insert(ph.name).second) {
+                } else if (ph.indexedArg < 0 && !uniquePlaceholders.insert(ph.name).second) {
                     warnings.push_back("Warning: Template \"" + templateStr + "\" has duplicate placeholder name: " + ph.name);
                 }
             }
@@ -816,10 +817,14 @@ namespace detail {
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
 
-            size_t valueIndex = 0;
-            for (const auto &ph : placeholders) {
-                if (valueIndex >= values.size()) break;
-                argumentPairs.emplace_back(ph.name, values[valueIndex++]);
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                int valueIdx = ph.indexedArg >= 0
+                               ? ph.indexedArg
+                               : static_cast<int>(i);
+                if (valueIdx >= 0 && static_cast<size_t>(valueIdx) < values.size()) {
+                    argumentPairs.emplace_back(ph.name, values[valueIdx]);
+                }
             }
 
             return argumentPairs;
@@ -839,11 +844,14 @@ namespace detail {
         static std::vector<PlaceholderProperty> mapProperties(
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<PlaceholderProperty> props;
-            props.reserve(std::min(placeholders.size(), values.size()));
+            props.reserve(placeholders.size());
 
-            size_t valueIndex = 0;
-            for (const auto &ph : placeholders) {
-                if (valueIndex >= values.size()) break;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                int valueIdx = ph.indexedArg >= 0
+                               ? ph.indexedArg
+                               : static_cast<int>(i);
+                if (valueIdx < 0 || static_cast<size_t>(valueIdx) >= values.size()) continue;
                 char effectiveOp = ph.operator_;
                 std::vector<std::string> transformSpecs;
                 for (size_t ti = 0; ti < ph.transforms.size(); ++ti) {
@@ -856,7 +864,7 @@ namespace detail {
                         transformSpecs.push_back(t.name + ":" + t.arg);
                     }
                 }
-                props.push_back({ph.name, values[valueIndex++], effectiveOp, std::move(transformSpecs)});
+                props.push_back({ph.name, values[valueIdx], effectiveOp, std::move(transformSpecs)});
             }
 
             return props;

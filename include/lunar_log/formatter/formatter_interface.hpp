@@ -51,12 +51,29 @@ namespace minta {
                     return entry.message;
                 }
             }
-            std::vector<std::string> values;
-            values.reserve(entry.properties.size());
-            for (const auto &prop : entry.properties) {
-                values.push_back(prop.value);
+            std::vector<detail::ParsedPlaceholder> spans;
+            detail::forEachPlaceholder(entry.templateStr, [&](const detail::ParsedPlaceholder& ph) {
+                spans.push_back(ph);
+            });
+            size_t maxSlot = 0;
+            for (size_t i = 0; i < spans.size(); ++i) {
+                size_t slot = spans[i].indexedArg >= 0
+                              ? static_cast<size_t>(spans[i].indexedArg)
+                              : i;
+                if (slot + 1 > maxSlot) maxSlot = slot + 1;
             }
-            return detail::reformatMessage(entry.templateStr, values, localeCopy);
+            std::vector<std::string> values(maxSlot);
+            size_t propIdx = 0;
+            for (size_t i = 0; i < spans.size() && propIdx < entry.properties.size(); ++i) {
+                size_t slot = spans[i].indexedArg >= 0
+                              ? static_cast<size_t>(spans[i].indexedArg)
+                              : i;
+                if (slot < values.size()) {
+                    values[slot] = entry.properties[propIdx].value;
+                }
+                ++propIdx;
+            }
+            return detail::walkTemplate(entry.templateStr, spans, values, localeCopy);
         }
 
     private:

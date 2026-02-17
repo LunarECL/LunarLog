@@ -358,6 +358,16 @@ namespace detail {
     // operator stripping, validation, and name/spec splitting.
     // ----------------------------------------------------------------
 
+    /// Return true when every character in @p name is an ASCII digit.
+    /// Used to distinguish indexed placeholders ({0}, {1}) from named ones ({user}).
+    inline bool isIndexedPlaceholder(const std::string &name) {
+        if (name.empty()) return false;
+        for (size_t i = 0; i < name.size(); ++i) {
+            if (!std::isdigit(static_cast<unsigned char>(name[i]))) return false;
+        }
+        return true;
+    }
+
     struct ParsedPlaceholder {
         size_t startPos;
         size_t endPos;
@@ -366,6 +376,7 @@ namespace detail {
         std::string spec;
         char op;  // '@', '$', or 0
         std::vector<Transform> transforms;
+        int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
     };
 
     template<typename Callback>
@@ -398,7 +409,8 @@ namespace detail {
                     transforms = parseTransforms(nameContent.substr(pipePos + 1));
                 }
                 auto parts = splitPlaceholder(nameSpec);
-                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms)});
+                int idxArg = isIndexedPlaceholder(parts.first) ? safeStoi(parts.first, -1) : -1;
+                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms), idxArg});
                 i = endPos;
             } else if (templateStr[i] == '}') {
                 if (i + 1 < templateStr.length() && templateStr[i + 1] == '}') {
@@ -428,12 +440,17 @@ namespace detail {
 
         while (pos < templateStr.length()) {
             if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
-                if (phIdx < values.size()) {
-                    std::string formatted = applyFormat(values[phIdx], placeholders[phIdx].spec, locale);
+                int valueIdx = placeholders[phIdx].indexedArg >= 0
+                               ? placeholders[phIdx].indexedArg
+                               : static_cast<int>(phIdx);
+                if (valueIdx >= 0 && static_cast<size_t>(valueIdx) < values.size()) {
+                    std::string formatted = applyFormat(values[valueIdx], placeholders[phIdx].spec, locale);
                     if (!placeholders[phIdx].transforms.empty()) {
                         formatted = applyTransforms(formatted, placeholders[phIdx].transforms);
                     }
                     result += formatted;
+                } else if (placeholders[phIdx].indexedArg >= 0) {
+                    // Indexed out-of-range renders as empty string
                 } else {
                     result.append(templateStr, pos, placeholders[phIdx].endPos - pos + 1);
                 }

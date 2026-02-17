@@ -429,7 +429,49 @@ namespace detail {
         char op;  // '@', '$', or 0
         std::vector<Transform> transforms;
         int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
+        int alignment;   // >0 right-align, <0 left-align, 0 = none
     };
+
+    /// Maximum alignment width to prevent excessive memory allocation.
+    /// Placeholders like {name,999999999} are clamped to this value.
+    static const int MAX_ALIGNMENT_WIDTH = 1024;
+
+    inline int parseAlignment(const std::string &s) {
+        if (s.empty()) return 0;
+        size_t start = 0;
+        if (s[0] == '-') start = 1;
+        if (start >= s.size()) return 0;
+        for (size_t i = start; i < s.size(); ++i) {
+            if (!std::isdigit(static_cast<unsigned char>(s[i]))) return 0;
+        }
+        try {
+            int val = std::stoi(s);
+            // Clamp to reasonable range to prevent excessive allocations
+            if (val > MAX_ALIGNMENT_WIDTH) val = MAX_ALIGNMENT_WIDTH;
+            if (val < -MAX_ALIGNMENT_WIDTH) val = -MAX_ALIGNMENT_WIDTH;
+            return val;
+        } catch (...) { return 0; }
+    }
+
+    inline std::string applyAlignment(const std::string &value, int alignment) {
+        if (alignment == 0) return value;
+        // Guard against INT_MIN: negating INT_MIN is undefined behavior
+        // (signed integer overflow). Treat as max right-alignment.
+        if (alignment == INT_MIN) alignment = -INT_MAX;
+        size_t width = static_cast<size_t>(alignment < 0 ? -alignment : alignment);
+        // Clamp width to prevent excessive memory allocation (defense-in-depth;
+        // parseAlignment already clamps, but alignment may originate elsewhere).
+        if (width > static_cast<size_t>(MAX_ALIGNMENT_WIDTH))
+            width = static_cast<size_t>(MAX_ALIGNMENT_WIDTH);
+        size_t charCount = utf8CharCount(value);
+        if (charCount >= width) return value;
+        size_t padding = width - charCount;
+        if (alignment > 0) {
+            return std::string(padding, ' ') + value;
+        } else {
+            return value + std::string(padding, ' ');
+        }
+    }
 
     inline size_t resolveValueSlot(int indexedArg, size_t namedOrdinal) {
         return indexedArg >= 0
@@ -467,12 +509,19 @@ namespace detail {
                     transforms = parseTransforms(nameContent.substr(pipePos + 1));
                 }
                 auto parts = splitPlaceholder(nameSpec);
-                int idxArg = -1;
-                if (isIndexedPlaceholder(parts.first)) {
-                    int parsed = -1;
-                    if (tryParseIndex(parts.first, parsed)) idxArg = parsed;
+                int alignment = 0;
+                std::string cleanName = parts.first;
+                size_t commaPos = cleanName.find(',');
+                if (commaPos != std::string::npos) {
+                    alignment = parseAlignment(cleanName.substr(commaPos + 1));
+                    cleanName = cleanName.substr(0, commaPos);
                 }
-                callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms), idxArg});
+                int idxArg = -1;
+                if (isIndexedPlaceholder(cleanName)) {
+                    int parsed = -1;
+                    if (tryParseIndex(cleanName, parsed)) idxArg = parsed;
+                }
+                callback(ParsedPlaceholder{i, endPos, cleanName, content, parts.second, op, std::move(transforms), idxArg, alignment});
                 i = endPos;
             } else if (templateStr[i] == '}') {
                 if (i + 1 < templateStr.length() && templateStr[i + 1] == '}') {
@@ -511,6 +560,9 @@ namespace detail {
                     std::string formatted = applyFormat(values[valueIdx], placeholders[phIdx].spec, locale);
                     if (!placeholders[phIdx].transforms.empty()) {
                         formatted = applyTransforms(formatted, placeholders[phIdx].transforms);
+                    }
+                    if (placeholders[phIdx].alignment != 0) {
+                        formatted = applyAlignment(formatted, placeholders[phIdx].alignment);
                     }
                     result += formatted;
                 } else if (placeholders[phIdx].indexedArg >= 0) {
@@ -3559,6 +3611,7 @@ namespace detail {
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
             std::vector<detail::Transform> transforms;
             int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
+            int alignment;   // >0 right-align, <0 left-align, 0 = none
         };
 
         std::mutex m_cacheMutex;
@@ -3577,7 +3630,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg, ph.alignment});
             });
             return placeholders;
         }

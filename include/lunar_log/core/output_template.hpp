@@ -184,22 +184,6 @@ namespace detail {
         }
     }
 
-    /// Apply alignment to a value string.
-    /// Positive alignment = right-align (pad left), negative = left-align (pad right).
-    inline std::string applyAlignment(const std::string& value, int alignment) {
-        if (alignment == 0) return value;
-        size_t width = static_cast<size_t>(alignment < 0 ? -alignment : alignment);
-        if (value.size() >= width) return value;
-        size_t padding = width - value.size();
-        if (alignment > 0) {
-            // right-align: pad left
-            return std::string(padding, ' ') + value;
-        } else {
-            // left-align: pad right
-            return value + std::string(padding, ' ');
-        }
-    }
-
     /// Resolve a token name to its OutputTokenType.
     /// Returns true if recognized, false for unknown tokens.
     inline bool resolveTokenType(const std::string& name, OutputTokenType& out) {
@@ -276,11 +260,12 @@ namespace detail {
                     if (colonPos != std::string::npos) {
                         std::string alignStr = rest.substr(0, colonPos);
                         spec = rest.substr(colonPos + 1);
-                        // Parse alignment
-                        try { alignment = std::stoi(alignStr); } catch (...) { alignment = 0; }
+                        // Parse alignment (uses parseAlignment for consistent
+                        // validation and MAX_ALIGNMENT_WIDTH clamping)
+                        alignment = parseAlignment(alignStr);
                     } else {
                         // No spec, just alignment
-                        try { alignment = std::stoi(rest); } catch (...) { alignment = 0; }
+                        alignment = parseAlignment(rest);
                     }
                 } else {
                     // No comma — check for colon (spec only)

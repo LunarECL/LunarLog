@@ -451,6 +451,7 @@ namespace detail {
             char operator_;  // '@' (destructure), '$' (stringify), or 0 (none)
             std::vector<detail::Transform> transforms;
             int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
+            int alignment;   // >0 right-align, <0 left-align, 0 = none
         };
 
         std::mutex m_cacheMutex;
@@ -469,7 +470,7 @@ namespace detail {
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
-                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg});
+                placeholders.push_back({ph.name, ph.fullContent, ph.spec, ph.startPos, ph.endPos, ph.op, ph.transforms, ph.indexedArg, ph.alignment});
             });
             return placeholders;
         }

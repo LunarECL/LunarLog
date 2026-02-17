@@ -108,7 +108,7 @@ namespace minta {
         void ensureOpen() {
             if (m_fileOpen) return;
             ensureDirectoryExists();
-            m_file.open(m_policy.basePath(), std::ios::app);
+            m_file.open(m_policy.basePath(), std::ios::app | std::ios::binary);
             if (!m_file.is_open()) {
                 std::fprintf(stderr, "RollingFileSink: failed to open file: %s\n",
                              m_policy.basePath().c_str());
@@ -164,10 +164,10 @@ namespace minta {
 
             cleanup();
 
-            m_file.open(m_policy.basePath(), std::ios::app);
+            m_file.open(m_policy.basePath(), std::ios::app | std::ios::binary);
             if (m_file.is_open()) {
                 m_fileOpen = true;
-                m_currentSize = 0;
+                m_currentSize = getFileSize(m_policy.basePath());
             }
         }
 

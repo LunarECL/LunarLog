@@ -5,6 +5,7 @@
 #include <chrono>
 #include <vector>
 #include <fstream>
+#include <sstream>
 #include <cstdio>
 
 #include <sys/stat.h>
@@ -255,8 +256,7 @@ TEST_F(RollingFileTest, ConcurrentWrites) {
         if (fileExists(buf)) countLines(buf);
     }
 
-    EXPECT_GE(totalLines, 30);
-    EXPECT_LE(totalLines, 40);
+    EXPECT_EQ(totalLines, 40);
 }
 
 TEST_F(RollingFileTest, LazyFileCreation) {

@@ -29,6 +29,8 @@ if(LUNARLOG_BUILD_EXAMPLES)
             MultiSink
             RateLimiting
             ThreadSafety
+            NamedSinks
+            TagRouting
     )
 
     set(EXAMPLE_SOURCES
@@ -44,6 +46,8 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/multi_sink.cpp
             examples/rate_limiting.cpp
             examples/thread_safety.cpp
+            examples/named_sinks.cpp
+            examples/tag_routing.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)

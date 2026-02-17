@@ -45,3 +45,5 @@
 
 .idea/
 build11/
+*.log
+culture_sci_double_test.txt

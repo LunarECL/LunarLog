@@ -22,6 +22,8 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - Thread-safe logging with atomic operations
 - Rate limiting to prevent log flooding
 - Context capture (global + scoped)
+- **Named sinks** — register, look up, and configure sinks by name with `named()` and `SinkProxy`
+- **Tag routing** — `[tag]` prefix parsing with `only()`/`except()` per-sink filtering
 - **Filtering** — per-sink levels, predicate filters, DSL filter rules
 - Escaped brackets (`{{like this}}`)
 - Format specifiers: `{val:.2f}`, `{x:X}`, `{amt:C}`, `{rate:P}`, `{id:04}`, `{v:e}`
@@ -156,6 +158,68 @@ LunarLog warns about common template mistakes:
 - **Duplicate names:** `{name} and {name}` — same name appears twice
 - **Empty placeholders:** `{}`
 - **Whitespace-only names:** `{ }`
+
+## Named Sinks
+
+Give sinks human-readable names with `named()` instead of tracking indices. Use `SinkProxy` to configure them fluently:
+
+```cpp
+minta::LunarLog logger(minta::LogLevel::TRACE, false);
+
+// Register sinks with names
+logger.addSink<minta::ConsoleSink>(minta::named("console"));
+logger.addSink<minta::FileSink>(minta::named("app-log"), "app.log");
+logger.addSink<minta::FileSink, minta::JsonFormatter>(minta::named("json-out"), "app.json.log");
+
+// Configure via SinkProxy — fluent, chainable API
+logger.sink("json-out")
+    .level(minta::LogLevel::INFO)
+    .filterRule("not message contains 'heartbeat'")
+    .locale("de_DE");
+
+// Look up and reconfigure at runtime
+logger.sink("console").level(minta::LogLevel::WARN);
+
+// Clear filters on a named sink
+logger.sink("json-out").clearFilters();
+```
+
+Unnamed sinks are auto-named `"sink_0"`, `"sink_1"`, etc. The `SinkProxy` also supports `only()`/`except()` for tag routing (see below), `filter()` for predicate filters, and `formatter()` for changing the formatter before logging starts.
+
+## Tag Routing
+
+Prefix messages with `[tag]` to categorize them. Tags are parsed, stripped from the rendered message, and used for per-sink routing:
+
+```cpp
+minta::LunarLog logger(minta::LogLevel::INFO, false);
+
+logger.addSink<minta::ConsoleSink>(minta::named("console"));
+logger.addSink<minta::FileSink>(minta::named("auth-log"), "auth.log");
+logger.addSink<minta::FileSink>(minta::named("main-log"), "main.log");
+
+// auth-log only receives messages tagged [auth]
+logger.sink("auth-log").only("auth");
+// main-log receives everything except [health] messages
+logger.sink("main-log").except("health");
+
+logger.info("[auth] User {name} logged in", "alice");
+// -> console ✓, auth-log ✓ (matches "auth"), main-log ✓
+
+logger.info("[health] Heartbeat OK");
+// -> console ✓, auth-log ✗ (not "auth"), main-log ✗ (excepts "health")
+
+logger.info("General message");
+// -> console ✓, auth-log ✗ (untagged → excluded by only()), main-log ✓
+```
+
+**Multi-tag:** Adjacent brackets parse multiple tags — `[auth][security] message` has two tags. A space breaks the scan: `[auth] [security] msg` only parses `auth`.
+
+**JSON output** includes a `"tags"` array:
+```json
+{"level":"INFO","message":"User alice logged in","tags":["auth"],"properties":{...}}
+```
+
+**Tag routing runs before** per-sink level and DSL filters in the pipeline: global filters → tag routing → per-sink level → per-sink filters.
 
 ## Quick Start
 

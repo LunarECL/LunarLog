@@ -117,6 +117,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_rolling_file.cpp
             test/tests/test_output_template.cpp
             test/tests/test_indexed_parameters.cpp
+            test/tests/test_alignment_padding.cpp
             test/tests/utils/test_utils.cpp
     )
 

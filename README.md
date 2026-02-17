@@ -28,6 +28,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **Filtering** — per-sink levels, predicate filters, DSL filter rules
 - Escaped brackets (`{{like this}}`)
 - Format specifiers: `{val:.2f}`, `{x:X}`, `{amt:C}`, `{rate:P}`, `{id:04}`, `{v:e}`
+- **Alignment & padding** — `{name,20}` right-align, `{name,-20}` left-align — fixed-width column output
 - **Pipe transforms** — `{name|upper}`, `{name|comma}`, `{name|truncate:20}` — 18 built-in transforms with chaining
 - **Culture-specific formatting** — locale-aware numbers (`{:n}`), dates and times (`{:d}`, `{:T}`, etc.)
 
@@ -121,6 +122,36 @@ logger.info("User: {@id}, Tag: {$label}", 42, true);
 Operators combine with format specifiers: `{@amount:.2f}` formats the message as `3.14` but stores the raw value (`3.14159`) in properties.
 
 Invalid forms like `{@}`, `{@@x}`, `{@$x}`, and `{@ }` are treated as literal text.
+
+## Alignment & Padding
+
+Fixed-width formatting for table-like log output. Alignment is applied **after** format specifiers and pipe transforms.
+
+```cpp
+// Right-align in 20-char field
+logger.info("Name: {name,20}", "name", "John");
+// → "Name:                 John"
+
+// Left-align in 20-char field
+logger.info("Name: {name,-20}", "name", "John");
+// → "Name: John                "
+
+// With format specifier
+logger.info("Price: {price,12:.2f}", "price", 1234.57);
+// → "Price:      1234.57"
+
+// With pipe transform
+logger.info("{name,-20|upper}", "name", "John");
+// → "JOHN                "
+
+// Table-like output
+logger.info("{name,-15} {level,7} {msg}", "name", "UserService", "level", "WARNING", "msg", "Connection timeout");
+// → "UserService      WARNING Connection timeout"
+```
+
+**Syntax:** `{name,N}` where N is the field width. Positive = right-align, negative = left-align. `{name,0}` is a no-op. Width is clamped to 1024. Values longer than the width are **not** truncated — use `|truncate:N` for that.
+
+**Parse order:** `{operator}{name},{alignment}:{spec}|{transforms}`
 
 ## Human-Readable Output Templates
 

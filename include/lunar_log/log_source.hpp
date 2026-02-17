@@ -698,9 +698,27 @@ namespace detail {
                 }
             }
 
-            if (placeholders.size() < values.size()) {
+            std::set<size_t> usedSlots;
+            size_t namedOrdinal = 0;
+            for (size_t i = 0; i < placeholders.size(); ++i) {
+                const auto &ph = placeholders[i];
+                size_t slot = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                usedSlots.insert(slot);
+            }
+
+            if (usedSlots.size() < values.size()) {
                 warnings.push_back("Warning: More values provided than placeholders");
-            } else if (placeholders.size() > values.size()) {
+            }
+
+            bool hasMissingSlot = false;
+            for (std::set<size_t>::const_iterator it = usedSlots.begin(); it != usedSlots.end(); ++it) {
+                if (*it >= values.size()) {
+                    hasMissingSlot = true;
+                    break;
+                }
+            }
+            if (hasMissingSlot) {
                 warnings.push_back("Warning: More placeholders than provided values");
             }
 
@@ -817,12 +835,12 @@ namespace detail {
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<std::pair<std::string, std::string>> argumentPairs;
 
+            size_t namedOrdinal = 0;
             for (size_t i = 0; i < placeholders.size(); ++i) {
                 const auto &ph = placeholders[i];
-                int valueIdx = ph.indexedArg >= 0
-                               ? ph.indexedArg
-                               : static_cast<int>(i);
-                if (valueIdx >= 0 && static_cast<size_t>(valueIdx) < values.size()) {
+                size_t valueIdx = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (valueIdx < values.size()) {
                     argumentPairs.emplace_back(ph.name, values[valueIdx]);
                 }
             }
@@ -845,13 +863,15 @@ namespace detail {
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values) {
             std::vector<PlaceholderProperty> props;
             props.reserve(placeholders.size());
+            std::set<std::string> seen;
 
+            size_t namedOrdinal = 0;
             for (size_t i = 0; i < placeholders.size(); ++i) {
                 const auto &ph = placeholders[i];
-                int valueIdx = ph.indexedArg >= 0
-                               ? ph.indexedArg
-                               : static_cast<int>(i);
-                if (valueIdx < 0 || static_cast<size_t>(valueIdx) >= values.size()) continue;
+                size_t valueIdx = detail::resolveValueSlot(ph.indexedArg, namedOrdinal);
+                if (ph.indexedArg < 0) ++namedOrdinal;
+                if (valueIdx >= values.size()) continue;
+                if (!seen.insert(ph.name).second) continue;
                 char effectiveOp = ph.operator_;
                 std::vector<std::string> transformSpecs;
                 for (size_t ti = 0; ti < ph.transforms.size(); ++ti) {

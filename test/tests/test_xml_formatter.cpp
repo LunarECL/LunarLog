@@ -60,7 +60,7 @@ TEST_F(XmlFormatterTest, SanitizeXmlNameDigitLeading) {
     TestUtils::waitForFileContent("xml_formatter_log.txt");
     std::string logContent = TestUtils::readLogFile("xml_formatter_log.txt");
 
-    EXPECT_TRUE(logContent.find("<_23abc>digit_val</_23abc>") != std::string::npos);
+    EXPECT_TRUE(logContent.find("<_123abc>digit_val</_123abc>") != std::string::npos);
 }
 
 TEST_F(XmlFormatterTest, SanitizeXmlNameSpaces) {

@@ -81,6 +81,25 @@ namespace detail {
         try { return std::stoi(s); } catch (...) { return fallback; }
     }
 
+    /// Parse non-negative integer index safely with overflow clamping.
+    /// Returns false if the input is empty or contains non-digits.
+    inline bool tryParseIndex(const std::string &s, int &out) {
+        if (s.empty()) return false;
+        unsigned long long v = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (!std::isdigit(c)) return false;
+            unsigned int digit = static_cast<unsigned int>(c - '0');
+            if (v > (static_cast<unsigned long long>(INT_MAX) - digit) / 10ULL) {
+                out = INT_MAX;
+                return true;
+            }
+            v = v * 10ULL + digit;
+        }
+        out = static_cast<int>(v);
+        return true;
+    }
+
     /// Try to parse a string as a double. Returns true on success and sets out.
     inline bool tryParseDouble(const std::string &s, double &out) {
         if (s.empty()) return false;
@@ -379,6 +398,12 @@ namespace detail {
         int indexedArg;  // >= 0 for indexed ({0},{1},...), -1 for named
     };
 
+    inline size_t resolveValueSlot(int indexedArg, size_t namedOrdinal) {
+        return indexedArg >= 0
+            ? static_cast<size_t>(indexedArg)
+            : namedOrdinal;
+    }
+
     template<typename Callback>
     inline void forEachPlaceholder(const std::string &templateStr, Callback callback) {
         for (size_t i = 0; i < templateStr.length(); ++i) {
@@ -409,7 +434,11 @@ namespace detail {
                     transforms = parseTransforms(nameContent.substr(pipePos + 1));
                 }
                 auto parts = splitPlaceholder(nameSpec);
-                int idxArg = isIndexedPlaceholder(parts.first) ? safeStoi(parts.first, -1) : -1;
+                int idxArg = -1;
+                if (isIndexedPlaceholder(parts.first)) {
+                    int parsed = -1;
+                    if (tryParseIndex(parts.first, parsed)) idxArg = parsed;
+                }
                 callback(ParsedPlaceholder{i, endPos, parts.first, content, parts.second, op, std::move(transforms), idxArg});
                 i = endPos;
             } else if (templateStr[i] == '}') {
@@ -437,13 +466,15 @@ namespace detail {
         result.reserve(templateStr.length());
         size_t phIdx = 0;
         size_t pos = 0;
+        size_t namedOrdinal = 0;
 
         while (pos < templateStr.length()) {
             if (phIdx < placeholders.size() && pos == placeholders[phIdx].startPos) {
-                int valueIdx = placeholders[phIdx].indexedArg >= 0
-                               ? placeholders[phIdx].indexedArg
-                               : static_cast<int>(phIdx);
-                if (valueIdx >= 0 && static_cast<size_t>(valueIdx) < values.size()) {
+                size_t valueIdx = resolveValueSlot(placeholders[phIdx].indexedArg, namedOrdinal);
+                if (placeholders[phIdx].indexedArg < 0) {
+                    ++namedOrdinal;
+                }
+                if (valueIdx < values.size()) {
                     std::string formatted = applyFormat(values[valueIdx], placeholders[phIdx].spec, locale);
                     if (!placeholders[phIdx].transforms.empty()) {
                         formatted = applyTransforms(formatted, placeholders[phIdx].transforms);

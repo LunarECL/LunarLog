@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <map>
 
 namespace minta {
     class IFormatter {
@@ -56,22 +57,25 @@ namespace minta {
                 spans.push_back(ph);
             });
             size_t maxSlot = 0;
+            size_t namedOrdinal = 0;
             for (size_t i = 0; i < spans.size(); ++i) {
-                size_t slot = spans[i].indexedArg >= 0
-                              ? static_cast<size_t>(spans[i].indexedArg)
-                              : i;
+                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
+                if (spans[i].indexedArg < 0) ++namedOrdinal;
                 if (slot + 1 > maxSlot) maxSlot = slot + 1;
             }
             std::vector<std::string> values(maxSlot);
-            size_t propIdx = 0;
-            for (size_t i = 0; i < spans.size() && propIdx < entry.properties.size(); ++i) {
-                size_t slot = spans[i].indexedArg >= 0
-                              ? static_cast<size_t>(spans[i].indexedArg)
-                              : i;
-                if (slot < values.size()) {
-                    values[slot] = entry.properties[propIdx].value;
+            std::map<std::string, std::string> propValues;
+            for (size_t i = 0; i < entry.properties.size(); ++i) {
+                propValues[entry.properties[i].name] = entry.properties[i].value;
+            }
+            namedOrdinal = 0;
+            for (size_t i = 0; i < spans.size(); ++i) {
+                size_t slot = detail::resolveValueSlot(spans[i].indexedArg, namedOrdinal);
+                if (spans[i].indexedArg < 0) ++namedOrdinal;
+                std::map<std::string, std::string>::const_iterator it = propValues.find(spans[i].name);
+                if (slot < values.size() && it != propValues.end()) {
+                    values[slot] = it->second;
                 }
-                ++propIdx;
             }
             return detail::walkTemplate(entry.templateStr, spans, values, localeCopy);
         }

@@ -81,7 +81,10 @@ void TestUtils::cleanupLogFiles() {
         "test_combo.txt", "test_audit.txt", "test_human_tags.txt",
         "test_json_tags.txt", "test_xml_tags.txt", "test_clear_tags.txt",
         "test_exc.txt", "test_notag1.txt", "test_notag2.txt",
-        "test_metrics_warn.txt", "test_fmtarg.txt"
+        "test_metrics_warn.txt", "test_fmtarg.txt",
+        // Pipe transform tests
+        "pipe_test.txt", "pipe_json.txt", "pipe_xml.txt",
+        "pipe_trunc_noop.txt", "pipe_json_noxf.txt", "pipe_xml_noxf.txt"
     };
 
     for (const auto &filename : filesToRemove) {

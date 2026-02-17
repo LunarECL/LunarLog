@@ -78,6 +78,16 @@ namespace minta {
                     } else if (prop.op == '$') {
                         xml += " stringify=\"true\"";
                     }
+                    if (!prop.transforms.empty()) {
+                        xml += " transforms=\"";
+                        bool firstT = true;
+                        for (const auto &t : prop.transforms) {
+                            if (!firstT) xml += '|';
+                            xml += escapeXmlString(t);
+                            firstT = false;
+                        }
+                        xml += '"';
+                    }
                     xml += ">";
                     xml += escapeXmlString(prop.value);
                     xml += "</";

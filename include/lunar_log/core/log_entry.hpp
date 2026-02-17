@@ -13,6 +13,7 @@ namespace minta {
         std::string name;
         std::string value;
         char op;  // '@' (destructure), '$' (stringify), or 0 (none)
+        std::vector<std::string> transforms;
     };
 
     struct LogEntry {

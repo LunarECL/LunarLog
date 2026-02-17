@@ -786,6 +786,795 @@ namespace minta {
 } // namespace minta
 
 
+// --- lunar_log/core/compact_filter.hpp ---
+
+#include <string>
+#include <vector>
+#include <stdexcept>
+#include <cctype>
+
+namespace minta {
+namespace detail {
+
+    inline std::string compactToUpper(const std::string& s) {
+        std::string result;
+        result.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i) {
+            result += static_cast<char>(std::toupper(static_cast<unsigned char>(s[i])));
+        }
+        return result;
+    }
+
+    inline std::string compactStripQuotes(const std::string& s) {
+        if (s.size() >= 2) {
+            char first = s.front();
+            char last = s.back();
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                return s.substr(1, s.size() - 2);
+            }
+        }
+        return s;
+    }
+
+    /// Wrap a value in single quotes for DSL consumption.
+    /// Throws if the value contains a single quote (cannot be safely
+    /// represented in the DSL's outermost-quote-stripping parser).
+    inline std::string compactDslQuote(const std::string& s) {
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '\'') {
+                throw std::invalid_argument(
+                    "Compact filter value cannot contain single quotes (DSL limitation). "
+                    "Use addFilterRule() or setFilter() predicate instead. Value: " + s);
+            }
+        }
+        return "'" + s + "'";
+    }
+
+    inline bool compactIsLevelName(const std::string& upper) {
+        return upper == "TRACE" || upper == "DEBUG" || upper == "INFO" ||
+               upper == "WARN"  || upper == "WARNING" || upper == "ERROR" || upper == "FATAL";
+    }
+
+    inline FilterRule parseCompactToken(const std::string& token) {
+        if (token.empty()) {
+            throw std::invalid_argument("Empty compact filter token");
+        }
+
+        if (token.size() >= 2 && token.back() == '+') {
+            std::string levelStr = compactToUpper(token.substr(0, token.size() - 1));
+            if (compactIsLevelName(levelStr)) {
+                if (levelStr == "WARNING") levelStr = "WARN";
+                return FilterRule::parse("level >= " + levelStr);
+            }
+        }
+
+        if (token.size() > 5 && token[0] == '!' && token[1] == 't' &&
+            token[2] == 'p' && token[3] == 'l' && token[4] == ':') {
+            std::string pattern = compactStripQuotes(token.substr(5));
+            return FilterRule::parse("not template == " + compactDslQuote(pattern));
+        }
+
+        if (token.size() > 4 && token[0] == 't' && token[1] == 'p' &&
+            token[2] == 'l' && token[3] == ':') {
+            std::string pattern = compactStripQuotes(token.substr(4));
+            return FilterRule::parse("template == " + compactDslQuote(pattern));
+        }
+
+        if (token.size() > 2 && token[0] == '!' && token[1] == '~') {
+            std::string keyword = compactStripQuotes(token.substr(2));
+            if (keyword.empty()) {
+                throw std::invalid_argument("Empty keyword in compact filter: " + token);
+            }
+            return FilterRule::parse("not message contains " + compactDslQuote(keyword));
+        }
+
+        if (token.size() > 1 && token[0] == '~') {
+            std::string keyword = compactStripQuotes(token.substr(1));
+            if (keyword.empty()) {
+                throw std::invalid_argument("Empty keyword in compact filter: " + token);
+            }
+            return FilterRule::parse("message contains " + compactDslQuote(keyword));
+        }
+
+        if (token.size() > 4 && token[0] == 'c' && token[1] == 't' &&
+            token[2] == 'x' && token[3] == ':') {
+            std::string rest = token.substr(4);
+            size_t eqPos = std::string::npos;
+            bool inQuote = false;
+            char quoteChar = 0;
+            for (size_t j = 0; j < rest.size(); ++j) {
+                if (!inQuote && (rest[j] == '"' || rest[j] == '\'')) {
+                    inQuote = true;
+                    quoteChar = rest[j];
+                } else if (inQuote && rest[j] == quoteChar) {
+                    inQuote = false;
+                } else if (!inQuote && rest[j] == '=') {
+                    eqPos = j;
+                    break;
+                }
+            }
+
+            if (eqPos != std::string::npos && eqPos > 0) {
+                std::string key = compactStripQuotes(rest.substr(0, eqPos));
+                std::string val = compactStripQuotes(rest.substr(eqPos + 1));
+                if (key.empty()) {
+                    throw std::invalid_argument("Empty context key in compact filter: " + token);
+                }
+                if (val.empty()) {
+                    throw std::invalid_argument("Empty context value in compact filter: " + token);
+                }
+                return FilterRule::parse("context " + key + " == " + compactDslQuote(val));
+            } else {
+                std::string key = compactStripQuotes(rest);
+                return FilterRule::parse("context has " + compactDslQuote(key));
+            }
+        }
+
+        // Catch bare prefixes that fall through because size guards above
+        // use strict > (e.g., token.size() > 4 for ctx:). Keep in sync.
+        if (token == "ctx:" || token == "tpl:" || token == "!tpl:") {
+            throw std::invalid_argument("Missing value after '" + token + "' in compact filter");
+        }
+        throw std::invalid_argument("Unrecognized compact filter token: " + token);
+    }
+
+    /// Parse a compact filter expression string into FilterRule objects.
+    /// Tokens are space-separated and AND-combined.
+    /// Syntax: LEVEL+, ~keyword, !~keyword, ctx:key, ctx:key=val, tpl:pattern, !tpl:pattern
+    /// Level names are case-insensitive. Keywords are case-sensitive.
+    inline std::vector<FilterRule> parseCompactFilter(const std::string& expr) {
+        std::vector<FilterRule> rules;
+        if (expr.empty()) return rules;
+
+        std::vector<std::string> tokens;
+        size_t i = 0;
+        while (i < expr.size()) {
+            while (i < expr.size() && (expr[i] == ' ' || expr[i] == '\t')) ++i;
+            if (i >= expr.size()) break;
+
+            std::string token;
+            while (i < expr.size() && expr[i] != ' ' && expr[i] != '\t') {
+                if (expr[i] == '"' || expr[i] == '\'') {
+                    char quote = expr[i];
+                    token += quote;
+                    ++i;
+                    while (i < expr.size() && expr[i] != quote) {
+                        token += expr[i];
+                        ++i;
+                    }
+                    if (i >= expr.size()) {
+                        throw std::invalid_argument(
+                            "Unterminated quote in compact filter expression");
+                    }
+                    token += expr[i];
+                    ++i;
+                } else {
+                    token += expr[i];
+                    ++i;
+                }
+            }
+            if (!token.empty()) {
+                tokens.push_back(token);
+            }
+        }
+
+        for (size_t t = 0; t < tokens.size(); ++t) {
+            rules.push_back(parseCompactToken(tokens[t]));
+        }
+
+        return rules;
+    }
+
+} // namespace detail
+} // namespace minta
+
+
+// --- lunar_log/core/rolling_policy.hpp ---
+
+#include <string>
+#include <cstdint>
+
+namespace minta {
+
+    enum class RollInterval {
+        None,
+        Daily,
+        Hourly
+    };
+
+    class RollingPolicy {
+    public:
+        /// Size-based rolling: rotate when the current file reaches maxBytes.
+        static RollingPolicy size(const std::string& path, std::uint64_t maxBytes) {
+            RollingPolicy p;
+            p.m_basePath = path;
+            p.m_maxSizeBytes = maxBytes;
+            p.m_rollInterval = RollInterval::None;
+            return p;
+        }
+
+        /// Daily time-based rolling.
+        static RollingPolicy daily(const std::string& path) {
+            RollingPolicy p;
+            p.m_basePath = path;
+            p.m_maxSizeBytes = 0;
+            p.m_rollInterval = RollInterval::Daily;
+            return p;
+        }
+
+        /// Hourly time-based rolling.
+        static RollingPolicy hourly(const std::string& path) {
+            RollingPolicy p;
+            p.m_basePath = path;
+            p.m_maxSizeBytes = 0;
+            p.m_rollInterval = RollInterval::Hourly;
+            return p;
+        }
+
+        /// Maximum number of rolled files to keep (0 = unlimited).
+        RollingPolicy& maxFiles(unsigned int n) {
+            m_maxFiles = n;
+            return *this;
+        }
+
+        /// Maximum size per file (enables hybrid size+time rolling).
+        RollingPolicy& maxSize(std::uint64_t bytes) {
+            m_maxSizeBytes = bytes;
+            return *this;
+        }
+
+        /// Maximum total size of all rolled files combined (0 = unlimited).
+        /// When exceeded, the oldest rolled files are deleted until under the limit.
+        RollingPolicy& maxTotalSize(std::uint64_t bytes) {
+            m_maxTotalSize = bytes;
+            return *this;
+        }
+
+        // --- Accessors ---
+        const std::string& basePath()         const { return m_basePath; }
+        std::uint64_t      maxSizeBytes()     const { return m_maxSizeBytes; }
+        RollInterval       rollInterval()     const { return m_rollInterval; }
+        unsigned int       maxFilesCount()    const { return m_maxFiles; }
+        std::uint64_t      maxTotalSizeBytes() const { return m_maxTotalSize; }
+
+    private:
+        RollingPolicy() : m_maxSizeBytes(0), m_rollInterval(RollInterval::None), m_maxFiles(0), m_maxTotalSize(0) {}
+
+        std::string    m_basePath;
+        std::uint64_t  m_maxSizeBytes;
+        RollInterval   m_rollInterval;
+        unsigned int   m_maxFiles;
+        std::uint64_t  m_maxTotalSize;
+    };
+
+} // namespace minta
+
+
+// --- lunar_log/transform/pipe_transform.hpp ---
+
+#include <string>
+#include <vector>
+#include <cstdlib>
+#include <cerrno>
+#include <cmath>
+#include <cstdio>
+#include <cctype>
+#include <climits>
+
+namespace minta {
+namespace detail {
+
+    // ----------------------------------------------------------------
+    // Pipe Transform — parse and apply "|transform" chains
+    // ----------------------------------------------------------------
+
+    struct Transform {
+        std::string name;
+        std::string arg;
+    };
+
+    // --- Private helpers (number parsing, UTF-8) ---
+
+    /// Parse a double from string. Separate from detail::tryParseDouble
+    /// to keep pipe_transform.hpp self-contained (no log_common.hpp dep).
+    inline bool pipeParseDouble(const std::string &s, double &out) {
+        if (s.empty()) return false;
+        const char *start = s.c_str();
+        char *end = nullptr;
+        errno = 0;
+        double val = std::strtod(start, &end);
+        if (errno == ERANGE || end == start ||
+            static_cast<size_t>(end - start) != s.size()) {
+            errno = 0;
+            return false;
+        }
+        errno = 0;
+        if (std::isinf(val) || std::isnan(val)) return false;
+        out = val;
+        return true;
+    }
+
+    /// Safe int parser for transform arguments.
+    inline int pipeSafeStoi(const std::string &s, int fallback = 0) {
+        if (s.empty()) return fallback;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (i == 0 && s[i] == '-') continue;
+            if (!std::isdigit(static_cast<unsigned char>(s[i]))) return fallback;
+        }
+        try { return std::stoi(s); } catch (...) { return fallback; }
+    }
+
+    /// Count UTF-8 codepoints in a string.
+    inline size_t utf8CharCount(const std::string &s) {
+        size_t count = 0;
+        for (size_t i = 0; i < s.size(); ) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < 0x80)        i += 1;
+            else if ((c & 0xE0) == 0xC0) i += 2;
+            else if ((c & 0xF0) == 0xE0) i += 3;
+            else if ((c & 0xF8) == 0xF0) i += 4;
+            else                 i += 1; // invalid byte, skip
+            ++count;
+        }
+        return count;
+    }
+
+    /// Truncate a string to maxChars UTF-8 codepoints.
+    inline std::string utf8Truncate(const std::string &s, size_t maxChars) {
+        size_t count = 0;
+        size_t bytePos = 0;
+        while (bytePos < s.size() && count < maxChars) {
+            unsigned char c = static_cast<unsigned char>(s[bytePos]);
+            size_t charLen = 1;
+            if (c < 0x80)        charLen = 1;
+            else if ((c & 0xE0) == 0xC0) charLen = 2;
+            else if ((c & 0xF0) == 0xE0) charLen = 3;
+            else if ((c & 0xF8) == 0xF0) charLen = 4;
+            // Clamp to string boundary to avoid reading past end
+            if (bytePos + charLen > s.size()) break;
+            bytePos += charLen;
+            ++count;
+        }
+        return s.substr(0, bytePos);
+    }
+
+    /// Serialise a Transform back to its pipe-syntax string form.
+    inline std::string transformToString(const Transform &t) {
+        if (t.arg.empty()) return t.name;
+        return t.name + ":" + t.arg;
+    }
+
+    /// Clamp a double to the representable long long range (prevents UB on cast).
+    inline double pipeClampLL(double val) {
+        if (val != val) return 0.0; // NaN
+        static const double kMinLL = static_cast<double>(LLONG_MIN + 1);
+        static const double kMaxLL = std::nextafter(static_cast<double>(LLONG_MAX), 0.0);
+        if (val < kMinLL) return kMinLL;
+        if (val > kMaxLL) return kMaxLL;
+        return val;
+    }
+
+    // ----------------------------------------------------------------
+    // Transform parsing
+    // ----------------------------------------------------------------
+
+    /// Parse "comma|truncate:10|quote" into [{comma,""}, {truncate,"10"}, {quote,""}]
+    inline std::vector<Transform> parseTransforms(const std::string &pipeStr) {
+        std::vector<Transform> result;
+        if (pipeStr.empty()) return result;
+
+        size_t start = 0;
+        while (start <= pipeStr.size()) {
+            size_t end = pipeStr.find('|', start);
+            if (end == std::string::npos) end = pipeStr.size();
+            if (end > start) {
+                std::string token = pipeStr.substr(start, end - start);
+                size_t colonPos = token.find(':');
+                if (colonPos != std::string::npos) {
+                    result.push_back({token.substr(0, colonPos),
+                                      token.substr(colonPos + 1)});
+                } else {
+                    result.push_back({token, std::string()});
+                }
+            }
+            start = end + 1;
+        }
+        return result;
+    }
+
+    // ----------------------------------------------------------------
+    // Built-in String Transforms
+    // ----------------------------------------------------------------
+
+    inline std::string transformUpper(const std::string &value) {
+        std::string result = value;
+        for (size_t i = 0; i < result.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(result[i]);
+            if (c >= 'a' && c <= 'z') result[i] = static_cast<char>(c - 32);
+        }
+        return result;
+    }
+
+    inline std::string transformLower(const std::string &value) {
+        std::string result = value;
+        for (size_t i = 0; i < result.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(result[i]);
+            if (c >= 'A' && c <= 'Z') result[i] = static_cast<char>(c + 32);
+        }
+        return result;
+    }
+
+    inline std::string transformTrim(const std::string &value) {
+        if (value.empty()) return value;
+        size_t start = 0;
+        while (start < value.size() &&
+               std::isspace(static_cast<unsigned char>(value[start]))) ++start;
+        if (start == value.size()) return std::string();
+        size_t end = value.size();
+        while (end > start &&
+               std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+        return value.substr(start, end - start);
+    }
+
+    /// Limit to N UTF-8 codepoints; append ellipsis if truncated.
+    inline std::string transformTruncate(const std::string &value,
+                                         const std::string &arg) {
+        int n = pipeSafeStoi(arg, -1);
+        if (n < 0) return value; // invalid / missing arg
+        size_t maxChars = static_cast<size_t>(n);
+        size_t charCount = utf8CharCount(value);
+        if (charCount <= maxChars) return value;
+        // U+2026 HORIZONTAL ELLIPSIS (3 bytes in UTF-8)
+        return utf8Truncate(value, maxChars) + "\xe2\x80\xa6";
+    }
+
+    /// Right-pad with spaces to N UTF-8 codepoints.
+    inline std::string transformPad(const std::string &value,
+                                    const std::string &arg) {
+        int n = pipeSafeStoi(arg, 0);
+        if (n <= 0) return value;
+        size_t charCount = utf8CharCount(value);
+        if (charCount >= static_cast<size_t>(n)) return value;
+        return value + std::string(static_cast<size_t>(n) - charCount, ' ');
+    }
+
+    /// Left-pad with spaces to N UTF-8 codepoints.
+    inline std::string transformPadLeft(const std::string &value,
+                                        const std::string &arg) {
+        int n = pipeSafeStoi(arg, 0);
+        if (n <= 0) return value;
+        size_t charCount = utf8CharCount(value);
+        if (charCount >= static_cast<size_t>(n)) return value;
+        return std::string(static_cast<size_t>(n) - charCount, ' ') + value;
+    }
+
+    /// Wrap in double quotes.
+    inline std::string transformQuote(const std::string &value) {
+        return "\"" + value + "\"";
+    }
+
+    // ----------------------------------------------------------------
+    // Built-in Number Transforms
+    // ----------------------------------------------------------------
+
+    /// Thousands separator: 1234567 -> "1,234,567", 1234567.89 -> "1,234,567.89"
+    inline std::string transformComma(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+
+        // Normalize scientific notation to fixed-point
+        std::string work = value;
+        if (value.find('e') != std::string::npos ||
+            value.find('E') != std::string::npos) {
+            char buf[64];
+            if (numVal == std::floor(numVal) && std::fabs(numVal) < 1e15) {
+                std::snprintf(buf, sizeof(buf), "%.0f", numVal);
+            } else {
+                std::snprintf(buf, sizeof(buf), "%.15g", numVal);
+            }
+            work = std::string(buf);
+        }
+
+        // Split on decimal point
+        size_t dotPos = work.find('.');
+        std::string intPart = (dotPos != std::string::npos)
+                                  ? work.substr(0, dotPos)
+                                  : work;
+        std::string decPart = (dotPos != std::string::npos)
+                                  ? work.substr(dotPos)
+                                  : std::string();
+
+        // Handle sign
+        std::string prefix;
+        if (!intPart.empty() && (intPart[0] == '-' || intPart[0] == '+')) {
+            prefix = intPart.substr(0, 1);
+            intPart = intPart.substr(1);
+        }
+
+        // Add commas every 3 digits from the right
+        std::string result;
+        int len = static_cast<int>(intPart.size());
+        for (int i = 0; i < len; ++i) {
+            if (i > 0 && (len - i) % 3 == 0) {
+                result += ',';
+            }
+            result += intPart[i];
+        }
+
+        return prefix + result + decPart;
+    }
+
+    /// Hex with 0x prefix: 255 -> "0xff"
+    inline std::string transformHex(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+        long long intVal = static_cast<long long>(pipeClampLL(numVal));
+        char buf[64];
+        if (intVal < 0) {
+            unsigned long long uval = 0ULL - static_cast<unsigned long long>(intVal);
+            std::snprintf(buf, sizeof(buf), "-0x%llx", uval);
+        } else {
+            std::snprintf(buf, sizeof(buf), "0x%llx",
+                          static_cast<unsigned long long>(intVal));
+        }
+        return std::string(buf);
+    }
+
+    /// Octal with 0 prefix: 8 -> "010"
+    inline std::string transformOct(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+        long long intVal = static_cast<long long>(pipeClampLL(numVal));
+        char buf[64];
+        if (intVal < 0) {
+            unsigned long long uval = 0ULL - static_cast<unsigned long long>(intVal);
+            std::snprintf(buf, sizeof(buf), "-0%llo", uval);
+        } else if (intVal == 0) {
+            return "0";
+        } else {
+            std::snprintf(buf, sizeof(buf), "0%llo",
+                          static_cast<unsigned long long>(intVal));
+        }
+        return std::string(buf);
+    }
+
+    /// Binary with 0b prefix: 10 -> "0b1010"
+    inline std::string transformBin(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+        long long intVal = static_cast<long long>(pipeClampLL(numVal));
+        bool negative = intVal < 0;
+        unsigned long long uval = negative
+            ? (0ULL - static_cast<unsigned long long>(intVal))
+            : static_cast<unsigned long long>(intVal);
+
+        if (uval == 0) return "0b0";
+
+        std::string bits;
+        unsigned long long tmp = uval;
+        while (tmp > 0) {
+            bits = static_cast<char>('0' + static_cast<int>(tmp & 1)) + bits;
+            tmp >>= 1;
+        }
+
+        std::string result = negative ? "-0b" : "0b";
+        result += bits;
+        return result;
+    }
+
+    /// Human-readable bytes: 1048576 -> "1.0 MB"
+    inline std::string transformBytes(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+
+        static const char *units[] = {"B", "KB", "MB", "GB", "TB", "PB"};
+        static const int unitCount = 6;
+
+        double absVal = std::fabs(numVal);
+        double displayVal = absVal;
+        int unitIdx = 0;
+
+        while (displayVal >= 1024.0 && unitIdx < unitCount - 1) {
+            displayVal /= 1024.0;
+            ++unitIdx;
+        }
+
+        if (numVal < 0) displayVal = -displayVal;
+
+        char buf[64];
+        if (unitIdx == 0) {
+            std::snprintf(buf, sizeof(buf), "%lld B",
+                          static_cast<long long>(numVal));
+        } else {
+            std::snprintf(buf, sizeof(buf), "%.1f %s", displayVal,
+                          units[unitIdx]);
+        }
+        return std::string(buf);
+    }
+
+    /// Human-readable time from milliseconds: 3661000 -> "1h 1m 1s"
+    inline std::string transformDuration(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+
+        long long totalMs = static_cast<long long>(pipeClampLL(numVal));
+        bool negative = totalMs < 0;
+        if (negative) {
+            // Avoid signed negation UB on LLONG_MIN by using unsigned arithmetic
+            unsigned long long uMs = static_cast<unsigned long long>(-(totalMs + 1)) + 1u;
+            totalMs = static_cast<long long>(uMs);
+        }
+
+        long long totalSec = totalMs / 1000;
+        long long ms = totalMs % 1000;
+        long long hours = totalSec / 3600;
+        long long remaining = totalSec % 3600;
+        long long minutes = remaining / 60;
+        long long seconds = remaining % 60;
+
+        std::string result;
+        if (negative) result += "-";
+
+        if (totalSec == 0 && ms == 0) {
+            return result + "0s";
+        }
+
+        if (totalSec == 0) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%lldms", ms);
+            return result + buf;
+        }
+
+        bool first = true;
+        if (hours > 0) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%lldh", hours);
+            result += buf;
+            first = false;
+        }
+        if (minutes > 0) {
+            if (!first) result += " ";
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%lldm", minutes);
+            result += buf;
+            first = false;
+        }
+        if (seconds > 0 || (hours == 0 && minutes == 0)) {
+            if (!first) result += " ";
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%llds", seconds);
+            result += buf;
+        }
+
+        return result;
+    }
+
+    /// Percentage: 0.856 -> "85.6%"
+    inline std::string transformPct(const std::string &value) {
+        double numVal;
+        if (!pipeParseDouble(value, numVal)) return value;
+        double pct = numVal * 100.0;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.1f%%", pct);
+        return std::string(buf);
+    }
+
+    // ----------------------------------------------------------------
+    // Structural Transforms
+    // ----------------------------------------------------------------
+
+    /// Force JSON serialization of the value.
+    inline std::string transformJson(const std::string &value) {
+        if (value == "true" || value == "false") return value;
+        if (value == "(null)") return "null";
+
+        double numVal;
+        if (pipeParseDouble(value, numVal)) {
+            char buf[64];
+            if (numVal == static_cast<double>(static_cast<long long>(numVal)) &&
+                std::fabs(numVal) < 1e15) {
+                std::snprintf(buf, sizeof(buf), "%lld",
+                              static_cast<long long>(numVal));
+            } else {
+                std::snprintf(buf, sizeof(buf), "%.15g", numVal);
+            }
+            return std::string(buf);
+        }
+
+        // String — wrap in quotes with JSON escaping
+        std::string result = "\"";
+        for (size_t i = 0; i < value.size(); ++i) {
+            char c = value[i];
+            switch (c) {
+                case '"':  result += "\\\""; break;
+                case '\\': result += "\\\\"; break;
+                case '\b': result += "\\b";  break;
+                case '\f': result += "\\f";  break;
+                case '\n': result += "\\n";  break;
+                case '\r': result += "\\r";  break;
+                case '\t': result += "\\t";  break;
+                default:
+                    if (static_cast<unsigned char>(c) < 0x20) {
+                        char esc[8];
+                        std::snprintf(esc, sizeof(esc), "\\u%04x",
+                                      static_cast<unsigned char>(c));
+                        result += esc;
+                    } else {
+                        result += c;
+                    }
+            }
+        }
+        result += '"';
+        return result;
+    }
+
+    /// Output the detected C++ type name.
+    inline std::string transformType(const std::string &value) {
+        if (value == "true" || value == "false") return "bool";
+        if (value == "(null)") return "nullptr_t";
+
+        double numVal;
+        if (pipeParseDouble(value, numVal)) {
+            if (value.find('.') == std::string::npos &&
+                value.find('e') == std::string::npos &&
+                value.find('E') == std::string::npos) {
+                return "int";
+            }
+            return "double";
+        }
+        return "string";
+    }
+
+    // ----------------------------------------------------------------
+    // Transform pipeline — apply left to right
+    // ----------------------------------------------------------------
+
+    /// Apply a sequence of transforms to a formatted value.
+    /// Structural transforms (expand, str) are no-ops on the string —
+    /// they affect property metadata and are handled in mapProperties.
+    /// Unknown transforms pass the value through unchanged (fail-open).
+    inline std::string applyTransforms(const std::string &value,
+                                       const std::vector<Transform> &transforms) {
+        if (transforms.empty()) return value;
+        std::string result = value;
+        for (size_t i = 0; i < transforms.size(); ++i) {
+            const std::string &name = transforms[i].name;
+            const std::string &arg  = transforms[i].arg;
+
+            // Structural — skip (handled elsewhere)
+            if (name == "expand" || name == "str") continue;
+
+            // String transforms
+            if      (name == "upper")    result = transformUpper(result);
+            else if (name == "lower")    result = transformLower(result);
+            else if (name == "trim")     result = transformTrim(result);
+            else if (name == "truncate") result = transformTruncate(result, arg);
+            else if (name == "pad")      result = transformPad(result, arg);
+            else if (name == "padl")     result = transformPadLeft(result, arg);
+            else if (name == "quote")    result = transformQuote(result);
+
+            // Number transforms
+            else if (name == "comma")    result = transformComma(result);
+            else if (name == "hex")      result = transformHex(result);
+            else if (name == "oct")      result = transformOct(result);
+            else if (name == "bin")      result = transformBin(result);
+            else if (name == "bytes")    result = transformBytes(result);
+            else if (name == "duration") result = transformDuration(result);
+            else if (name == "pct")      result = transformPct(result);
+
+            // Structural value transforms
+            else if (name == "json")     result = transformJson(result);
+            else if (name == "type")     result = transformType(result);
+
+            // Unknown transform — fail-open, value passes through
+        }
+        return result;
+    }
+
+} // namespace detail
+} // namespace minta
+
+
 // --- lunar_log/formatter/formatter_interface.hpp ---
 
 #include <string>
@@ -1595,6 +2384,465 @@ namespace minta {
             setTransport(detail::make_unique<FileTransport>(filename));
         }
     };
+} // namespace minta
+
+
+// --- lunar_log/sink/rolling_file_sink.hpp ---
+
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <cstdio>
+#include <ctime>
+#include <algorithm>
+#include <climits>
+#include <deque>
+#include <vector>
+
+#include <sys/stat.h>
+#ifdef _MSC_VER
+#include <direct.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#include <dirent.h>
+#endif
+
+namespace minta {
+
+    class RollingFileSink : public ISink {
+    public:
+        explicit RollingFileSink(const RollingPolicy& policy)
+            : m_policy(policy)
+            , m_currentSize(0)
+            , m_lastPeriod()
+            , m_fileOpen(false)
+            , m_sizeRollIndex(0)
+            , m_lastPeriodCheckTime(0)
+        {
+            setFormatter(detail::make_unique<HumanReadableFormatter>());
+            splitBasePath();
+        }
+
+        ~RollingFileSink() {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_fileOpen) {
+                m_file.close();
+                m_fileOpen = false;
+            }
+        }
+
+        /// Set the formatter type. Must be called during initialization only,
+        /// before any calls to write(). Not thread-safe with concurrent logging.
+        template<typename FormatterType>
+        void useFormatter() {
+            setFormatter(detail::make_unique<FormatterType>());
+        }
+
+        void write(const LogEntry& entry) override {
+            IFormatter* fmt = formatter();
+            if (!fmt) return;
+            std::string formatted = fmt->format(entry);
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+            ensureOpen();
+            if (needsRotation()) {
+                rotate();
+            }
+            writeToFile(formatted);
+        }
+
+    private:
+        void splitBasePath() {
+            const std::string& path = m_policy.basePath();
+            size_t dotPos = path.rfind('.');
+            size_t slashPos = path.find_last_of("/\\");
+            if (dotPos != std::string::npos && (slashPos == std::string::npos || dotPos > slashPos)) {
+                m_stem = path.substr(0, dotPos);
+                m_ext = path.substr(dotPos);
+            } else {
+                m_stem = path;
+                m_ext.clear();
+            }
+        }
+
+        static bool mkdirRecursive(const std::string& path) {
+            if (path.empty()) return true;
+            struct stat st;
+            if (stat(path.c_str(), &st) == 0) return true;
+
+            size_t slashPos = path.find_last_of("/\\");
+            if (slashPos != std::string::npos && slashPos > 0) {
+                if (!mkdirRecursive(path.substr(0, slashPos))) return false;
+            }
+#ifdef _MSC_VER
+            return _mkdir(path.c_str()) == 0 || errno == EEXIST;
+#else
+            return mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
+#endif
+        }
+
+        void ensureDirectoryExists() {
+            const std::string& path = m_policy.basePath();
+            size_t slashPos = path.find_last_of("/\\");
+            if (slashPos != std::string::npos && slashPos > 0) {
+                mkdirRecursive(path.substr(0, slashPos));
+            }
+        }
+
+        void ensureOpen() {
+            if (m_fileOpen) return;
+            ensureDirectoryExists();
+            m_file.open(m_policy.basePath(), std::ios::app | std::ios::binary);
+            if (!m_file.is_open()) {
+                std::fprintf(stderr, "RollingFileSink: failed to open file: %s\n",
+                             m_policy.basePath().c_str());
+                return;
+            }
+            m_fileOpen = true;
+            m_currentSize = getFileSize(m_policy.basePath());
+            if (m_policy.rollInterval() != RollInterval::None) {
+                m_lastPeriodCheckTime = std::time(nullptr);
+                m_lastPeriod = currentPeriodString(m_lastPeriodCheckTime);
+            }
+            discoverExistingRolledFiles();
+        }
+
+        void writeToFile(const std::string& formatted) {
+            if (!m_fileOpen) return;
+            m_file << formatted << '\n' << std::flush;
+            m_currentSize += formatted.size() + 1;
+        }
+
+        bool needsRotation() {
+            if (!m_fileOpen) return false;
+            if (m_policy.maxSizeBytes() > 0 && m_currentSize >= m_policy.maxSizeBytes()) {
+                return true;
+            }
+            if (m_policy.rollInterval() != RollInterval::None) {
+                std::time_t now = std::time(nullptr);
+                if (now != m_lastPeriodCheckTime) {
+                    m_lastPeriodCheckTime = now;
+                    std::string current = currentPeriodString(now);
+                    if (current != m_lastPeriod) return true;
+                }
+            }
+            return false;
+        }
+
+        void rotate() {
+            m_file.close();
+            m_fileOpen = false;
+
+            std::string rolledName = buildRolledName();
+            if (std::rename(m_policy.basePath().c_str(), rolledName.c_str()) == 0) {
+                m_rolledFiles.push_back(rolledName);
+            } else {
+                std::fprintf(stderr, "RollingFileSink: failed to rename %s to %s\n",
+                             m_policy.basePath().c_str(), rolledName.c_str());
+            }
+
+            if (m_policy.rollInterval() != RollInterval::None) {
+                m_lastPeriodCheckTime = std::time(nullptr);
+                m_lastPeriod = currentPeriodString(m_lastPeriodCheckTime);
+            }
+
+            cleanup();
+
+            m_file.open(m_policy.basePath(), std::ios::app | std::ios::binary);
+            if (m_file.is_open()) {
+                m_fileOpen = true;
+                m_currentSize = getFileSize(m_policy.basePath());
+            }
+        }
+
+        std::string buildRolledName() {
+            bool hasSizePolicy = m_policy.maxSizeBytes() > 0;
+            bool hasTimePolicy = m_policy.rollInterval() != RollInterval::None;
+
+            if (hasTimePolicy && hasSizePolicy) {
+                std::string period = m_lastPeriod;
+                if (period != m_lastRolledPeriod) {
+                    m_sizeRollIndex = 0;
+                    m_lastRolledPeriod = period;
+                }
+                m_sizeRollIndex++;
+                char idx[16];
+                std::snprintf(idx, sizeof(idx), "%03u", m_sizeRollIndex);
+                return m_stem + "." + period + "." + idx + m_ext;
+            }
+            if (hasTimePolicy) {
+                // Time-only mode: one file per period. If rotation triggers twice
+                // in the same period, the second rename overwrites the first — by
+                // design, since time-only means at most one rolled file per period.
+                return m_stem + "." + m_lastPeriod + m_ext;
+            }
+            m_sizeRollIndex++;
+            char idx[16];
+            std::snprintf(idx, sizeof(idx), "%03u", m_sizeRollIndex);
+            return m_stem + "." + idx + m_ext;
+        }
+
+        std::string currentPeriodString(std::time_t now) const {
+            std::tm tmBuf;
+#ifdef _MSC_VER
+            localtime_s(&tmBuf, &now);
+#else
+            localtime_r(&now, &tmBuf);
+#endif
+            char buf[32];
+            if (m_policy.rollInterval() == RollInterval::Daily) {
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tmBuf);
+            } else {
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d.%H", &tmBuf);
+            }
+            return std::string(buf);
+        }
+
+        static std::uint64_t getFileSize(const std::string& path) {
+            struct stat st;
+            if (stat(path.c_str(), &st) != 0) return 0;
+            return static_cast<std::uint64_t>(st.st_size);
+        }
+
+        static std::time_t getFileMTime(const std::string& path) {
+            struct stat st;
+            if (stat(path.c_str(), &st) != 0) return 0;
+            return st.st_mtime;
+        }
+
+        static std::vector<std::string> listDirectory(const std::string& dirPath) {
+            std::vector<std::string> entries;
+#ifdef _MSC_VER
+            struct _finddata_t fileinfo;
+            std::string pattern = dirPath + "/*";
+            intptr_t handle = _findfirst(pattern.c_str(), &fileinfo);
+            if (handle == -1) return entries;
+            do {
+                std::string name = fileinfo.name;
+                if (name != "." && name != "..") {
+                    entries.push_back(name);
+                }
+            } while (_findnext(handle, &fileinfo) == 0);
+            _findclose(handle);
+#else
+            DIR* dir = opendir(dirPath.c_str());
+            if (!dir) return entries;
+            struct dirent* ent;
+            while ((ent = readdir(dir)) != nullptr) {
+                std::string name = ent->d_name;
+                if (name != "." && name != "..") {
+                    entries.push_back(name);
+                }
+            }
+            closedir(dir);
+#endif
+            return entries;
+        }
+
+        static bool allDigits(const char* s, size_t n) {
+            if (n == 0) return false;
+            for (size_t i = 0; i < n; ++i) {
+                if (s[i] < '0' || s[i] > '9') return false;
+            }
+            return true;
+        }
+
+        /// Check if string matches YYYY-MM-DD pattern.
+        /// @pre strlen(s) >= 10
+        static bool isDatePattern(const char* s) {
+            return s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9' &&
+                   s[2] >= '0' && s[2] <= '9' && s[3] >= '0' && s[3] <= '9' &&
+                   s[4] == '-' &&
+                   s[5] >= '0' && s[5] <= '9' && s[6] >= '0' && s[6] <= '9' &&
+                   s[7] == '-' &&
+                   s[8] >= '0' && s[8] <= '9' && s[9] >= '0' && s[9] <= '9';
+        }
+
+        static bool isValidRolledMiddle(const std::string& mid) {
+            if (mid.empty()) return false;
+            const char* s = mid.c_str();
+            size_t len = mid.size();
+
+            // Pure digits (size index: "001", "002", etc.)
+            if (allDigits(s, len)) return true;
+
+            // Must start with date YYYY-MM-DD (10 chars)
+            if (len < 10 || !isDatePattern(s)) return false;
+            if (len == 10) return true;
+
+            // Dot must follow the date
+            if (s[10] != '.') return false;
+            const char* rest = s + 11;
+            size_t restLen = len - 11;
+            if (restLen == 0) return false;
+
+            // YYYY-MM-DD.digits (daily+size or hourly time-only)
+            if (allDigits(rest, restLen)) return true;
+
+            // YYYY-MM-DD.HH.NNN (hourly+size)
+            if (restLen > 3 && rest[0] >= '0' && rest[0] <= '9' &&
+                rest[1] >= '0' && rest[1] <= '9' && rest[2] == '.') {
+                return allDigits(rest + 3, restLen - 3);
+            }
+            return false;
+        }
+
+        static unsigned int parseDigits(const char* s) {
+            unsigned int result = 0;
+            while (*s >= '0' && *s <= '9') {
+                unsigned int digit = static_cast<unsigned int>(*s - '0');
+                if (result > (UINT_MAX - digit) / 10) return UINT_MAX;
+                result = result * 10 + digit;
+                ++s;
+            }
+            return result;
+        }
+
+        void discoverExistingRolledFiles() {
+            m_rolledFiles.clear();
+            m_sizeRollIndex = 0;
+
+            // Determine directory and stem filename
+            std::string dir;
+            std::string stemFilename;
+            {
+                size_t slashPos = m_stem.find_last_of("/\\");
+                if (slashPos != std::string::npos) {
+                    dir = m_stem.substr(0, slashPos);
+                    stemFilename = m_stem.substr(slashPos + 1);
+                } else {
+                    dir = ".";
+                    stemFilename = m_stem;
+                }
+            }
+
+            std::string prefix = stemFilename + ".";
+            std::vector<std::string> entries = listDirectory(dir);
+
+            // Collect matching rolled files with mtime for sorting
+            struct RolledEntry {
+                std::string path;
+                std::string middle;
+                std::time_t mtime;
+            };
+            std::vector<RolledEntry> found;
+
+            for (size_t i = 0; i < entries.size(); ++i) {
+                const std::string& name = entries[i];
+
+                // Must start with stem prefix (e.g. "roll_size.")
+                if (name.size() <= prefix.size() ||
+                    name.compare(0, prefix.size(), prefix) != 0) {
+                    continue;
+                }
+
+                // Must end with extension (if any) and extract middle part
+                std::string middle;
+                if (!m_ext.empty()) {
+                    if (name.size() <= prefix.size() + m_ext.size()) continue;
+                    if (name.compare(name.size() - m_ext.size(),
+                                     m_ext.size(), m_ext) != 0) continue;
+                    middle = name.substr(prefix.size(),
+                                         name.size() - prefix.size() - m_ext.size());
+                } else {
+                    middle = name.substr(prefix.size());
+                }
+
+                if (middle.empty()) continue;
+                if (!isValidRolledMiddle(middle)) continue;
+
+                // Reconstruct full path matching buildRolledName format
+                std::string fullPath = m_stem + "." + middle + m_ext;
+
+                RolledEntry re;
+                re.path = fullPath;
+                re.middle = middle;
+                re.mtime = getFileMTime(fullPath);
+                found.push_back(re);
+            }
+
+            // Sort by mtime (oldest first) for correct cleanup ordering
+            std::sort(found.begin(), found.end(),
+                      [](const RolledEntry& a, const RolledEntry& b) {
+                          return a.mtime < b.mtime;
+                      });
+
+            // Populate m_rolledFiles and recover m_sizeRollIndex
+            bool hasTimePolicy = m_policy.rollInterval() != RollInterval::None;
+            bool hasSizePolicy = m_policy.maxSizeBytes() > 0;
+
+            for (size_t i = 0; i < found.size(); ++i) {
+                m_rolledFiles.push_back(found[i].path);
+
+                if (hasSizePolicy) {
+                    unsigned int idx = 0;
+                    const std::string& mid = found[i].middle;
+
+                    if (!hasTimePolicy) {
+                        // Size only: entire middle is the index
+                        idx = parseDigits(mid.c_str());
+                    } else if (!m_lastPeriod.empty() &&
+                               mid.size() > m_lastPeriod.size() + 1 &&
+                               mid.compare(0, m_lastPeriod.size(), m_lastPeriod) == 0 &&
+                               mid[m_lastPeriod.size()] == '.') {
+                        // Hybrid: period.NNN — extract NNN for current period
+                        idx = parseDigits(mid.c_str() + m_lastPeriod.size() + 1);
+                    }
+
+                    if (idx > m_sizeRollIndex) {
+                        m_sizeRollIndex = idx;
+                    }
+                }
+            }
+        }
+
+        void cleanup() {
+            bool hasMaxFiles = m_policy.maxFilesCount() > 0;
+            bool hasMaxTotalSize = m_policy.maxTotalSizeBytes() > 0;
+            if (!hasMaxFiles && !hasMaxTotalSize) return;
+
+            if (hasMaxFiles) {
+                while (m_rolledFiles.size() > m_policy.maxFilesCount()) {
+                    std::remove(m_rolledFiles.front().c_str());
+                    m_rolledFiles.pop_front();
+                }
+            }
+
+            if (hasMaxTotalSize) {
+                std::vector<std::uint64_t> sizes;
+                std::uint64_t total = 0;
+                for (size_t i = 0; i < m_rolledFiles.size(); ++i) {
+                    std::uint64_t sz = getFileSize(m_rolledFiles[i]);
+                    sizes.push_back(sz);
+                    total += sz;
+                }
+                // sizes[removeIdx] corresponds to the current front of m_rolledFiles
+                // because we increment removeIdx in lockstep with pop_front
+                size_t removeIdx = 0;
+                while (removeIdx < m_rolledFiles.size() && total > m_policy.maxTotalSizeBytes()) {
+                    total -= sizes[removeIdx];
+                    std::remove(m_rolledFiles.front().c_str());
+                    m_rolledFiles.pop_front();
+                    removeIdx++;
+                }
+            }
+        }
+
+        RollingPolicy m_policy;
+        std::string m_stem;
+        std::string m_ext;
+        std::ofstream m_file;
+        std::mutex m_mutex;
+        std::uint64_t m_currentSize;
+        std::string m_lastPeriod;
+        std::string m_lastRolledPeriod;
+        bool m_fileOpen;
+        unsigned int m_sizeRollIndex;
+        std::time_t m_lastPeriodCheckTime;
+        std::deque<std::string> m_rolledFiles;
+    };
+
 } // namespace minta
 
 

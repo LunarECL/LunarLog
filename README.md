@@ -292,6 +292,27 @@ logger.info("{revenue:.2f|comma}", 9876543.21);
 // Step 2 (comma):     "9,876,543.21"
 ```
 
+## Rolling File Sink
+
+Production-grade log file rotation:
+
+```cpp
+// Size-based: rotate at 10MB, keep 5 files
+logger.addSink<minta::RollingFileSink>(
+    minta::RollingPolicy::size("logs/app.log", 10 * 1024 * 1024).maxFiles(5));
+
+// Daily rotation, keep 30 days
+logger.addSink<minta::RollingFileSink>(
+    minta::RollingPolicy::daily("logs/app.log").maxFiles(30));
+
+// Hybrid: daily + 50MB cap, total budget 500MB
+logger.addSink<minta::RollingFileSink>(
+    minta::RollingPolicy::daily("logs/app.log")
+        .maxSize(50 * 1024 * 1024).maxTotalSize(500 * 1024 * 1024));
+```
+
+See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) for full documentation.
+
 ## Compact Filters
 
 Grep-inspired shorthand for common filter patterns:

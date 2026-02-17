@@ -32,6 +32,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             NamedSinks
             TagRouting
             PipeTransforms
+            OutputTemplate
     )
 
     set(EXAMPLE_SOURCES
@@ -50,6 +51,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/named_sinks.cpp
             examples/tag_routing.cpp
             examples/pipe_transforms.cpp
+            examples/output_template.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -113,6 +115,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_scoped_context.cpp
             test/tests/test_compact_filter.cpp
             test/tests/test_rolling_file.cpp
+            test/tests/test_output_template.cpp
             test/tests/utils/test_utils.cpp
     )
 

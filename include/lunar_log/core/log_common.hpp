@@ -64,6 +64,7 @@ namespace detail {
         if (pos == 0) {
             buf[0] = '\0';
         }
+        // Defensive: ensure non-negative milliseconds for pre-epoch time points
         std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>((nowMs.count() + 1000) % 1000));
         return std::string(buf);
     }

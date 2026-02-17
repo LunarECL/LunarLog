@@ -97,6 +97,7 @@ namespace detail {
         if (pos == 0) {
             buf[0] = '\0';
         }
+        // Defensive: ensure non-negative milliseconds for pre-epoch time points
         std::snprintf(buf + pos, sizeof(buf) - pos, ".%03d", static_cast<int>((nowMs.count() + 1000) % 1000));
         return std::string(buf);
     }
@@ -517,6 +518,7 @@ namespace detail {
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <thread>
 
 namespace minta {
     struct PlaceholderProperty {
@@ -526,6 +528,7 @@ namespace minta {
         std::vector<std::string> transforms;
     };
 
+    // No default constructor — all fields must be provided at creation time.
     struct LogEntry {
         LogLevel level;
         std::string message;
@@ -546,6 +549,10 @@ namespace minta {
         /// Formatters with a different per-sink locale can re-render
         /// via detail::reformatMessage using the raw values in properties.
         std::string locale;
+        /// The ID of the thread that created this log entry.
+        /// Captured at construction time so that async formatters
+        /// render the originating thread, not the consumer thread.
+        std::thread::id threadId;
 
         LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
                  std::string templateStr_, uint32_t templateHash_,
@@ -554,14 +561,16 @@ namespace minta {
                  std::map<std::string, std::string> customContext_,
                  std::vector<PlaceholderProperty> properties_,
                  std::vector<std::string> tags_ = {},
-                 std::string locale_ = "C")
+                 std::string locale_ = "C",
+                 std::thread::id threadId_ = std::thread::id())
             : level(level_), message(std::move(message_)), timestamp(timestamp_),
               templateStr(std::move(templateStr_)), templateHash(templateHash_),
               arguments(std::move(arguments_)),
               file(std::move(file_)), line(line_), function(std::move(function_)),
               customContext(std::move(customContext_)), properties(std::move(properties_)),
               tags(std::move(tags_)),
-              locale(std::move(locale_)) {}
+              locale(std::move(locale_)),
+              threadId(threadId_) {}
     };
 } // namespace minta
 
@@ -1647,7 +1656,32 @@ namespace minta {
 namespace minta {
     class HumanReadableFormatter : public IFormatter {
     public:
+        /// Set the output template for this formatter.
+        /// Must be called before logging begins (same contract as
+        /// useFormatter / addSink). Not safe to call concurrently
+        /// with format().
+        void setOutputTemplate(const std::string& templateStr) {
+            if (templateStr.empty()) {
+                m_outputTemplate = detail::OutputTemplate();
+                m_hasTemplate = false;
+            } else {
+                m_outputTemplate = detail::OutputTemplate(templateStr);
+                m_hasTemplate = true;
+            }
+        }
+
         std::string format(const LogEntry &entry) const override {
+            if (m_hasTemplate) {
+                return m_outputTemplate.render(entry, localizedMessage(entry));
+            }
+            return formatDefault(entry);
+        }
+
+    private:
+        detail::OutputTemplate m_outputTemplate;
+        bool m_hasTemplate = false;
+
+        std::string formatDefault(const LogEntry &entry) const {
             std::string result;
             result.reserve(80 + entry.message.size() + entry.file.size() + entry.function.size());
             result += detail::formatTimestamp(entry.timestamp);
@@ -1673,7 +1707,6 @@ namespace minta {
                     if (!first) result += ", ";
                     result += ctx.first;
                     result += '=';
-                    // Quote values containing delimiters
                     if (ctx.second.find(',') != std::string::npos ||
                         ctx.second.find('=') != std::string::npos ||
                         ctx.second.find('"') != std::string::npos) {
@@ -3568,7 +3601,8 @@ namespace detail {
                 /* customContext */ std::move(contextCopy),
                 /* properties */    std::move(properties),
                 /* tags */          std::move(entryTags),
-                /* locale */        std::move(localeCopy)
+                /* locale */        std::move(localeCopy),
+                /* threadId */      std::this_thread::get_id()
             ));
 
             for (const auto& warning : warnings) {
@@ -3584,7 +3618,10 @@ namespace detail {
                     /* line */          captureCtx ? line : 0,
                     /* function */      captureCtx ? function : "",
                     /* customContext */ {},
-                    /* properties */    {}
+                    /* properties */    {},
+                    /* tags */          {},
+                    /* locale */        "C",
+                    /* threadId */      std::this_thread::get_id()
                 ));
             }
 
@@ -4021,6 +4058,17 @@ namespace detail {
 
         SinkProxy& clearTagFilters() {
             m_sink->clearTagFilters();
+            return *this;
+        }
+
+        /// Set the output template for text-based formatters.
+        /// Only applies to HumanReadableFormatter. No-op for JSON/XML formatters.
+        SinkProxy& outputTemplate(const std::string& templateStr) {
+            IFormatter* fmt = m_sink->formatter();
+            HumanReadableFormatter* hrf = dynamic_cast<HumanReadableFormatter*>(fmt);
+            if (hrf) {
+                hrf->setOutputTemplate(templateStr);
+            }
             return *this;
         }
 

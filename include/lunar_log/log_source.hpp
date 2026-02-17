@@ -563,7 +563,8 @@ namespace detail {
                 /* customContext */ std::move(contextCopy),
                 /* properties */    std::move(properties),
                 /* tags */          std::move(entryTags),
-                /* locale */        std::move(localeCopy)
+                /* locale */        std::move(localeCopy),
+                /* threadId */      std::this_thread::get_id()
             ));
 
             for (const auto& warning : warnings) {
@@ -579,7 +580,10 @@ namespace detail {
                     /* line */          captureCtx ? line : 0,
                     /* function */      captureCtx ? function : "",
                     /* customContext */ {},
-                    /* properties */    {}
+                    /* properties */    {},
+                    /* tags */          {},
+                    /* locale */        "C",
+                    /* threadId */      std::this_thread::get_id()
                 ));
             }
 
@@ -1016,6 +1020,17 @@ namespace detail {
 
         SinkProxy& clearTagFilters() {
             m_sink->clearTagFilters();
+            return *this;
+        }
+
+        /// Set the output template for text-based formatters.
+        /// Only applies to HumanReadableFormatter. No-op for JSON/XML formatters.
+        SinkProxy& outputTemplate(const std::string& templateStr) {
+            IFormatter* fmt = m_sink->formatter();
+            HumanReadableFormatter* hrf = dynamic_cast<HumanReadableFormatter*>(fmt);
+            if (hrf) {
+                hrf->setOutputTemplate(templateStr);
+            }
             return *this;
         }
 

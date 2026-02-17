@@ -15,6 +15,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - Log levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
 - [Message Templates](https://messagetemplates.org/) with named placeholders
 - **`@` and `$` operators** — `{@val}` for destructuring, `{$val}` for stringify
+- **Per-sink output templates** for human-readable formatting via `SinkProxy::outputTemplate()`
 - Built-in formatters: human-readable, JSON, XML
 - Multiple sinks (console, file) with independent formatters
 - **Structured template output** — JSON/XML include raw template + hash for log aggregation
@@ -120,6 +121,20 @@ logger.info("User: {@id}, Tag: {$label}", 42, true);
 Operators combine with format specifiers: `{@amount:.2f}` formats the message as `3.14` but stores the raw value (`3.14159`) in properties.
 
 Invalid forms like `{@}`, `{@@x}`, `{@$x}`, and `{@ }` are treated as literal text.
+
+## Human-Readable Output Templates
+
+Per-sink custom output format for human-readable formatters:
+
+```cpp
+minta::LunarLog logger(minta::LogLevel::TRACE, false);
+logger.addSink<minta::ConsoleSink>();
+logger.sink("sink_0").outputTemplate("[{timestamp:HH:mm:ss}] [{level:u3}] {threadId,6} {message}");
+logger.info("User {username} logged in from {ip}", "username", "alice", "ip", "127.0.0.1");
+```
+
+`outputTemplate` only affects sinks using `HumanReadableFormatter` (default for `ConsoleSink`/`FileSink`).
+JSON/XML formatters ignore this setting.
 
 ## Structured Template Output
 

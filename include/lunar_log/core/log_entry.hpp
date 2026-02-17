@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <thread>
 
 namespace minta {
     struct PlaceholderProperty {
@@ -16,6 +17,7 @@ namespace minta {
         std::vector<std::string> transforms;
     };
 
+    // No default constructor — all fields must be provided at creation time.
     struct LogEntry {
         LogLevel level;
         std::string message;
@@ -36,6 +38,10 @@ namespace minta {
         /// Formatters with a different per-sink locale can re-render
         /// via detail::reformatMessage using the raw values in properties.
         std::string locale;
+        /// The ID of the thread that created this log entry.
+        /// Captured at construction time so that async formatters
+        /// render the originating thread, not the consumer thread.
+        std::thread::id threadId;
 
         LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
                  std::string templateStr_, uint32_t templateHash_,
@@ -44,14 +50,16 @@ namespace minta {
                  std::map<std::string, std::string> customContext_,
                  std::vector<PlaceholderProperty> properties_,
                  std::vector<std::string> tags_ = {},
-                 std::string locale_ = "C")
+                 std::string locale_ = "C",
+                 std::thread::id threadId_ = std::thread::id())
             : level(level_), message(std::move(message_)), timestamp(timestamp_),
               templateStr(std::move(templateStr_)), templateHash(templateHash_),
               arguments(std::move(arguments_)),
               file(std::move(file_)), line(line_), function(std::move(function_)),
               customContext(std::move(customContext_)), properties(std::move(properties_)),
               tags(std::move(tags_)),
-              locale(std::move(locale_)) {}
+              locale(std::move(locale_)),
+              threadId(threadId_) {}
     };
 } // namespace minta
 

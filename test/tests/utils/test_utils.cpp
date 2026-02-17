@@ -137,7 +137,9 @@ void TestUtils::cleanupLogFiles() {
         "roll_total.003.log", "roll_total.004.log", "roll_total.005.log",
         // Discovery restart test
         "roll_restart.log", "roll_restart.001.log", "roll_restart.002.log",
-        "roll_restart.003.log", "roll_restart.004.log", "roll_restart.005.log"
+        "roll_restart.003.log", "roll_restart.004.log", "roll_restart.005.log",
+        "test_output_tpl.txt", "test_otpl_a.txt", "test_otpl_b.txt",
+        "test_otpl_json.txt"
     };
 
     for (const auto &filename : filesToRemove) {

@@ -188,6 +188,7 @@ logger.info("{0} sent {1} to {0}", "alice", 42);  // alice sent 42 to alice
 When mixed with named placeholders, semantics are stable:
 - **Indexed** placeholders use their explicit slot (`{1}` -> arg 1)
 - **Named** placeholders consume slots sequentially in named-placeholder order (`{name}` first named slot, then `{other}`)
+- Out-of-range indexed placeholders are rendered as empty, while named placeholders keep stable mapping with remaining values.
 
 So reverse-order mixes remain deterministic:
 

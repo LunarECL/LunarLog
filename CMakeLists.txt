@@ -36,6 +36,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             ExceptionAttachment
             Enrichers
             FluentBuilder
+            SourceLocationMacros
     )
 
     set(EXAMPLE_SOURCES
@@ -58,6 +59,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/exception_attachment.cpp
             examples/enrichers.cpp
             examples/fluent_builder.cpp
+            examples/source_location_macros.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -128,6 +130,8 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_exception_attachment.cpp
             test/tests/test_enrichers.cpp
             test/tests/test_fluent_builder.cpp
+            test/tests/test_source_location_macros.cpp
+            test/tests/test_no_macros.cpp
             test/tests/utils/test_utils.cpp
     )
 

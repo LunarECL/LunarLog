@@ -177,7 +177,17 @@ void TestUtils::cleanupLogFiles() {
         "fb_imperative.txt", "fb_coexist_builder.txt", "fb_coexist_imperative.txt",
         "fb_locale.txt", "fb_multi_unnamed_a.txt", "fb_multi_unnamed_b.txt",
         "fb_json_fmt.txt", "fb_named_json_fmt.txt", "fb_ratelimit_imp.txt",
-        "fb_sfinae.txt", "fb_sfinae_named.txt"
+        "fb_sfinae.txt", "fb_sfinae_named.txt",
+        // Source location macro tests
+        "macro_srcloc_file.txt", "macro_srcloc_line.txt", "macro_srcloc_func.txt",
+        "macro_srcloc_disabled.txt", "macro_srcloc_sideeffect.txt",
+        "macro_srcloc_generic.txt", "macro_srcloc_error_ex.txt",
+        "macro_srcloc_fatal_ex.txt", "macro_srcloc_ptr.txt",
+        "macro_srcloc_shared.txt", "macro_srcloc_multiarg.txt",
+        "macro_srcloc_levels.txt", "macro_srcloc_output.txt",
+        "macro_srcloc_ifelse.txt",
+        "macro_srcloc_trace_ex.txt", "macro_srcloc_debug_ex.txt",
+        "macro_srcloc_info_ex.txt", "macro_srcloc_warn_ex.txt"
     };
 
     for (const auto &filename : filesToRemove) {

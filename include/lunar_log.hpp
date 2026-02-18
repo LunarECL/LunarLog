@@ -28,6 +28,7 @@
 #include "lunar_log/logger_configuration.hpp"
 #include "lunar_log/log_manager.hpp"
 #include "lunar_log/log_source.hpp"
+#include "lunar_log/macros.hpp"
 
 #define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __func__
 

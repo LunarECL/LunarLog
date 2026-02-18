@@ -11,6 +11,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+// windows.h defines ERROR as 0, which conflicts with LogLevel::ERROR.
+#ifdef ERROR
+#undef ERROR
+#endif
 #else
 #include <unistd.h>
 #endif

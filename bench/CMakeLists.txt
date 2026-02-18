@@ -41,6 +41,7 @@ set_target_properties(lunar_log_bench PROPERTIES
 
 if(MSVC)
     target_compile_options(lunar_log_bench PRIVATE /W4)
+    target_compile_definitions(lunar_log_bench PRIVATE NOMINMAX)
 else()
     target_compile_options(lunar_log_bench PRIVATE -Wall -Wextra -Wpedantic)
 endif()

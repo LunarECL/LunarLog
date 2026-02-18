@@ -31,6 +31,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **Alignment & padding** — `{name,20}` right-align, `{name,-20}` left-align — fixed-width column output
 - **Pipe transforms** — `{name|upper}`, `{name|comma}`, `{name|truncate:20}` — 18 built-in transforms with chaining
 - **Culture-specific formatting** — locale-aware numbers (`{:n}`), dates and times (`{:d}`, `{:T}`, etc.)
+- **Exception attachment** — `log.error(ex, ...)` with nested unwinding, type demangling, all formatters
 
 ## Format Specifiers
 
@@ -382,6 +383,43 @@ logger.addSink<minta::RollingFileSink>(
 ```
 
 See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) for full documentation.
+
+## Exception Attachment
+
+Attach a caught `std::exception` to any log call. LunarLog captures the exception type (demangled), message, and nested exception chain automatically.
+
+```cpp
+try {
+    riskyDatabaseQuery();
+} catch (const std::exception& ex) {
+    // Exception + message template + args
+    logger.error(ex, "Operation failed for user {name}", "john");
+}
+
+try {
+    riskyDatabaseQuery();
+} catch (const std::exception& ex) {
+    // Exception only — uses ex.what() as the message
+    logger.error(ex);
+}
+```
+
+All six levels have exception overloads: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. Nested exceptions are unwound via `std::rethrow_if_nested` (up to 20 levels deep), and exception type names are demangled on GCC/Clang via `abi::__cxa_demangle`.
+
+**Human-readable output:**
+```
+[2026-02-18 12:00:00.000] [ERROR] Operation failed for user john
+  std::runtime_error: connection refused: host=db-01 port=5432
+```
+
+**Nested exception chain** (indented with `--- `):
+```
+[2026-02-18 12:00:00.000] [ERROR] Request failed for endpoint /api/users
+  std::logic_error: DB layer failed
+  --- std::runtime_error: connection refused: host=db-01 port=5432
+```
+
+Structured formatters (JSON, Compact JSON, XML) each include exception data in their native format. Use the `{exception}` token in output templates for custom layouts. See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Exception-Attachment) for the full guide.
 
 ## Compact JSON Formatter
 

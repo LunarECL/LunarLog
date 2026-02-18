@@ -221,6 +221,7 @@ namespace minta {
         std::set<std::string> m_exceptTags;
 
         friend class LunarLog;
+        friend class LoggerConfiguration;
         friend class SinkProxy;
     };
 

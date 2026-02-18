@@ -624,6 +624,7 @@ namespace detail {
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <memory>
 #include <thread>
 
 namespace minta {
@@ -649,11 +650,16 @@ namespace minta {
         std::vector<std::string> tags;
         std::string locale = "C";
         std::thread::id threadId;
-        std::string exceptionType;
-        std::string exceptionMessage;
-        std::string exceptionChain;
+        std::unique_ptr<detail::ExceptionInfo> exception;
+
+        /// Returns true if this log entry has exception information attached.
+        bool hasException() const { return exception != nullptr; }
 
         LogEntry() = default;
+        LogEntry(LogEntry&&) = default;
+        LogEntry& operator=(LogEntry&&) = default;
+        LogEntry(const LogEntry&) = delete;
+        LogEntry& operator=(const LogEntry&) = delete;
 
         /// Backward-compatible positional constructor for custom formatters.
         LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
@@ -664,10 +670,7 @@ namespace minta {
                  std::vector<PlaceholderProperty> properties_,
                  std::vector<std::string> tags_ = {},
                  std::string locale_ = "C",
-                 std::thread::id threadId_ = std::thread::id(),
-                 std::string exceptionType_ = "",
-                 std::string exceptionMessage_ = "",
-                 std::string exceptionChain_ = "")
+                 std::thread::id threadId_ = std::thread::id())
             : level(level_), message(std::move(message_)), timestamp(timestamp_),
               templateStr(std::move(templateStr_)), templateHash(templateHash_),
               arguments(std::move(arguments_)),
@@ -675,10 +678,7 @@ namespace minta {
               customContext(std::move(customContext_)), properties(std::move(properties_)),
               tags(std::move(tags_)),
               locale(std::move(locale_)),
-              threadId(threadId_),
-              exceptionType(std::move(exceptionType_)),
-              exceptionMessage(std::move(exceptionMessage_)),
-              exceptionChain(std::move(exceptionChain_)) {}
+              threadId(threadId_) {}
     };
 } // namespace minta
 
@@ -1853,13 +1853,13 @@ namespace minta {
                 result += '}';
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 result += "\n  ";
-                result += entry.exceptionType;
+                result += entry.exception->type;
                 result += ": ";
-                result += entry.exceptionMessage;
-                if (!entry.exceptionChain.empty()) {
-                    const std::string& chain = entry.exceptionChain;
+                result += entry.exception->message;
+                if (!entry.exception->chain.empty()) {
+                    const std::string& chain = entry.exception->chain;
                     size_t pos = 0;
                     while (pos < chain.size()) {
                         size_t nl = chain.find('\n', pos);
@@ -2079,15 +2079,15 @@ namespace minta {
                 json += ']';
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 json += R"(,"exception":{"type":")";
-                json += detail::json::escapeJsonString(entry.exceptionType);
+                json += detail::json::escapeJsonString(entry.exception->type);
                 json += R"(","message":")";
-                json += detail::json::escapeJsonString(entry.exceptionMessage);
+                json += detail::json::escapeJsonString(entry.exception->message);
                 json += '"';
-                if (!entry.exceptionChain.empty()) {
+                if (!entry.exception->chain.empty()) {
                     json += R"(,"chain":")";
-                    json += detail::json::escapeJsonString(entry.exceptionChain);
+                    json += detail::json::escapeJsonString(entry.exception->chain);
                     json += '"';
                 }
                 json += '}';
@@ -2223,16 +2223,16 @@ namespace minta {
                 json += '"';
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 // Build the full @x string first, then escape once to avoid
                 // fragmented escaping that can produce inconsistent output.
                 std::string xValue;
-                xValue += entry.exceptionType;
+                xValue += entry.exception->type;
                 xValue += ": ";
-                xValue += entry.exceptionMessage;
-                if (!entry.exceptionChain.empty()) {
+                xValue += entry.exception->message;
+                if (!entry.exception->chain.empty()) {
                     xValue += '\n';
-                    xValue += entry.exceptionChain;
+                    xValue += entry.exception->chain;
                 }
                 json += R"(,"@x":")";
                 json += detail::json::escapeJsonString(xValue);
@@ -2387,14 +2387,14 @@ namespace minta {
                 xml += "</tags>";
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 xml += "<exception type=\"";
-                xml += escapeXmlString(entry.exceptionType);
+                xml += escapeXmlString(entry.exception->type);
                 xml += "\">";
-                xml += escapeXmlString(entry.exceptionMessage);
-                if (!entry.exceptionChain.empty()) {
+                xml += escapeXmlString(entry.exception->message);
+                if (!entry.exception->chain.empty()) {
                     xml += "<chain>";
-                    xml += escapeXmlString(entry.exceptionChain);
+                    xml += escapeXmlString(entry.exception->chain);
                     xml += "</chain>";
                 }
                 xml += "</exception>";
@@ -4124,8 +4124,7 @@ namespace detail {
             if (!rateLimitCheck()) return;
 
             std::vector<std::string> values{toString(args)...};
-            detail::ExceptionInfo noException;
-            emitLogEntry(level, file, line, function, messageTemplate, values, noException);
+            emitLogEntry(level, file, line, function, messageTemplate, values);
         }
 
         template<typename... Args>
@@ -4140,9 +4139,22 @@ namespace detail {
             emitLogEntry(level, file, line, function, messageTemplate, values, exInfo);
         }
 
+        /// Non-exception overload (hot path) — avoids constructing ExceptionInfo.
+        void emitLogEntry(LogLevel level, const char* file, int line, const char* function,
+                          const std::string &messageTemplate, std::vector<std::string>& values) {
+            emitLogEntryImpl(level, file, line, function, messageTemplate, values, nullptr);
+        }
+
+        /// Exception overload — attaches ExceptionInfo to the log entry.
         void emitLogEntry(LogLevel level, const char* file, int line, const char* function,
                           const std::string &messageTemplate, std::vector<std::string>& values,
                           detail::ExceptionInfo& exInfo) {
+            emitLogEntryImpl(level, file, line, function, messageTemplate, values, &exInfo);
+        }
+
+        void emitLogEntryImpl(LogLevel level, const char* file, int line, const char* function,
+                              const std::string &messageTemplate, std::vector<std::string>& values,
+                              detail::ExceptionInfo* exInfo) {
             auto now = std::chrono::system_clock::now();
 
             auto tagResult = detail::parseTags(messageTemplate);
@@ -4208,9 +4220,12 @@ namespace detail {
                 captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "",
                 std::map<std::string, std::string>(),
                 std::move(properties), std::move(entryTags), std::move(localeCopy),
-                std::this_thread::get_id(),
-                std::move(exInfo.type), std::move(exInfo.message), std::move(exInfo.chain)
+                std::this_thread::get_id()
             );
+
+            if (exInfo && !exInfo->type.empty()) {
+                entry.exception = detail::make_unique<detail::ExceptionInfo>(std::move(*exInfo));
+            }
 
             if (hasEnrichers) {
                 for (const auto& enricher : m_enrichers) {

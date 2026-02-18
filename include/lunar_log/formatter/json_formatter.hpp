@@ -72,15 +72,15 @@ namespace minta {
                 json += ']';
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 json += R"(,"exception":{"type":")";
-                json += detail::json::escapeJsonString(entry.exceptionType);
+                json += detail::json::escapeJsonString(entry.exception->type);
                 json += R"(","message":")";
-                json += detail::json::escapeJsonString(entry.exceptionMessage);
+                json += detail::json::escapeJsonString(entry.exception->message);
                 json += '"';
-                if (!entry.exceptionChain.empty()) {
+                if (!entry.exception->chain.empty()) {
                     json += R"(,"chain":")";
-                    json += detail::json::escapeJsonString(entry.exceptionChain);
+                    json += detail::json::escapeJsonString(entry.exception->chain);
                     json += '"';
                 }
                 json += '}';

@@ -52,14 +52,14 @@ namespace minta {
                 xml += "</tags>";
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 xml += "<exception type=\"";
-                xml += escapeXmlString(entry.exceptionType);
+                xml += escapeXmlString(entry.exception->type);
                 xml += "\">";
-                xml += escapeXmlString(entry.exceptionMessage);
-                if (!entry.exceptionChain.empty()) {
+                xml += escapeXmlString(entry.exception->message);
+                if (!entry.exception->chain.empty()) {
                     xml += "<chain>";
-                    xml += escapeXmlString(entry.exceptionChain);
+                    xml += escapeXmlString(entry.exception->chain);
                     xml += "</chain>";
                 }
                 xml += "</exception>";

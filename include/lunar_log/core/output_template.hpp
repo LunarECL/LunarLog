@@ -442,14 +442,14 @@ namespace detail {
         }
 
         static std::string renderException(const LogEntry& entry) {
-            if (entry.exceptionType.empty()) return std::string();
+            if (!entry.hasException()) return std::string();
             std::string result;
-            result += entry.exceptionType;
+            result += entry.exception->type;
             result += ": ";
-            result += entry.exceptionMessage;
-            if (!entry.exceptionChain.empty()) {
+            result += entry.exception->message;
+            if (!entry.exception->chain.empty()) {
                 size_t pos = 0;
-                const std::string& chain = entry.exceptionChain;
+                const std::string& chain = entry.exception->chain;
                 while (pos < chain.size()) {
                     size_t nl = chain.find('\n', pos);
                     result += "\n  --- ";

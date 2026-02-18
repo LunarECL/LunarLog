@@ -632,8 +632,7 @@ namespace detail {
             if (!rateLimitCheck()) return;
 
             std::vector<std::string> values{toString(args)...};
-            detail::ExceptionInfo noException;
-            emitLogEntry(level, file, line, function, messageTemplate, values, noException);
+            emitLogEntry(level, file, line, function, messageTemplate, values);
         }
 
         template<typename... Args>
@@ -648,9 +647,22 @@ namespace detail {
             emitLogEntry(level, file, line, function, messageTemplate, values, exInfo);
         }
 
+        /// Non-exception overload (hot path) — avoids constructing ExceptionInfo.
+        void emitLogEntry(LogLevel level, const char* file, int line, const char* function,
+                          const std::string &messageTemplate, std::vector<std::string>& values) {
+            emitLogEntryImpl(level, file, line, function, messageTemplate, values, nullptr);
+        }
+
+        /// Exception overload — attaches ExceptionInfo to the log entry.
         void emitLogEntry(LogLevel level, const char* file, int line, const char* function,
                           const std::string &messageTemplate, std::vector<std::string>& values,
                           detail::ExceptionInfo& exInfo) {
+            emitLogEntryImpl(level, file, line, function, messageTemplate, values, &exInfo);
+        }
+
+        void emitLogEntryImpl(LogLevel level, const char* file, int line, const char* function,
+                              const std::string &messageTemplate, std::vector<std::string>& values,
+                              detail::ExceptionInfo* exInfo) {
             auto now = std::chrono::system_clock::now();
 
             auto tagResult = detail::parseTags(messageTemplate);
@@ -716,9 +728,12 @@ namespace detail {
                 captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "",
                 std::map<std::string, std::string>(),
                 std::move(properties), std::move(entryTags), std::move(localeCopy),
-                std::this_thread::get_id(),
-                std::move(exInfo.type), std::move(exInfo.message), std::move(exInfo.chain)
+                std::this_thread::get_id()
             );
+
+            if (exInfo && !exInfo->type.empty()) {
+                entry.exception = detail::make_unique<detail::ExceptionInfo>(std::move(*exInfo));
+            }
 
             if (hasEnrichers) {
                 for (const auto& enricher : m_enrichers) {

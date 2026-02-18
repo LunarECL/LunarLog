@@ -1,6 +1,6 @@
 {
   "name": "lunarlog",
-  "version": "1.21.0",
+  "version": "1.21.1",
   "description": "Header-only C++11 structured logging library with message templates. Inspired by Serilog.",
   "homepage": "https://github.com/LunarECL/LunarLog",
   "license": "MIT",

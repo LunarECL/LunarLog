@@ -94,21 +94,22 @@ namespace minta {
 
         /// Filter pipeline: global min level (caller) -> global predicate -> global DSL rules
         ///                -> per-sink tag routing -> per-sink min level -> per-sink predicate -> per-sink DSL rules.
+        /// Global filter state is passed as COW shared_ptr snapshots — no mutex
+        /// needed here because the caller snapshots under lock before calling.
         void log(const LogEntry &entry,
-                 const FilterPredicate& globalFilter,
-                 const std::vector<FilterRule>& globalFilterRules,
-                 std::mutex& globalFilterMutex,
-                 const std::atomic<bool>& hasGlobalFilters) {
+                 const std::shared_ptr<const FilterPredicate>& globalFilter,
+                 const std::shared_ptr<const std::vector<FilterRule>>& globalFilterRules) {
             if (!m_loggingStarted.load(std::memory_order_relaxed)) {
                 m_loggingStarted.store(true, std::memory_order_release);
             }
 
-            if (hasGlobalFilters.load(std::memory_order_acquire)) {
+            if (globalFilter || globalFilterRules) {
                 try {
-                    std::lock_guard<std::mutex> lock(globalFilterMutex);
-                    if (globalFilter && !globalFilter(entry)) return;
-                    for (const auto& rule : globalFilterRules) {
-                        if (!rule.evaluate(entry)) return;
+                    if (globalFilter && *globalFilter && !(*globalFilter)(entry)) return;
+                    if (globalFilterRules) {
+                        for (const auto& rule : *globalFilterRules) {
+                            if (!rule.evaluate(entry)) return;
+                        }
                     }
                 } catch (...) {
                     // Bad global filter — fail-open: let the entry through

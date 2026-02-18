@@ -166,7 +166,17 @@ void TestUtils::cleanupLogFiles() {
         "cjson_destruct_inf.txt", "cjson_destruct_negzero.txt",
         "cjson_no_level.txt", "cjson_no_m.txt", "cjson_no_hash.txt",
         "cjson_no_src.txt", "cjson_no_transforms.txt",
-        "cjson_no_ctx_wrapper.txt"
+        "cjson_no_ctx_wrapper.txt",
+        // Fluent builder tests
+        "fb_minimal.txt", "fb_minlevel.txt", "fb_srcloc.txt",
+        "fb_ratelimit.txt", "fb_cache.txt", "fb_enrich.txt",
+        "fb_filter.txt", "fb_filterrule.txt",
+        "fb_named_app.txt", "fb_named_errors.txt",
+        "fb_lambda.txt", "fb_unnamed.txt", "fb_buildtwice.txt",
+        "fb_full_app.txt", "fb_full_errors.txt",
+        "fb_imperative.txt", "fb_coexist_builder.txt", "fb_coexist_imperative.txt",
+        "fb_locale.txt", "fb_multi_unnamed_a.txt", "fb_multi_unnamed_b.txt",
+        "fb_json_fmt.txt", "fb_ratelimit_imp.txt"
     };
 
     for (const auto &filename : filesToRemove) {

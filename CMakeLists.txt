@@ -35,6 +35,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             OutputTemplate
             ExceptionAttachment
             Enrichers
+            FluentBuilder
     )
 
     set(EXAMPLE_SOURCES
@@ -56,6 +57,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/output_template.cpp
             examples/exception_attachment.cpp
             examples/enrichers.cpp
+            examples/fluent_builder.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -125,6 +127,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_compact_json_formatter.cpp
             test/tests/test_exception_attachment.cpp
             test/tests/test_enrichers.cpp
+            test/tests/test_fluent_builder.cpp
             test/tests/utils/test_utils.cpp
     )
 

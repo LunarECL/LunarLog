@@ -24,6 +24,8 @@
 #include "lunar_log/sink/console_sink.hpp"
 #include "lunar_log/sink/file_sink.hpp"
 #include "lunar_log/sink/rolling_file_sink.hpp"
+#include "lunar_log/core/sink_proxy.hpp"
+#include "lunar_log/logger_configuration.hpp"
 #include "lunar_log/log_manager.hpp"
 #include "lunar_log/log_source.hpp"
 

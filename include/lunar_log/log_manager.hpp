@@ -16,6 +16,22 @@ namespace minta {
     public:
         LogManager() : m_loggingStarted(false), m_nextAutoIndex(0) {}
 
+        /// Move constructor — used by the builder pattern.
+        /// Safe only when no logging has started (no concurrent access).
+        LogManager(LogManager&& other) noexcept
+            : m_sinks(std::move(other.m_sinks))
+            , m_loggingStarted(other.m_loggingStarted.load(std::memory_order_relaxed))
+            , m_sinkNames(std::move(other.m_sinkNames))
+            , m_nextAutoIndex(other.m_nextAutoIndex)
+        {
+            other.m_loggingStarted.store(false, std::memory_order_relaxed);
+            other.m_nextAutoIndex = 0;
+        }
+
+        LogManager& operator=(LogManager&&) = delete;
+        LogManager(const LogManager&) = delete;
+        LogManager& operator=(const LogManager&) = delete;
+
         // Add all sinks before any log calls are made.
         //
         // There is a TOCTOU race between the m_loggingStarted check and the

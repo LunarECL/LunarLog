@@ -7,6 +7,8 @@
 #include "core/compact_filter.hpp"
 #include "core/enricher.hpp"
 #include "core/exception_info.hpp"
+#include "core/sink_proxy.hpp"
+#include "logger_configuration.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
@@ -90,7 +92,7 @@ namespace detail {
 
 } // namespace detail
 
-    class SinkProxy;
+    class LoggerConfiguration;
     class LogScope;
 
     class LunarLog {
@@ -104,28 +106,63 @@ namespace detail {
             , m_hasCustomContext(false)
             , m_sinkWriteInProgress(false)
             , m_templateCacheSize(128)
-            , m_hasGlobalFilters(false) {
+            , m_hasGlobalFilters(false)
+            , m_rateLimitMaxLogs(1000)
+            , m_rateLimitWindowMs(1000)
+            , m_threadStarted(false) {
             if (addDefaultConsoleSink) {
                 addSink<ConsoleSink>();
             }
-            m_logThread = std::thread(&LunarLog::processLogQueue, this);
+            ensureProcessingThread();
         }
 
         // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
         // while other threads are still calling log methods is undefined behavior.
         ~LunarLog() noexcept {
-            flush();
-            m_isRunning = false;
-            m_logCV.notify_one();
-            if (m_logThread.joinable()) {
-                m_logThread.join();
+            if (m_threadStarted.load(std::memory_order_acquire)) {
+                flush();
+                m_isRunning = false;
+                m_logCV.notify_one();
+                if (m_logThread.joinable()) {
+                    m_logThread.join();
+                }
             }
         }
 
         LunarLog(const LunarLog &) = delete;
         LunarLog &operator=(const LunarLog &) = delete;
-        LunarLog(LunarLog &&) = delete;
+
+        /// Move constructor — only safe before logging starts (used by builder).
+        LunarLog(LunarLog &&other) noexcept
+            : m_minLevel(other.m_minLevel.load(std::memory_order_relaxed))
+            , m_isRunning(true)
+            , m_rateLimitWindowStart(other.m_rateLimitWindowStart.load(std::memory_order_relaxed))
+            , m_logCount(0)
+            , m_logManager(std::move(other.m_logManager))
+            , m_customContext(std::move(other.m_customContext))
+            , m_captureSourceLocation(other.m_captureSourceLocation.load(std::memory_order_relaxed))
+            , m_hasCustomContext(other.m_hasCustomContext.load(std::memory_order_relaxed))
+            , m_sinkWriteInProgress(false)
+            , m_templateCache(std::move(other.m_templateCache))
+            , m_templateCacheSize(other.m_templateCacheSize)
+            , m_hasGlobalFilters(other.m_hasGlobalFilters.load(std::memory_order_relaxed))
+            , m_globalFilter(std::move(other.m_globalFilter))
+            , m_globalFilterRules(std::move(other.m_globalFilterRules))
+            , m_hasLocale(other.m_hasLocale.load(std::memory_order_relaxed))
+            , m_locale(std::move(other.m_locale))
+            , m_enrichers(std::move(other.m_enrichers))
+            , m_hasEnrichers(other.m_hasEnrichers.load(std::memory_order_relaxed))
+            , m_rateLimitMaxLogs(other.m_rateLimitMaxLogs)
+            , m_rateLimitWindowMs(other.m_rateLimitWindowMs)
+            , m_threadStarted(false)
+        {
+            other.m_isRunning.store(false, std::memory_order_relaxed);
+        }
+
         LunarLog &operator=(LunarLog &&) = delete;
+
+        /// Create a fluent builder for configuring a new LunarLog instance.
+        static LoggerConfiguration configure();
 
         void setMinLevel(LogLevel level) {
             m_minLevel.store(level, std::memory_order_relaxed);
@@ -143,6 +180,14 @@ namespace detail {
             return m_captureSourceLocation.load(std::memory_order_relaxed);
         }
 
+        /// Set rate-limit parameters (max messages per window).
+        /// Must be called during setup, before the first log call.
+        /// Corresponds to LoggerConfiguration::rateLimit() in the builder API.
+        void setRateLimit(size_t maxLogs, std::chrono::milliseconds window) {
+            m_rateLimitMaxLogs = maxLogs;
+            m_rateLimitWindowMs = static_cast<long long>(window.count());
+        }
+
         /// @deprecated Use setCaptureSourceLocation instead.
         inline void setCaptureContext(bool capture) {
             setCaptureSourceLocation(capture);
@@ -157,6 +202,7 @@ namespace detail {
         ///          flush() acquires the queue mutex and waits for sink writes to
         ///          complete, so calling it from inside write() will deadlock.
         void flush() {
+            if (!m_threadStarted.load(std::memory_order_acquire)) return;
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_flushCV.wait(lock, [this] {
                 return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
@@ -492,8 +538,33 @@ namespace detail {
         }
 
     private:
-        static constexpr size_t kRateLimitMaxLogs = 1000;
-        static constexpr long long kRateLimitWindowSeconds = 1;
+        friend class LoggerConfiguration;
+
+        struct BuilderTag {};
+        explicit LunarLog(BuilderTag)
+            : m_minLevel(LogLevel::TRACE)
+            , m_isRunning(true)
+            , m_rateLimitWindowStart(std::chrono::steady_clock::now().time_since_epoch().count())
+            , m_logCount(0)
+            , m_captureSourceLocation(false)
+            , m_hasCustomContext(false)
+            , m_sinkWriteInProgress(false)
+            , m_templateCacheSize(128)
+            , m_hasGlobalFilters(false)
+            , m_rateLimitMaxLogs(1000)
+            , m_rateLimitWindowMs(1000)
+            , m_threadStarted(false) {
+        }
+
+        void ensureProcessingThread() {
+            if (!m_threadStarted.load(std::memory_order_acquire)) {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                if (!m_threadStarted.load(std::memory_order_relaxed)) {
+                    m_logThread = std::thread(&LunarLog::processLogQueue, this);
+                    m_threadStarted.store(true, std::memory_order_release);
+                }
+            }
+        }
 
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_isRunning;
@@ -538,6 +609,10 @@ namespace detail {
 
         std::vector<EnricherFn> m_enrichers;
         std::atomic<bool> m_hasEnrichers{false};
+
+        size_t m_rateLimitMaxLogs;
+        long long m_rateLimitWindowMs;
+        std::atomic<bool> m_threadStarted;
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
@@ -660,6 +735,8 @@ namespace detail {
                 entry.customContext = std::move(contextCopy);
             }
 
+            ensureProcessingThread();
+
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.push(std::move(entry));
 
@@ -749,9 +826,9 @@ namespace detail {
             long long windowStart = m_rateLimitWindowStart.load(std::memory_order_relaxed);
 
             for (;;) {
-                auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+                auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::duration(nowNs - windowStart)).count();
-                if (duration < kRateLimitWindowSeconds) break;
+                if (durationMs < m_rateLimitWindowMs) break;
                 if (m_rateLimitWindowStart.compare_exchange_weak(windowStart, nowNs,
                         std::memory_order_relaxed, std::memory_order_relaxed)) {
                     // Release so that the new count is visible to threads that
@@ -763,7 +840,7 @@ namespace detail {
             // Acquire pairs with the release-store above: if a window reset just
             // happened, this thread sees the updated count before incrementing.
             size_t count = m_logCount.fetch_add(1, std::memory_order_acquire);
-            if (count >= kRateLimitMaxLogs) {
+            if (count >= m_rateLimitMaxLogs) {
                 return false;
             }
             return true;
@@ -1072,99 +1149,77 @@ namespace detail {
         std::string m_key;
     };
 
-    /// Fluent proxy for configuring a named sink.
-    class SinkProxy {
-    public:
-        explicit SinkProxy(ISink* sink, bool loggingStarted = false)
-            : m_sink(sink), m_loggingStarted(loggingStarted) {}
-
-        SinkProxy& level(LogLevel lvl) {
-            m_sink->setMinLevel(lvl);
-            return *this;
-        }
-
-        SinkProxy& filterRule(const std::string& dsl) {
-            m_sink->addFilterRule(dsl);
-            return *this;
-        }
-
-        /// Add compact filter rules to this sink.
-        /// Thread safety: uses ISink::addFilterRules for atomic batch addition.
-        SinkProxy& filter(const std::string& compactExpr) {
-            std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
-            m_sink->addFilterRules(std::move(rules));
-            return *this;
-        }
-
-        SinkProxy& locale(const std::string& loc) {
-            m_sink->setLocale(loc);
-            return *this;
-        }
-
-        SinkProxy& formatter(std::unique_ptr<IFormatter> f) {
-            if (m_loggingStarted) {
-                throw std::logic_error("Cannot change formatter after logging has started");
-            }
-            m_sink->setFormatter(std::move(f));
-            return *this;
-        }
-
-        SinkProxy& filter(FilterPredicate pred) {
-            m_sink->setFilter(std::move(pred));
-            return *this;
-        }
-
-        SinkProxy& clearFilter() {
-            m_sink->clearFilter();
-            return *this;
-        }
-
-        SinkProxy& clearFilterRules() {
-            m_sink->clearFilterRules();
-            return *this;
-        }
-
-        SinkProxy& only(const std::string& tag) {
-            m_sink->addOnlyTag(tag);
-            return *this;
-        }
-
-        SinkProxy& except(const std::string& tag) {
-            m_sink->addExceptTag(tag);
-            return *this;
-        }
-
-        /// Clear predicate filter and DSL filter rules on this sink.
-        /// Does NOT clear tag filters (only/except); use clearTagFilters() for those.
-        SinkProxy& clearFilters() {
-            m_sink->clearAllFilters();
-            return *this;
-        }
-
-        SinkProxy& clearTagFilters() {
-            m_sink->clearTagFilters();
-            return *this;
-        }
-
-        /// Set the output template for text-based formatters.
-        /// Only applies to HumanReadableFormatter. No-op for JSON/XML formatters.
-        SinkProxy& outputTemplate(const std::string& templateStr) {
-            IFormatter* fmt = m_sink->formatter();
-            HumanReadableFormatter* hrf = dynamic_cast<HumanReadableFormatter*>(fmt);
-            if (hrf) {
-                hrf->setOutputTemplate(templateStr);
-            }
-            return *this;
-        }
-
-    private:
-        ISink* m_sink;
-        bool m_loggingStarted;
-    };
-
     inline SinkProxy LunarLog::sink(const std::string& name) {
         size_t idx = m_logManager.getSinkIndex(name);
         return SinkProxy(m_logManager.getSink(idx), m_logManager.isLoggingStarted());
+    }
+
+    inline LoggerConfiguration LunarLog::configure() {
+        return LoggerConfiguration();
+    }
+
+    inline LunarLog LoggerConfiguration::build() {
+        if (m_built) {
+            throw std::logic_error(
+                "LoggerConfiguration::build() already called");
+        }
+        m_built = true;
+
+        // Create a bare LunarLog — no default console sink, no thread.
+        LunarLog logger(LunarLog::BuilderTag{});
+
+        // Apply global settings via friend access.
+        logger.m_minLevel.store(m_minLevel, std::memory_order_relaxed);
+        logger.m_captureSourceLocation.store(
+            m_captureSourceLocation, std::memory_order_relaxed);
+        logger.m_rateLimitMaxLogs  = m_rateLimitMaxLogs;
+        logger.m_rateLimitWindowMs = m_rateLimitWindowMs;
+        logger.setTemplateCacheSize(m_templateCacheSize);
+
+        if (!m_locale.empty()) {
+            logger.setLocale(m_locale);
+        }
+
+        // Register enrichers (must happen before first log entry).
+        for (size_t i = 0; i < m_enrichers.size(); ++i) {
+            logger.enrich(std::move(m_enrichers[i]));
+        }
+
+        // Add compact filter expressions.
+        for (size_t i = 0; i < m_filterCompact.size(); ++i) {
+            logger.filter(m_filterCompact[i]);
+        }
+
+        // Add DSL filter rules.
+        for (size_t i = 0; i < m_filterRules.size(); ++i) {
+            logger.addFilterRule(m_filterRules[i]);
+        }
+
+        // Add sinks.
+        if (m_sinks.empty()) {
+            std::fprintf(stderr, "[LunarLog] Warning: build() called with no "
+                                 "sinks — logger will silently discard all "
+                                 "messages.\n");
+        }
+        for (size_t i = 0; i < m_sinks.size(); ++i) {
+            if (m_sinks[i].hasName) {
+                logger.addCustomSink(m_sinks[i].name,
+                                     std::move(m_sinks[i].sink));
+            } else {
+                logger.addCustomSink(std::move(m_sinks[i].sink));
+            }
+        }
+
+        // Start the background processing thread.
+        logger.ensureProcessingThread();
+
+        // Safe to return by move: LunarLog's move constructor transfers all
+        // internal state (queue, sinks, atomics, enrichers, filters).  The
+        // processing thread has not yet received any log entries at this point
+        // because ensureProcessingThread() only starts the thread — it does
+        // not produce entries.  The moved-from instance is left in a valid
+        // but empty state (m_isRunning == false).
+        return logger;
     }
 
 } // namespace minta

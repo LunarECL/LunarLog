@@ -71,6 +71,7 @@ def strip_guards_and_local_includes(lines):
 
 
 def main():
+    """Concatenate all headers into a single self-contained lunar_log.hpp."""
     parts = []
     parts.append("// LunarLog - Single Header")
     parts.append("// https://github.com/LunarECL/LunarLog")

@@ -33,6 +33,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **Culture-specific formatting** — locale-aware numbers (`{:n}`), dates and times (`{:d}`, `{:T}`, etc.)
 - **Exception attachment** — `log.error(ex, ...)` with nested unwinding, type demangling, all formatters
 - **Enrichers** — `log.enrich(...)` to auto-attach metadata (thread ID, PID, hostname, environment, custom) to every log entry
+- **Fluent Builder API** — declarative, self-documenting logger configuration via `LunarLog::configure()`
 
 ## Format Specifiers
 
@@ -534,6 +535,63 @@ int main() {
     return 0;
 }
 ```
+
+## Fluent Builder
+
+`LunarLog::configure()` returns a fluent builder for declarative, self-documenting logger setup. All configuration happens in a single expression — sinks, levels, enrichers, filters — then `build()` produces a ready-to-use logger.
+
+```cpp
+#include "lunar_log.hpp"
+
+int main() {
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::DEBUG)
+        .captureSourceLocation(true)
+        .enrich(minta::Enrichers::threadId())
+        .enrich(minta::Enrichers::property("service", "order-api"))
+        .filter("!~heartbeat")
+        .writeTo<minta::ConsoleSink>("console")
+        .writeTo<minta::FileSink>("app-log", "app.log")
+        .writeTo<minta::FileSink, minta::JsonFormatter>("json-out",
+            [](minta::SinkProxy& s) {
+                s.level(minta::LogLevel::INFO)
+                 .filterRule("not message contains 'debug'")
+                 .locale("de_DE");
+            }, "app.json.log")
+        .build();
+
+    logger.info("Server started on port {port}", "port", 8080);
+    return 0;
+}
+```
+
+**Minimal example** — a console-only logger in one line:
+
+```cpp
+auto logger = minta::LunarLog::configure()
+    .writeTo<minta::ConsoleSink>()
+    .build();
+```
+
+### writeTo with SinkProxy Lambda
+
+The `writeTo<SinkType>(name, lambda, args...)` overload gives you a `SinkProxy&` for inline sink configuration — level, filters, locale, output template, tag routing:
+
+```cpp
+auto logger = minta::LunarLog::configure()
+    .minLevel(minta::LogLevel::TRACE)
+    .writeTo<minta::FileSink>("errors",
+        [](minta::SinkProxy& s) {
+            s.level(minta::LogLevel::ERROR)
+             .outputTemplate("[{timestamp:HH:mm:ss}] [{level:u3}] {message}{exception}")
+             .only("critical");
+        }, "errors.log")
+    .build();
+```
+
+The existing imperative API (`addSink`, `setSinkLevel`, `setFilter`, etc.) is completely unchanged. The builder is an alternative — use whichever style fits your codebase.
+
+See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Fluent-Builder) for the full guide.
 
 ## Installation
 

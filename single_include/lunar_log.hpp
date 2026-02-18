@@ -2604,40 +2604,46 @@ namespace minta {
         void setSinkName(const std::string& name) { m_sinkName = name; }
         const std::string& getSinkName() const { return m_sinkName; }
 
-        // --- Tag routing ---
+        // --- Tag routing (COW) ---
         void addOnlyTag(const std::string& tag) {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            m_onlyTags.insert(tag);
+            auto newTags = std::make_shared<std::set<std::string>>(
+                m_onlyTags ? *m_onlyTags : std::set<std::string>());
+            newTags->insert(tag);
+            m_onlyTags = std::move(newTags);
             m_hasTagFilters.store(true, std::memory_order_release);
         }
         void addExceptTag(const std::string& tag) {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            m_exceptTags.insert(tag);
+            auto newTags = std::make_shared<std::set<std::string>>(
+                m_exceptTags ? *m_exceptTags : std::set<std::string>());
+            newTags->insert(tag);
+            m_exceptTags = std::move(newTags);
             m_hasTagFilters.store(true, std::memory_order_release);
         }
         void clearOnlyTags() {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            m_onlyTags.clear();
-            m_hasTagFilters.store(!m_exceptTags.empty(), std::memory_order_release);
+            m_onlyTags.reset();
+            m_hasTagFilters.store(m_exceptTags && !m_exceptTags->empty(), std::memory_order_release);
         }
         void clearExceptTags() {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            m_exceptTags.clear();
-            m_hasTagFilters.store(!m_onlyTags.empty(), std::memory_order_release);
+            m_exceptTags.reset();
+            m_hasTagFilters.store(m_onlyTags && !m_onlyTags->empty(), std::memory_order_release);
         }
         void clearTagFilters() {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            m_onlyTags.clear();
-            m_exceptTags.clear();
+            m_onlyTags.reset();
+            m_exceptTags.reset();
             m_hasTagFilters.store(false, std::memory_order_release);
         }
         std::set<std::string> getOnlyTags() const {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            return m_onlyTags;
+            return m_onlyTags ? *m_onlyTags : std::set<std::string>();
         }
         std::set<std::string> getExceptTags() const {
             std::lock_guard<std::mutex> lock(m_tagMutex);
-            return m_exceptTags;
+            return m_exceptTags ? *m_exceptTags : std::set<std::string>();
         }
 
         /// Check if this sink should accept an entry based on tag routing.
@@ -2650,18 +2656,22 @@ namespace minta {
             if (!m_hasTagFilters.load(std::memory_order_acquire)) {
                 return true;
             }
-            std::lock_guard<std::mutex> lock(m_tagMutex);
-            if (!m_onlyTags.empty()) {
-                // only() mode: entry must have at least one matching tag
-                for (const auto& tag : entryTags) {
-                    if (m_onlyTags.count(tag)) return true;
-                }
-                return false; // no matching tag
+            std::shared_ptr<const std::set<std::string>> onlyTags;
+            std::shared_ptr<const std::set<std::string>> exceptTags;
+            {
+                std::lock_guard<std::mutex> lock(m_tagMutex);
+                onlyTags = m_onlyTags;
+                exceptTags = m_exceptTags;
             }
-            if (!m_exceptTags.empty()) {
-                // except() mode: reject if entry has any matching tag
+            if (onlyTags && !onlyTags->empty()) {
                 for (const auto& tag : entryTags) {
-                    if (m_exceptTags.count(tag)) return false;
+                    if (onlyTags->count(tag)) return true;
+                }
+                return false;
+            }
+            if (exceptTags && !exceptTags->empty()) {
+                for (const auto& tag : entryTags) {
+                    if (exceptTags->count(tag)) return false;
                 }
             }
             return true;
@@ -2675,55 +2685,64 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
-        /// @note The predicate is invoked on the consumer thread while holding an
-        ///       internal mutex. It must be fast, non-blocking, and must NOT call
-        ///       any filter-modification methods on the same sink (deadlock).
-        ///       Filter predicates must capture state by value. Referenced
+        /// @note The predicate is invoked on the consumer thread against an
+        ///       immutable snapshot.  It must be fast and non-blocking.
+        ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filter = std::move(filter);
+            m_filter = std::make_shared<const FilterPredicate>(std::move(filter));
             m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filter = nullptr;
-            m_hasFilters.store(!m_filterRules.empty(), std::memory_order_release);
+            m_filter.reset();
+            m_hasFilters.store(m_filterRules && !m_filterRules->empty(), std::memory_order_release);
         }
 
         void addFilterRule(FilterRule rule) {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filterRules.push_back(std::move(rule));
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_filterRules ? *m_filterRules : std::vector<FilterRule>());
+            newRules->push_back(std::move(rule));
+            m_filterRules = std::move(newRules);
             m_hasFilters.store(true, std::memory_order_release);
         }
 
         void addFilterRules(std::vector<FilterRule> rules) {
             if (rules.empty()) return;
             std::lock_guard<std::mutex> lock(m_filterMutex);
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_filterRules ? *m_filterRules : std::vector<FilterRule>());
+            newRules->reserve(newRules->size() + rules.size());
             for (size_t i = 0; i < rules.size(); ++i) {
-                m_filterRules.push_back(std::move(rules[i]));
+                newRules->push_back(std::move(rules[i]));
             }
+            m_filterRules = std::move(newRules);
             m_hasFilters.store(true, std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filterRules.push_back(std::move(rule));
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_filterRules ? *m_filterRules : std::vector<FilterRule>());
+            newRules->push_back(std::move(rule));
+            m_filterRules = std::move(newRules);
             m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilterRules() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filterRules.clear();
-            m_hasFilters.store(static_cast<bool>(m_filter), std::memory_order_release);
+            m_filterRules.reset();
+            m_hasFilters.store(m_filter && static_cast<bool>(*m_filter), std::memory_order_release);
         }
 
         void clearAllFilters() {
             std::lock_guard<std::mutex> lock(m_filterMutex);
-            m_filter = nullptr;
-            m_filterRules.clear();
+            m_filter.reset();
+            m_filterRules.reset();
             m_hasFilters.store(false, std::memory_order_release);
         }
 
@@ -2748,20 +2767,22 @@ namespace minta {
                 return true;
             }
 
-            FilterPredicate filterCopy;
-            std::vector<FilterRule> rulesCopy;
+            std::shared_ptr<const FilterPredicate> filter;
+            std::shared_ptr<const std::vector<FilterRule>> rules;
             {
                 std::lock_guard<std::mutex> lock(m_filterMutex);
-                filterCopy = m_filter;
-                rulesCopy = m_filterRules;
+                filter = m_filter;
+                rules = m_filterRules;
             }
 
-            if (filterCopy && !filterCopy(entry)) {
+            if (filter && *filter && !(*filter)(entry)) {
                 return false;
             }
-            for (const auto& rule : rulesCopy) {
-                if (!rule.evaluate(entry)) {
-                    return false;
+            if (rules) {
+                for (const auto& rule : *rules) {
+                    if (!rule.evaluate(entry)) {
+                        return false;
+                    }
                 }
             }
             return true;
@@ -2785,14 +2806,14 @@ namespace minta {
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_hasFilters;
         mutable std::mutex m_filterMutex;
-        FilterPredicate m_filter;
-        std::vector<FilterRule> m_filterRules;
+        std::shared_ptr<const FilterPredicate> m_filter;
+        std::shared_ptr<const std::vector<FilterRule>> m_filterRules;
 
         std::string m_sinkName;
         std::atomic<bool> m_hasTagFilters;
         mutable std::mutex m_tagMutex;
-        std::set<std::string> m_onlyTags;
-        std::set<std::string> m_exceptTags;
+        std::shared_ptr<const std::set<std::string>> m_onlyTags;
+        std::shared_ptr<const std::set<std::string>> m_exceptTags;
 
         friend class LunarLog;
         friend class LoggerConfiguration;
@@ -3393,21 +3414,22 @@ namespace minta {
 
         /// Filter pipeline: global min level (caller) -> global predicate -> global DSL rules
         ///                -> per-sink tag routing -> per-sink min level -> per-sink predicate -> per-sink DSL rules.
+        /// Global filter state is passed as COW shared_ptr snapshots — no mutex
+        /// needed here because the caller snapshots under lock before calling.
         void log(const LogEntry &entry,
-                 const FilterPredicate& globalFilter,
-                 const std::vector<FilterRule>& globalFilterRules,
-                 std::mutex& globalFilterMutex,
-                 const std::atomic<bool>& hasGlobalFilters) {
+                 const std::shared_ptr<const FilterPredicate>& globalFilter,
+                 const std::shared_ptr<const std::vector<FilterRule>>& globalFilterRules) {
             if (!m_loggingStarted.load(std::memory_order_relaxed)) {
                 m_loggingStarted.store(true, std::memory_order_release);
             }
 
-            if (hasGlobalFilters.load(std::memory_order_acquire)) {
+            if (globalFilter || globalFilterRules) {
                 try {
-                    std::lock_guard<std::mutex> lock(globalFilterMutex);
-                    if (globalFilter && !globalFilter(entry)) return;
-                    for (const auto& rule : globalFilterRules) {
-                        if (!rule.evaluate(entry)) return;
+                    if (globalFilter && *globalFilter && !(*globalFilter)(entry)) return;
+                    if (globalFilterRules) {
+                        for (const auto& rule : *globalFilterRules) {
+                            if (!rule.evaluate(entry)) return;
+                        }
                     }
                 } catch (...) {
                     // Bad global filter — fail-open: let the entry through
@@ -3862,42 +3884,42 @@ namespace detail {
         }
         void fatal(const std::exception& ex) { log(LogLevel::FATAL, ex); }
 
-        /// @note The predicate is invoked on the consumer thread while holding an
-        ///       internal mutex. It must be fast, non-blocking, and must NOT call
-        ///       any filter-modification methods on the same logger (deadlock).
-        ///       Filter predicates must capture state by value. Referenced
+        /// @note The predicate is invoked on the consumer thread against an
+        ///       immutable snapshot.  It must be fast and non-blocking.
+        ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
-        ///       If the global predicate throws, the entry is let through
-        ///       (fail-open) rather than silently dropped for all sinks.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilter = std::move(filter);
+            m_globalFilter = std::make_shared<const FilterPredicate>(std::move(filter));
             m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilter = nullptr;
-            m_hasGlobalFilters.store(!m_globalFilterRules.empty(), std::memory_order_release);
+            m_globalFilter.reset();
+            m_hasGlobalFilters.store(m_globalFilterRules && !m_globalFilterRules->empty(), std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilterRules.push_back(std::move(rule));
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_globalFilterRules ? *m_globalFilterRules : std::vector<FilterRule>());
+            newRules->push_back(std::move(rule));
+            m_globalFilterRules = std::move(newRules);
             m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilterRules() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilterRules.clear();
-            m_hasGlobalFilters.store(static_cast<bool>(m_globalFilter), std::memory_order_release);
+            m_globalFilterRules.reset();
+            m_hasGlobalFilters.store(m_globalFilter && static_cast<bool>(*m_globalFilter), std::memory_order_release);
         }
 
         void clearAllFilters() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilter = nullptr;
-            m_globalFilterRules.clear();
+            m_globalFilter.reset();
+            m_globalFilterRules.reset();
             m_hasGlobalFilters.store(false, std::memory_order_release);
         }
 
@@ -3907,11 +3929,16 @@ namespace detail {
         /// Thread-safe — acquires global filter mutex.
         void filter(const std::string& compactExpr) {
             std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
+            if (rules.empty()) return;
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_globalFilterRules ? *m_globalFilterRules : std::vector<FilterRule>());
+            newRules->reserve(newRules->size() + rules.size());
             for (size_t i = 0; i < rules.size(); ++i) {
-                m_globalFilterRules.push_back(std::move(rules[i]));
+                newRules->push_back(std::move(rules[i]));
             }
-            if (!m_globalFilterRules.empty()) {
+            m_globalFilterRules = std::move(newRules);
+            if (!m_globalFilterRules->empty()) {
                 m_hasGlobalFilters.store(true, std::memory_order_release);
             }
         }
@@ -4065,13 +4092,13 @@ namespace detail {
         };
 
         std::mutex m_cacheMutex;
-        std::unordered_map<std::string, std::vector<PlaceholderInfo>> m_templateCache;
+        std::unordered_map<std::string, std::shared_ptr<const std::vector<PlaceholderInfo>>> m_templateCache;
         size_t m_templateCacheSize;
 
         std::mutex m_globalFilterMutex;
         std::atomic<bool> m_hasGlobalFilters;
-        FilterPredicate m_globalFilter;
-        std::vector<FilterRule> m_globalFilterRules;
+        std::shared_ptr<const FilterPredicate> m_globalFilter;
+        std::shared_ptr<const std::vector<FilterRule>> m_globalFilterRules;
 
         mutable std::mutex m_localeMutex;
         std::atomic<bool> m_hasLocale{false};
@@ -4125,24 +4152,25 @@ namespace detail {
             const std::string& effectiveTemplate = entryTags.empty() ? messageTemplate : tagResult.second;
 
             uint32_t hash = detail::fnv1a(effectiveTemplate);
-            std::vector<PlaceholderInfo> placeholders;
+            std::shared_ptr<const std::vector<PlaceholderInfo>> placeholdersPtr;
             bool cacheHit = false;
             {
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     auto it = m_templateCache.find(effectiveTemplate);
                     if (it != m_templateCache.end()) {
-                        placeholders = it->second;
+                        placeholdersPtr = it->second;
                         cacheHit = true;
                     }
                 }
             }
             if (!cacheHit) {
-                placeholders = extractPlaceholders(effectiveTemplate);
+                auto parsed = extractPlaceholders(effectiveTemplate);
+                placeholdersPtr = std::make_shared<const std::vector<PlaceholderInfo>>(std::move(parsed));
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     if (m_templateCache.size() < m_templateCacheSize) {
-                        m_templateCache[effectiveTemplate] = placeholders;
+                        m_templateCache[effectiveTemplate] = placeholdersPtr;
                     }
                 }
             }
@@ -4153,10 +4181,10 @@ namespace detail {
                 localeCopy = m_locale;
             }
 
-            std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, placeholders, values);
-            std::string message = formatMessage(effectiveTemplate, placeholders, values, localeCopy);
-            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
-            auto properties = mapProperties(placeholders, values);
+            std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, *placeholdersPtr, values);
+            std::string message = formatMessage(effectiveTemplate, *placeholdersPtr, values, localeCopy);
+            auto argumentPairs = mapArgumentsToPlaceholders(*placeholdersPtr, values);
+            auto properties = mapProperties(*placeholdersPtr, values);
 
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
@@ -4234,6 +4262,16 @@ namespace detail {
             m_logCV.notify_one();
         }
 
+        void snapshotGlobalFilters(
+            std::shared_ptr<const FilterPredicate>& filter,
+            std::shared_ptr<const std::vector<FilterRule>>& rules) {
+            if (m_hasGlobalFilters.load(std::memory_order_acquire)) {
+                std::lock_guard<std::mutex> flock(m_globalFilterMutex);
+                filter = m_globalFilter;
+                rules  = m_globalFilterRules;
+            }
+        }
+
         void processLogQueue() {
             while (m_isRunning) {
                 std::unique_lock<std::mutex> lock(m_queueMutex);
@@ -4246,10 +4284,11 @@ namespace detail {
                     lock.unlock();
 
                     try {
-                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex, m_hasGlobalFilters);
-                    } catch (...) {
-                        // Swallow — logging must not crash the application
-                    }
+                        std::shared_ptr<const FilterPredicate> globalFilter;
+                        std::shared_ptr<const std::vector<FilterRule>> globalRules;
+                        snapshotGlobalFilters(globalFilter, globalRules);
+                        m_logManager.log(entry, globalFilter, globalRules);
+                    } catch (...) {}
 
                     // Re-acquire lock BEFORE clearing sinkWriteInProgress and
                     // notifying, so that flush() cannot miss the state change.
@@ -4270,10 +4309,11 @@ namespace detail {
                     m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
                     try {
-                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex, m_hasGlobalFilters);
-                    } catch (...) {
-                        // Swallow — logging must not crash the application
-                    }
+                        std::shared_ptr<const FilterPredicate> globalFilter;
+                        std::shared_ptr<const std::vector<FilterRule>> globalRules;
+                        snapshotGlobalFilters(globalFilter, globalRules);
+                        m_logManager.log(entry, globalFilter, globalRules);
+                    } catch (...) {}
                     lock.lock();
                     m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
                     m_flushCV.notify_all();

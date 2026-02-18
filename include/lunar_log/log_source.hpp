@@ -392,42 +392,42 @@ namespace detail {
         }
         void fatal(const std::exception& ex) { log(LogLevel::FATAL, ex); }
 
-        /// @note The predicate is invoked on the consumer thread while holding an
-        ///       internal mutex. It must be fast, non-blocking, and must NOT call
-        ///       any filter-modification methods on the same logger (deadlock).
-        ///       Filter predicates must capture state by value. Referenced
+        /// @note The predicate is invoked on the consumer thread against an
+        ///       immutable snapshot.  It must be fast and non-blocking.
+        ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
-        ///       If the global predicate throws, the entry is let through
-        ///       (fail-open) rather than silently dropped for all sinks.
         void setFilter(FilterPredicate filter) {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilter = std::move(filter);
+            m_globalFilter = std::make_shared<const FilterPredicate>(std::move(filter));
             m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilter = nullptr;
-            m_hasGlobalFilters.store(!m_globalFilterRules.empty(), std::memory_order_release);
+            m_globalFilter.reset();
+            m_hasGlobalFilters.store(m_globalFilterRules && !m_globalFilterRules->empty(), std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilterRules.push_back(std::move(rule));
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_globalFilterRules ? *m_globalFilterRules : std::vector<FilterRule>());
+            newRules->push_back(std::move(rule));
+            m_globalFilterRules = std::move(newRules);
             m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilterRules() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilterRules.clear();
-            m_hasGlobalFilters.store(static_cast<bool>(m_globalFilter), std::memory_order_release);
+            m_globalFilterRules.reset();
+            m_hasGlobalFilters.store(m_globalFilter && static_cast<bool>(*m_globalFilter), std::memory_order_release);
         }
 
         void clearAllFilters() {
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
-            m_globalFilter = nullptr;
-            m_globalFilterRules.clear();
+            m_globalFilter.reset();
+            m_globalFilterRules.reset();
             m_hasGlobalFilters.store(false, std::memory_order_release);
         }
 
@@ -437,11 +437,16 @@ namespace detail {
         /// Thread-safe — acquires global filter mutex.
         void filter(const std::string& compactExpr) {
             std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
+            if (rules.empty()) return;
             std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            auto newRules = std::make_shared<std::vector<FilterRule>>(
+                m_globalFilterRules ? *m_globalFilterRules : std::vector<FilterRule>());
+            newRules->reserve(newRules->size() + rules.size());
             for (size_t i = 0; i < rules.size(); ++i) {
-                m_globalFilterRules.push_back(std::move(rules[i]));
+                newRules->push_back(std::move(rules[i]));
             }
-            if (!m_globalFilterRules.empty()) {
+            m_globalFilterRules = std::move(newRules);
+            if (!m_globalFilterRules->empty()) {
                 m_hasGlobalFilters.store(true, std::memory_order_release);
             }
         }
@@ -595,13 +600,13 @@ namespace detail {
         };
 
         std::mutex m_cacheMutex;
-        std::unordered_map<std::string, std::vector<PlaceholderInfo>> m_templateCache;
+        std::unordered_map<std::string, std::shared_ptr<const std::vector<PlaceholderInfo>>> m_templateCache;
         size_t m_templateCacheSize;
 
         std::mutex m_globalFilterMutex;
         std::atomic<bool> m_hasGlobalFilters;
-        FilterPredicate m_globalFilter;
-        std::vector<FilterRule> m_globalFilterRules;
+        std::shared_ptr<const FilterPredicate> m_globalFilter;
+        std::shared_ptr<const std::vector<FilterRule>> m_globalFilterRules;
 
         mutable std::mutex m_localeMutex;
         std::atomic<bool> m_hasLocale{false};
@@ -655,24 +660,25 @@ namespace detail {
             const std::string& effectiveTemplate = entryTags.empty() ? messageTemplate : tagResult.second;
 
             uint32_t hash = detail::fnv1a(effectiveTemplate);
-            std::vector<PlaceholderInfo> placeholders;
+            std::shared_ptr<const std::vector<PlaceholderInfo>> placeholdersPtr;
             bool cacheHit = false;
             {
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     auto it = m_templateCache.find(effectiveTemplate);
                     if (it != m_templateCache.end()) {
-                        placeholders = it->second;
+                        placeholdersPtr = it->second;
                         cacheHit = true;
                     }
                 }
             }
             if (!cacheHit) {
-                placeholders = extractPlaceholders(effectiveTemplate);
+                auto parsed = extractPlaceholders(effectiveTemplate);
+                placeholdersPtr = std::make_shared<const std::vector<PlaceholderInfo>>(std::move(parsed));
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     if (m_templateCache.size() < m_templateCacheSize) {
-                        m_templateCache[effectiveTemplate] = placeholders;
+                        m_templateCache[effectiveTemplate] = placeholdersPtr;
                     }
                 }
             }
@@ -683,10 +689,10 @@ namespace detail {
                 localeCopy = m_locale;
             }
 
-            std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, placeholders, values);
-            std::string message = formatMessage(effectiveTemplate, placeholders, values, localeCopy);
-            auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
-            auto properties = mapProperties(placeholders, values);
+            std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, *placeholdersPtr, values);
+            std::string message = formatMessage(effectiveTemplate, *placeholdersPtr, values, localeCopy);
+            auto argumentPairs = mapArgumentsToPlaceholders(*placeholdersPtr, values);
+            auto properties = mapProperties(*placeholdersPtr, values);
 
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
@@ -764,6 +770,16 @@ namespace detail {
             m_logCV.notify_one();
         }
 
+        void snapshotGlobalFilters(
+            std::shared_ptr<const FilterPredicate>& filter,
+            std::shared_ptr<const std::vector<FilterRule>>& rules) {
+            if (m_hasGlobalFilters.load(std::memory_order_acquire)) {
+                std::lock_guard<std::mutex> flock(m_globalFilterMutex);
+                filter = m_globalFilter;
+                rules  = m_globalFilterRules;
+            }
+        }
+
         void processLogQueue() {
             while (m_isRunning) {
                 std::unique_lock<std::mutex> lock(m_queueMutex);
@@ -776,10 +792,11 @@ namespace detail {
                     lock.unlock();
 
                     try {
-                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex, m_hasGlobalFilters);
-                    } catch (...) {
-                        // Swallow — logging must not crash the application
-                    }
+                        std::shared_ptr<const FilterPredicate> globalFilter;
+                        std::shared_ptr<const std::vector<FilterRule>> globalRules;
+                        snapshotGlobalFilters(globalFilter, globalRules);
+                        m_logManager.log(entry, globalFilter, globalRules);
+                    } catch (...) {}
 
                     // Re-acquire lock BEFORE clearing sinkWriteInProgress and
                     // notifying, so that flush() cannot miss the state change.
@@ -800,10 +817,11 @@ namespace detail {
                     m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
                     lock.unlock();
                     try {
-                        m_logManager.log(entry, m_globalFilter, m_globalFilterRules, m_globalFilterMutex, m_hasGlobalFilters);
-                    } catch (...) {
-                        // Swallow — logging must not crash the application
-                    }
+                        std::shared_ptr<const FilterPredicate> globalFilter;
+                        std::shared_ptr<const std::vector<FilterRule>> globalRules;
+                        snapshotGlobalFilters(globalFilter, globalRules);
+                        m_logManager.log(entry, globalFilter, globalRules);
+                    } catch (...) {}
                     lock.lock();
                     m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
                     m_flushCV.notify_all();

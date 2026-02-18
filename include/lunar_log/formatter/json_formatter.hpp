@@ -72,6 +72,20 @@ namespace minta {
                 json += ']';
             }
 
+            if (!entry.exceptionType.empty()) {
+                json += R"(,"exception":{"type":")";
+                json += detail::json::escapeJsonString(entry.exceptionType);
+                json += R"(","message":")";
+                json += detail::json::escapeJsonString(entry.exceptionMessage);
+                json += '"';
+                if (!entry.exceptionChain.empty()) {
+                    json += R"(,"chain":")";
+                    json += detail::json::escapeJsonString(entry.exceptionChain);
+                    json += '"';
+                }
+                json += '}';
+            }
+
             if (!entry.properties.empty()) {
                 json += R"(,"properties":{)";
                 bool first = true;

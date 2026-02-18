@@ -8,6 +8,7 @@
 #include "lunar_log/core/filter_rule.hpp"
 #include "lunar_log/core/compact_filter.hpp"
 #include "lunar_log/core/rolling_policy.hpp"
+#include "lunar_log/core/exception_info.hpp"
 #include "lunar_log/transform/pipe_transform.hpp"
 #include "lunar_log/formatter/formatter_interface.hpp"
 #include "lunar_log/formatter/human_readable_formatter.hpp"

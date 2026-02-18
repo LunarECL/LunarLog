@@ -52,6 +52,19 @@ namespace minta {
                 xml += "</tags>";
             }
 
+            if (!entry.exceptionType.empty()) {
+                xml += "<exception type=\"";
+                xml += escapeXmlString(entry.exceptionType);
+                xml += "\">";
+                xml += escapeXmlString(entry.exceptionMessage);
+                if (!entry.exceptionChain.empty()) {
+                    xml += "<chain>";
+                    xml += escapeXmlString(entry.exceptionChain);
+                    xml += "</chain>";
+                }
+                xml += "</exception>";
+            }
+
             if (!entry.customContext.empty()) {
                 xml += "<context>";
                 for (const auto &ctx : entry.customContext) {

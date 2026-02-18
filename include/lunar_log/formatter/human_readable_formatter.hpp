@@ -77,6 +77,27 @@ namespace minta {
                 result += '}';
             }
 
+            if (!entry.exceptionType.empty()) {
+                result += "\n  ";
+                result += entry.exceptionType;
+                result += ": ";
+                result += entry.exceptionMessage;
+                if (!entry.exceptionChain.empty()) {
+                    const std::string& chain = entry.exceptionChain;
+                    size_t pos = 0;
+                    while (pos < chain.size()) {
+                        size_t nl = chain.find('\n', pos);
+                        result += "\n  --- ";
+                        if (nl == std::string::npos) {
+                            result.append(chain, pos, chain.size() - pos);
+                            break;
+                        }
+                        result.append(chain, pos, nl - pos);
+                        pos = nl + 1;
+                    }
+                }
+            }
+
             return result;
         }
     };

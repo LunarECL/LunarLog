@@ -93,8 +93,11 @@ jobs:
               '/tmp/wiki'], check=True)
 
           wiki_file = f'/tmp/wiki/{wiki_path}'
-          with open(wiki_file) as f:
-              content = f.read()
+          try:
+              with open(wiki_file) as f:
+                  content = f.read()
+          except FileNotFoundError:
+              content = ''
 
           marker = '## CI Benchmark Results'
           if marker in content:
@@ -108,7 +111,11 @@ jobs:
           subprocess.run(['git', '-C', '/tmp/wiki', 'config', 'user.name', 'github-actions[bot]'], check=True)
           subprocess.run(['git', '-C', '/tmp/wiki', 'config', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=True)
           subprocess.run(['git', '-C', '/tmp/wiki', 'add', wiki_path], check=True)
-          subprocess.run(['git', '-C', '/tmp/wiki', 'commit', '-m', f'ci: update benchmark results ({date})'], check=True)
-          subprocess.run(['git', '-C', '/tmp/wiki', 'push'], check=True)
-          print("Wiki updated successfully")
+          status = subprocess.run(['git', '-C', '/tmp/wiki', 'diff', '--cached', '--quiet'])
+          if status.returncode != 0:
+              subprocess.run(['git', '-C', '/tmp/wiki', 'commit', '-m', f'ci: update benchmark results ({date})'], check=True)
+              subprocess.run(['git', '-C', '/tmp/wiki', 'push'], check=True)
+              print("Wiki updated successfully")
+          else:
+              print("No changes to publish — results unchanged")
           PYEOF

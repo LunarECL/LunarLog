@@ -38,7 +38,7 @@ jobs:
           echo "CXX=${{ matrix.cxx }}" >> $GITHUB_ENV
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DLUNARLOG_CXX_STANDARD=${{ matrix.cpp_standard }}
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DLUNARLOG_CXX_STANDARD=${{ matrix.cpp_standard }} -DLUNARLOG_BUILD_BENCHMARKS=ON
 
       - name: Build
         run: cmake --build build --config Debug

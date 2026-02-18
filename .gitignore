@@ -53,3 +53,12 @@ test_detail.xml
 build_11/
 build_11_fresh/
 cjson_*.txt
+
+# Build directories (all variants)
+build*/
+
+# Test/benchmark output files
+enricher_*.txt
+ex_*.txt
+*.bench.json
+bench_results.json

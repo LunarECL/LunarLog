@@ -813,6 +813,40 @@ Supported compilers:
 
 Runs on every push — build matrix across GCC/Clang/MSVC, plus static analysis (cppcheck, clang-tidy) and test coverage.
 
+## Benchmarks
+
+A [Google Benchmark](https://github.com/google/benchmark) suite covers throughput, formatting, filtering, sinks, enrichers, and end-to-end latency. Build it with:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUNARLOG_BUILD_BENCHMARKS=ON
+cmake --build build --target lunar_log_bench
+```
+
+Run all benchmarks:
+
+```bash
+./build/bench/lunar_log_bench
+```
+
+Export results as JSON:
+
+```bash
+./build/bench/lunar_log_bench --benchmark_format=json --benchmark_out=bench_results.json
+```
+
+**What's measured:**
+
+| Category | Benchmarks | What it tells you |
+|----------|-----------|-------------------|
+| Throughput | Single-thread, multi-thread (1-8 threads), disabled level, empty logger | Messages/sec, contention cost, level-check short-circuit |
+| Formatting | Simple, complex, cache hit/miss, pipe transforms, indexed placeholders | Template parse + render cost, cache effectiveness |
+| Filtering | None, min-level, predicate, DSL (1/5/10 rules), compact, tag routing | Per-filter-layer overhead |
+| Sinks | Null, File (HR/JSON/CompactJSON), Rolling | I/O + formatter cost per sink type |
+| Enrichers | None, ThreadId, 3-chain, lambda | Per-enricher overhead |
+| End-to-end | Realistic production config (3 sinks, enrichers, filters, tag routing) | Full-pipeline latency |
+
+See the [wiki Benchmark Suite guide](https://github.com/LunarECL/LunarLog/wiki/Benchmark-Suite) for detailed descriptions of each benchmark, how to interpret results, and CI integration.
+
 ## Migration Notes
 
 ### Format Specifiers `:d`, `:f`, `:t`

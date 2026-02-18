@@ -1,0 +1,40 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          -DLUNARLOG_BUILD_BENCHMARKS=ON
+          -DLUNARLOG_BUILD_TESTS=OFF
+          -DLUNARLOG_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        run: cmake --build build --target lunar_log_bench -j$(nproc)
+
+      # TODO: Add baseline comparison via benchmark-action/github-action-benchmark
+      # This is planned as a follow-up enhancement (open a new issue after merge)
+      - name: Run
+        run: >
+          ./build/bench/lunar_log_bench
+          --benchmark_format=json
+          --benchmark_out=bench_results.json
+          --benchmark_repetitions=5
+          --benchmark_report_aggregates_only=true
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: bench_results.json

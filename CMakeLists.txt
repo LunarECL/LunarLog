@@ -158,3 +158,8 @@ if(LUNARLOG_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(TestLunarLog)
 endif()
+
+option(LUNARLOG_BUILD_BENCHMARKS "Build benchmark suite" OFF)
+if(LUNARLOG_BUILD_BENCHMARKS)
+    add_subdirectory(bench)
+endif()

@@ -32,6 +32,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - **Pipe transforms** — `{name|upper}`, `{name|comma}`, `{name|truncate:20}` — 18 built-in transforms with chaining
 - **Culture-specific formatting** — locale-aware numbers (`{:n}`), dates and times (`{:d}`, `{:T}`, etc.)
 - **Exception attachment** — `log.error(ex, ...)` with nested unwinding, type demangling, all formatters
+- **Enrichers** — `log.enrich(...)` to auto-attach metadata (thread ID, PID, hostname, environment, custom) to every log entry
 
 ## Format Specifiers
 
@@ -420,6 +421,59 @@ All six levels have exception overloads: `trace`, `debug`, `info`, `warn`, `erro
 ```
 
 Structured formatters (JSON, Compact JSON, XML) each include exception data in their native format. Use the `{exception}` token in output templates for custom layouts. See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Exception-Attachment) for the full guide.
+
+## Enrichers
+
+Enrichers automatically attach metadata to every log entry — thread ID, process ID, hostname, environment, or any custom value. Register them once during setup; they run on every entry in registration order.
+
+### Built-in Enrichers
+
+| Enricher | Context Key | Value | Evaluation |
+|----------|-------------|-------|------------|
+| `Enrichers::threadId()` | `threadId` | Hashed thread ID | Per entry |
+| `Enrichers::processId()` | `processId` | PID | Cached at registration |
+| `Enrichers::machineName()` | `machine` | Hostname (`gethostname`) | Cached at registration |
+| `Enrichers::environment()` | `environment` | `$APP_ENV` or `$ENVIRONMENT` | Cached at registration |
+| `Enrichers::property(key, val)` | *key* | *val* | Cached at registration |
+| `Enrichers::fromEnv(envVar, key)` | *key* | Env var value | Cached at registration |
+| `Enrichers::caller()` | `caller` | Source function name | Per entry (requires `setCaptureSourceLocation(true)`) |
+
+### Basic Usage
+
+```cpp
+minta::LunarLog logger(minta::LogLevel::INFO, false);
+logger.addSink<minta::ConsoleSink>();
+logger.addSink<minta::FileSink, minta::JsonFormatter>("app.json.log");
+
+// Register enrichers before logging starts
+logger.enrich(minta::Enrichers::threadId());
+logger.enrich(minta::Enrichers::processId());
+logger.enrich(minta::Enrichers::machineName());
+logger.enrich(minta::Enrichers::property("service", "auth-api"));
+
+logger.info("Request received");
+// Every entry now carries threadId, processId, machine, service
+```
+
+### Custom Lambda Enricher
+
+```cpp
+logger.enrich([](minta::LogEntry& entry) {
+    entry.customContext["correlationId"] = generateCorrelationId();
+});
+```
+
+### Precedence
+
+When enrichers, `setContext`, and scoped context set the same key, **explicit context always wins**:
+
+enricher < `setContext` < scoped context (`LogScope`)
+
+Enrichers run first, then explicit context values overwrite any colliding keys.
+
+> **Note:** `enrich()` throws `std::logic_error` if called after logging has started. Register all enrichers during configuration.
+
+See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Enrichers) for the full guide, including the `IEnricher` interface, performance notes, and error handling details.
 
 ## Compact JSON Formatter
 

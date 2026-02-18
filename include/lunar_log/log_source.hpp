@@ -5,6 +5,7 @@
 #include "core/log_common.hpp"
 #include "core/filter_rule.hpp"
 #include "core/compact_filter.hpp"
+#include "core/enricher.hpp"
 #include "core/exception_info.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
@@ -474,6 +475,22 @@ namespace detail {
             m_logManager.setSinkLocale(sinkIndex, locale);
         }
 
+        /// Register an enricher that attaches metadata to every log entry.
+        /// Enrichers run in registration order before explicit context
+        /// (setContext / scoped context), so explicit context wins on
+        /// key collisions.
+        ///
+        /// @throws std::logic_error if called after the first log entry
+        ///         has been emitted. All enrichers must be registered
+        ///         during logger configuration, before any logging begins.
+        void enrich(EnricherFn fn) {
+            if (m_logManager.isLoggingStarted()) {
+                throw std::logic_error("Cannot add enrichers after logging has started");
+            }
+            m_enrichers.push_back(std::move(fn));
+            m_hasEnrichers.store(true, std::memory_order_release);
+        }
+
     private:
         static constexpr size_t kRateLimitMaxLogs = 1000;
         static constexpr long long kRateLimitWindowSeconds = 1;
@@ -518,6 +535,9 @@ namespace detail {
         mutable std::mutex m_localeMutex;
         std::atomic<bool> m_hasLocale{false};
         std::string m_locale = "C";
+
+        std::vector<EnricherFn> m_enrichers;
+        std::atomic<bool> m_hasEnrichers{false};
 
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
@@ -609,26 +629,39 @@ namespace detail {
                 }
             }
 
+            bool hasEnrichers = m_hasEnrichers.load(std::memory_order_acquire);
+
+            LogEntry entry(
+                level, std::move(message), now, effectiveTemplate, hash,
+                std::move(argumentPairs),
+                captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "",
+                std::map<std::string, std::string>(),
+                std::move(properties), std::move(entryTags), std::move(localeCopy),
+                std::this_thread::get_id(),
+                std::move(exInfo.type), std::move(exInfo.message), std::move(exInfo.chain)
+            );
+
+            if (hasEnrichers) {
+                for (const auto& enricher : m_enrichers) {
+                    // Enricher exceptions are swallowed to prevent logging
+                    // from crashing the application.
+                    try {
+                        enricher(entry);
+                    } catch (...) {}
+                }
+                // Explicit context (setContext / scoped) overwrites enricher
+                // values — key-by-key merge required for correct precedence.
+                for (const auto& kv : contextCopy) {
+                    entry.customContext[kv.first] = kv.second;
+                }
+            } else {
+                // Fast path: no enrichers registered — move the entire context
+                // map into the entry in O(1) instead of copying key-by-key.
+                entry.customContext = std::move(contextCopy);
+            }
+
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_logQueue.emplace(LogEntry(
-                /* level */          level,
-                /* message */        std::move(message),
-                /* timestamp */      now,
-                /* templateStr */    effectiveTemplate,
-                /* templateHash */   hash,
-                /* arguments */      std::move(argumentPairs),
-                /* file */           captureCtx ? file : "",
-                /* line */           captureCtx ? line : 0,
-                /* function */       captureCtx ? function : "",
-                /* customContext */   std::move(contextCopy),
-                /* properties */     std::move(properties),
-                /* tags */           std::move(entryTags),
-                /* locale */         std::move(localeCopy),
-                /* threadId */       std::this_thread::get_id(),
-                /* exceptionType */  std::move(exInfo.type),
-                /* exceptionMsg */   std::move(exInfo.message),
-                /* exceptionChain */ std::move(exInfo.chain)
-            ));
+            m_logQueue.push(std::move(entry));
 
             for (const auto& warning : warnings) {
                 uint32_t warnHash = detail::fnv1a(warning);

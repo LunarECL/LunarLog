@@ -9,6 +9,12 @@
 
 // --- lunar_log/core/log_level.hpp ---
 
+// Windows.h defines ERROR as 0, which conflicts with the ERROR enum member.
+// Undefine it here so LogLevel::ERROR is always usable regardless of include order.
+#ifdef ERROR
+#undef ERROR
+#endif
+
 namespace minta {
     enum class LogLevel {
         TRACE,
@@ -628,32 +634,28 @@ namespace minta {
         std::vector<std::string> transforms;
     };
 
-    // No default constructor — all fields must be provided at creation time.
     struct LogEntry {
-        LogLevel level;
+        LogLevel level = LogLevel::INFO;
         std::string message;
         std::chrono::system_clock::time_point timestamp;
         std::string templateStr;
-        uint32_t templateHash;
-        // Maintained for backward compatibility with custom formatters.
-        // Prefer `properties` for new code — it carries operator context (@/$).
+        uint32_t templateHash = 0;
         std::vector<std::pair<std::string, std::string>> arguments;
         std::string file;
-        int line;
+        int line = 0;
         std::string function;
         std::map<std::string, std::string> customContext;
         std::vector<PlaceholderProperty> properties;
-        /// Tags parsed from [bracketed] prefixes in the message template.
         std::vector<std::string> tags;
-        /// The locale used when formatting this entry's message.
-        /// Formatters with a different per-sink locale can re-render
-        /// via detail::reformatMessage using the raw values in properties.
-        std::string locale;
-        /// The ID of the thread that created this log entry.
-        /// Captured at construction time so that async formatters
-        /// render the originating thread, not the consumer thread.
+        std::string locale = "C";
         std::thread::id threadId;
+        std::string exceptionType;
+        std::string exceptionMessage;
+        std::string exceptionChain;
 
+        LogEntry() = default;
+
+        /// Backward-compatible positional constructor for custom formatters.
         LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
                  std::string templateStr_, uint32_t templateHash_,
                  std::vector<std::pair<std::string, std::string>> arguments_,
@@ -662,7 +664,10 @@ namespace minta {
                  std::vector<PlaceholderProperty> properties_,
                  std::vector<std::string> tags_ = {},
                  std::string locale_ = "C",
-                 std::thread::id threadId_ = std::thread::id())
+                 std::thread::id threadId_ = std::thread::id(),
+                 std::string exceptionType_ = "",
+                 std::string exceptionMessage_ = "",
+                 std::string exceptionChain_ = "")
             : level(level_), message(std::move(message_)), timestamp(timestamp_),
               templateStr(std::move(templateStr_)), templateHash(templateHash_),
               arguments(std::move(arguments_)),
@@ -670,7 +675,10 @@ namespace minta {
               customContext(std::move(customContext_)), properties(std::move(properties_)),
               tags(std::move(tags_)),
               locale(std::move(locale_)),
-              threadId(threadId_) {}
+              threadId(threadId_),
+              exceptionType(std::move(exceptionType_)),
+              exceptionMessage(std::move(exceptionMessage_)),
+              exceptionChain(std::move(exceptionChain_)) {}
     };
 } // namespace minta
 
@@ -1845,6 +1853,27 @@ namespace minta {
                 result += '}';
             }
 
+            if (!entry.exceptionType.empty()) {
+                result += "\n  ";
+                result += entry.exceptionType;
+                result += ": ";
+                result += entry.exceptionMessage;
+                if (!entry.exceptionChain.empty()) {
+                    const std::string& chain = entry.exceptionChain;
+                    size_t pos = 0;
+                    while (pos < chain.size()) {
+                        size_t nl = chain.find('\n', pos);
+                        result += "\n  --- ";
+                        if (nl == std::string::npos) {
+                            result.append(chain, pos, chain.size() - pos);
+                            break;
+                        }
+                        result.append(chain, pos, nl - pos);
+                        pos = nl + 1;
+                    }
+                }
+            }
+
             return result;
         }
     };
@@ -2050,6 +2079,20 @@ namespace minta {
                 json += ']';
             }
 
+            if (!entry.exceptionType.empty()) {
+                json += R"(,"exception":{"type":")";
+                json += detail::json::escapeJsonString(entry.exceptionType);
+                json += R"(","message":")";
+                json += detail::json::escapeJsonString(entry.exceptionMessage);
+                json += '"';
+                if (!entry.exceptionChain.empty()) {
+                    json += R"(,"chain":")";
+                    json += detail::json::escapeJsonString(entry.exceptionChain);
+                    json += '"';
+                }
+                json += '}';
+            }
+
             if (!entry.properties.empty()) {
                 json += R"(,"properties":{)";
                 bool first = true;
@@ -2122,7 +2165,7 @@ namespace minta {
     ///   @mt = message template
     ///   @m  = rendered message (optional, off by default)
     ///   @i  = template hash (included when template is present)
-    ///   @x  = exception info (reserved for future use)
+    ///   @x  = exception info (type: message, with nested chain if present)
     ///
     /// Properties and context are flattened to top level.  User property names
     /// starting with @ are escaped to @@ to prevent collision with system fields.
@@ -2180,7 +2223,22 @@ namespace minta {
                 json += '"';
             }
 
-            // Flatten properties to top level
+            if (!entry.exceptionType.empty()) {
+                // Build the full @x string first, then escape once to avoid
+                // fragmented escaping that can produce inconsistent output.
+                std::string xValue;
+                xValue += entry.exceptionType;
+                xValue += ": ";
+                xValue += entry.exceptionMessage;
+                if (!entry.exceptionChain.empty()) {
+                    xValue += '\n';
+                    xValue += entry.exceptionChain;
+                }
+                json += R"(,"@x":")";
+                json += detail::json::escapeJsonString(xValue);
+                json += '"';
+            }
+
             for (const auto &prop : entry.properties) {
                 json += ',';
                 json += '"';
@@ -2327,6 +2385,19 @@ namespace minta {
                     xml += "</tag>";
                 }
                 xml += "</tags>";
+            }
+
+            if (!entry.exceptionType.empty()) {
+                xml += "<exception type=\"";
+                xml += escapeXmlString(entry.exceptionType);
+                xml += "\">";
+                xml += escapeXmlString(entry.exceptionMessage);
+                if (!entry.exceptionChain.empty()) {
+                    xml += "<chain>";
+                    xml += escapeXmlString(entry.exceptionChain);
+                    xml += "</chain>";
+                }
+                xml += "</exception>";
             }
 
             if (!entry.customContext.empty()) {
@@ -3650,6 +3721,12 @@ namespace detail {
         }
 
         template<typename... Args>
+        void logWithSourceLocationAndException(LogLevel level, const char* file, int line, const char* function,
+                                               const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            logInternalWithException(level, file, line, function, ex, messageTemplate, args...);
+        }
+
+        template<typename... Args>
         void trace(const std::string &messageTemplate, const Args &... args) {
             log(LogLevel::TRACE, messageTemplate, args...);
         }
@@ -3678,6 +3755,51 @@ namespace detail {
         void fatal(const std::string &messageTemplate, const Args &... args) {
             log(LogLevel::FATAL, messageTemplate, args...);
         }
+
+        template<typename... Args>
+        void log(LogLevel level, const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            logInternalWithException(level, "", 0, "", ex, messageTemplate, args...);
+        }
+
+        void log(LogLevel level, const std::exception& ex) {
+            logInternalWithException(level, "", 0, "", ex, detail::safeWhat(ex));
+        }
+
+        template<typename... Args>
+        void trace(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::TRACE, ex, messageTemplate, args...);
+        }
+        void trace(const std::exception& ex) { log(LogLevel::TRACE, ex); }
+
+        template<typename... Args>
+        void debug(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::DEBUG, ex, messageTemplate, args...);
+        }
+        void debug(const std::exception& ex) { log(LogLevel::DEBUG, ex); }
+
+        template<typename... Args>
+        void info(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::INFO, ex, messageTemplate, args...);
+        }
+        void info(const std::exception& ex) { log(LogLevel::INFO, ex); }
+
+        template<typename... Args>
+        void warn(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::WARN, ex, messageTemplate, args...);
+        }
+        void warn(const std::exception& ex) { log(LogLevel::WARN, ex); }
+
+        template<typename... Args>
+        void error(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::ERROR, ex, messageTemplate, args...);
+        }
+        void error(const std::exception& ex) { log(LogLevel::ERROR, ex); }
+
+        template<typename... Args>
+        void fatal(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::FATAL, ex, messageTemplate, args...);
+        }
+        void fatal(const std::exception& ex) { log(LogLevel::FATAL, ex); }
 
         /// @note The predicate is invoked on the consumer thread while holding an
         ///       internal mutex. It must be fast, non-blocking, and must NOT call
@@ -3808,6 +3930,22 @@ namespace detail {
             m_logManager.setSinkLocale(sinkIndex, locale);
         }
 
+        /// Register an enricher that attaches metadata to every log entry.
+        /// Enrichers run in registration order before explicit context
+        /// (setContext / scoped context), so explicit context wins on
+        /// key collisions.
+        ///
+        /// @throws std::logic_error if called after the first log entry
+        ///         has been emitted. All enrichers must be registered
+        ///         during logger configuration, before any logging begins.
+        void enrich(EnricherFn fn) {
+            if (m_logManager.isLoggingStarted()) {
+                throw std::logic_error("Cannot add enrichers after logging has started");
+            }
+            m_enrichers.push_back(std::move(fn));
+            m_hasEnrichers.store(true, std::memory_order_release);
+        }
+
     private:
         static constexpr size_t kRateLimitMaxLogs = 1000;
         static constexpr long long kRateLimitWindowSeconds = 1;
@@ -3853,6 +3991,9 @@ namespace detail {
         std::atomic<bool> m_hasLocale{false};
         std::string m_locale = "C";
 
+        std::vector<EnricherFn> m_enrichers;
+        std::atomic<bool> m_hasEnrichers{false};
+
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
@@ -3867,14 +4008,30 @@ namespace detail {
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
-            auto now = std::chrono::system_clock::now();
+            std::vector<std::string> values{toString(args)...};
+            detail::ExceptionInfo noException;
+            emitLogEntry(level, file, line, function, messageTemplate, values, noException);
+        }
+
+        template<typename... Args>
+        void logInternalWithException(LogLevel level, const char* file, int line, const char* function,
+                                      const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            if (!m_isRunning.load(std::memory_order_acquire)) return;
+            if (level < m_minLevel.load(std::memory_order_relaxed)) return;
+            if (!rateLimitCheck()) return;
 
             std::vector<std::string> values{toString(args)...};
+            detail::ExceptionInfo exInfo = detail::extractExceptionInfo(ex);
+            emitLogEntry(level, file, line, function, messageTemplate, values, exInfo);
+        }
 
-            // Parse tags from message template
+        void emitLogEntry(LogLevel level, const char* file, int line, const char* function,
+                          const std::string &messageTemplate, std::vector<std::string>& values,
+                          detail::ExceptionInfo& exInfo) {
+            auto now = std::chrono::system_clock::now();
+
             auto tagResult = detail::parseTags(messageTemplate);
             std::vector<std::string> entryTags = std::move(tagResult.first);
-            // Use stripped template for formatting if tags were found
             const std::string& effectiveTemplate = entryTags.empty() ? messageTemplate : tagResult.second;
 
             uint32_t hash = detail::fnv1a(effectiveTemplate);
@@ -3885,9 +4042,6 @@ namespace detail {
                 if (m_templateCacheSize > 0) {
                     auto it = m_templateCache.find(effectiveTemplate);
                     if (it != m_templateCache.end()) {
-                        // Deep-copy the cached vector while holding the lock.
-                        // A shared_ptr<const vector> would eliminate this copy
-                        // if profiling shows cache-lock contention is measurable.
                         placeholders = it->second;
                         cacheHit = true;
                     }
@@ -3897,11 +4051,6 @@ namespace detail {
                 placeholders = extractPlaceholders(effectiveTemplate);
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
-                    // Soft cap: concurrent threads may each pass the size
-                    // check before any inserts, so the map can temporarily
-                    // hold up to N-1 extra entries (N = thread count).
-                    // This is by design — avoiding a hard cap keeps the
-                    // critical section short.
                     if (m_templateCache.size() < m_templateCacheSize) {
                         m_templateCache[effectiveTemplate] = placeholders;
                     }
@@ -3916,8 +4065,6 @@ namespace detail {
 
             std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, placeholders, values);
             std::string message = formatMessage(effectiveTemplate, placeholders, values, localeCopy);
-            // Both representations are kept: arguments is simple name-value pairs
-            // for backward compat; properties is the richer form with operator context.
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
             auto properties = mapProperties(placeholders, values);
 
@@ -3937,41 +4084,57 @@ namespace detail {
                 }
             }
 
+            bool hasEnrichers = m_hasEnrichers.load(std::memory_order_acquire);
+
+            LogEntry entry(
+                level, std::move(message), now, effectiveTemplate, hash,
+                std::move(argumentPairs),
+                captureCtx ? file : "", captureCtx ? line : 0, captureCtx ? function : "",
+                std::map<std::string, std::string>(),
+                std::move(properties), std::move(entryTags), std::move(localeCopy),
+                std::this_thread::get_id(),
+                std::move(exInfo.type), std::move(exInfo.message), std::move(exInfo.chain)
+            );
+
+            if (hasEnrichers) {
+                for (const auto& enricher : m_enrichers) {
+                    // Enricher exceptions are swallowed to prevent logging
+                    // from crashing the application.
+                    try {
+                        enricher(entry);
+                    } catch (...) {}
+                }
+                // Explicit context (setContext / scoped) overwrites enricher
+                // values — key-by-key merge required for correct precedence.
+                for (const auto& kv : contextCopy) {
+                    entry.customContext[kv.first] = kv.second;
+                }
+            } else {
+                // Fast path: no enrichers registered — move the entire context
+                // map into the entry in O(1) instead of copying key-by-key.
+                entry.customContext = std::move(contextCopy);
+            }
+
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_logQueue.emplace(LogEntry(
-                /* level */         level,
-                /* message */       std::move(message),
-                /* timestamp */     now,
-                /* templateStr */   effectiveTemplate,
-                /* templateHash */  hash,
-                /* arguments */     std::move(argumentPairs),
-                /* file */          captureCtx ? file : "",
-                /* line */          captureCtx ? line : 0,
-                /* function */      captureCtx ? function : "",
-                /* customContext */ std::move(contextCopy),
-                /* properties */    std::move(properties),
-                /* tags */          std::move(entryTags),
-                /* locale */        std::move(localeCopy),
-                /* threadId */      std::this_thread::get_id()
-            ));
+            m_logQueue.push(std::move(entry));
 
             for (const auto& warning : warnings) {
                 uint32_t warnHash = detail::fnv1a(warning);
                 m_logQueue.emplace(LogEntry(
-                    /* level */         LogLevel::WARN,
-                    /* message */       warning,
-                    /* timestamp */     now,
-                    /* templateStr */   warning,
-                    /* templateHash */  warnHash,
-                    /* arguments */     {},
-                    /* file */          captureCtx ? file : "",
-                    /* line */          captureCtx ? line : 0,
-                    /* function */      captureCtx ? function : "",
-                    /* customContext */ {},
-                    /* properties */    {},
-                    /* tags */          {},
-                    /* locale */        "C",
-                    /* threadId */      std::this_thread::get_id()
+                    /* level */        LogLevel::WARN,
+                    /* message */      warning,
+                    /* timestamp */    now,
+                    /* templateStr */  warning,
+                    /* templateHash */ warnHash,
+                    /* arguments */    {},
+                    /* file */         captureCtx ? file : "",
+                    /* line */         captureCtx ? line : 0,
+                    /* function */     captureCtx ? function : "",
+                    /* customContext */{},
+                    /* properties */   {},
+                    /* tags */         {},
+                    /* locale */       "C",
+                    /* threadId */     std::this_thread::get_id()
                 ));
             }
 

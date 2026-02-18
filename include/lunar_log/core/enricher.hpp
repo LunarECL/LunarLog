@@ -4,6 +4,7 @@
 #include "log_entry.hpp"
 #include <functional>
 #include <string>
+#include <thread>
 #include <cstdlib>
 
 #ifdef _WIN32

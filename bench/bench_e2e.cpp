@@ -8,14 +8,32 @@
 
 #ifdef _WIN32
 #include <process.h>
+#include <windows.h>
 #define BENCH_GETPID() _getpid()
+static std::string tempDir() {
+    char buf[MAX_PATH];
+    GetTempPathA(MAX_PATH, buf);
+    return std::string(buf);
+}
 #else
 #include <unistd.h>
 #define BENCH_GETPID() getpid()
+static std::string tempDir() { return "/tmp/"; }
 #endif
 
 static std::string benchPath(const std::string& suffix) {
-    return "/tmp/lunar_bench_" + std::to_string(BENCH_GETPID()) + "_" + suffix;
+    return tempDir() + "lunar_bench_" + std::to_string(BENCH_GETPID()) + "_" + suffix;
+}
+
+// Returns the path of the n-th rotation file.
+// e.g. base="/tmp/foo.log", n=1 → "/tmp/foo.001.log"
+static std::string rotationPath(const std::string& base, int n) {
+    size_t dotPos = base.rfind('.');
+    std::string stem = (dotPos != std::string::npos) ? base.substr(0, dotPos) : base;
+    std::string ext  = (dotPos != std::string::npos) ? base.substr(dotPos) : "";
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), ".%03d", n);
+    return stem + buf + ext;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,10 +76,7 @@ static void BM_E2E_Realistic(benchmark::State& state) {
     }
     std::remove(jsonPath.c_str());
     std::remove(errPath.c_str());
-    for (int i = 1; i <= 5; ++i) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), ".%03d", i);
-        std::remove((errPath + buf + ".log").c_str());
-    }
+    for (int i = 1; i <= 5; ++i)
+        std::remove(rotationPath(errPath, i).c_str());
 }
 BENCHMARK(BM_E2E_Realistic);

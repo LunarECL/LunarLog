@@ -24,6 +24,17 @@ static std::string benchPath(const std::string& suffix) {
     return tempDir() + "lunar_bench_" + std::to_string(BENCH_GETPID()) + "_" + suffix;
 }
 
+// Returns the path of the n-th rotation file.
+// e.g. base="/tmp/foo.log", n=1 → "/tmp/foo.001.log"
+static std::string rotationPath(const std::string& base, int n) {
+    size_t dotPos = base.rfind('.');
+    std::string stem = (dotPos != std::string::npos) ? base.substr(0, dotPos) : base;
+    std::string ext  = (dotPos != std::string::npos) ? base.substr(dotPos) : "";
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), ".%03d", n);
+    return stem + buf + ext;
+}
+
 // ---------------------------------------------------------------------------
 // BM_Sink_Null
 // NullSink baseline — minimal sink overhead.
@@ -133,10 +144,7 @@ static void BM_Sink_Rolling(benchmark::State& state) {
         state.SetItemsProcessed(state.iterations());
     }
     std::remove(path.c_str());
-    for (int i = 1; i <= 5; ++i) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), ".%03d", i);
-        std::remove((path + buf + ".log").c_str());
-    }
+    for (int i = 1; i <= 5; ++i)
+        std::remove(rotationPath(path, i).c_str());
 }
 BENCHMARK(BM_Sink_Rolling);

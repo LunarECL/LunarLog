@@ -33,6 +33,7 @@ HEADERS = [
     "lunar_log/sink/rolling_file_sink.hpp",
     "lunar_log/log_manager.hpp",
     "lunar_log/log_source.hpp",
+    "lunar_log/macros.hpp",
 ]
 
 LOCAL_INCLUDE = re.compile(r'^\s*#include\s+"[^"]*"')

@@ -1,0 +1,4 @@
+sources:
+  "1.21.0":
+    url: "https://github.com/LunarECL/LunarLog/archive/refs/tags/v1.21.0.zip"
+    sha256: "c8ee2d924ac8e1938410ab98edad8c334f747676992700f54cc83a15c20cc7a6"

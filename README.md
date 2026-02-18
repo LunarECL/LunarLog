@@ -82,6 +82,20 @@ add_subdirectory(LunarLog)
 target_link_libraries(YourTarget PRIVATE LunarLog)
 ```
 
+**vcpkg** *(pending official registry acceptance)*:
+
+```bash
+vcpkg install lunarlog --overlay-ports=./ports
+```
+
+Once in the official registry: `vcpkg install lunarlog`
+
+**Conan** *(pending ConanCenter acceptance)*:
+
+```bash
+conan install --requires="lunarlog/1.21.0"
+```
+
 Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/wiki/Getting-Started)
 
 ## Documentation

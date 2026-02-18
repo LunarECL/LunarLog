@@ -176,7 +176,8 @@ void TestUtils::cleanupLogFiles() {
         "fb_full_app.txt", "fb_full_errors.txt",
         "fb_imperative.txt", "fb_coexist_builder.txt", "fb_coexist_imperative.txt",
         "fb_locale.txt", "fb_multi_unnamed_a.txt", "fb_multi_unnamed_b.txt",
-        "fb_json_fmt.txt", "fb_ratelimit_imp.txt"
+        "fb_json_fmt.txt", "fb_named_json_fmt.txt", "fb_ratelimit_imp.txt",
+        "fb_sfinae.txt", "fb_sfinae_named.txt"
     };
 
     for (const auto &filename : filesToRemove) {

@@ -796,6 +796,46 @@ logger.info("request received");
 // scope context automatically removed
 ```
 
+## Source Location Macros
+
+Calling `logWithSourceLocation()` manually is verbose. The convenience macros in `<lunar_log/macros.hpp>` capture `__FILE__`, `__LINE__`, and `__func__` automatically:
+
+```cpp
+#include "lunar_log.hpp"
+#include <lunar_log/macros.hpp>
+
+minta::LunarLog logger(minta::LogLevel::TRACE);
+
+LUNAR_INFO(logger, "User {name} logged in", "name", "alice");
+LUNAR_WARN(logger, "Disk usage at {pct}%", "pct", 85);
+LUNAR_ERROR(logger, "Connection refused");
+```
+
+Each macro checks the logger's minimum level **before** evaluating arguments, so disabled levels have near-zero overhead.
+
+### Exception Variants
+
+Attach a caught `std::exception` with the `_EX` suffix:
+
+```cpp
+try {
+    riskyOperation();
+} catch (const std::exception& ex) {
+    LUNAR_ERROR_EX(logger, ex, "Operation failed for {id}", "id", "req-001");
+}
+```
+
+### Opting Out
+
+If the macro names conflict with your project, define `LUNAR_LOG_NO_MACROS` before including the header:
+
+```cpp
+#define LUNAR_LOG_NO_MACROS
+#include <lunar_log/macros.hpp>   // no macros defined
+```
+
+See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Source-Location-Macros) for the full macro reference (all 14 macros), design notes, and comparison with the manual API.
+
 ## Building & Testing
 
 ```bash

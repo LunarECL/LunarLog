@@ -56,7 +56,7 @@ jobs:
           for b in data.get('benchmarks', []):
               if b.get('run_type') != 'aggregate' or b.get('aggregate_name') != 'mean':
                   continue
-              name = b['name'].replace('_mean', '')
+              name = b['name'].rsplit('_mean', 1)[0]
               cpu  = b.get('cpu_time', 0)
               unit = b.get('time_unit', 'ns')
               ips  = b.get('items_per_second', 0)
@@ -70,7 +70,7 @@ jobs:
                   ips_str = f"{ips:.0f}/s"
               rows.append(f"| `{name}` | {cpu:.1f} {unit} | {ips_str} |")
 
-          date = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+          date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
           ctx  = data.get('context', {})
           cpus = ctx.get('num_cpus', '?')
           mhz  = ctx.get('mhz_per_cpu', '?')
@@ -78,7 +78,7 @@ jobs:
           table = "\n".join([
               "## CI Benchmark Results",
               "",
-              f"> Last updated: {date} · Ubuntu (GitHub Actions) · {cpus} vCPU @ {mhz} MHz · Release mode · Google Benchmark v1.9.1",
+              f"> Last updated: {date} · Ubuntu (GitHub Actions) · {cpus} vCPU @ {mhz} MHz · Release mode · Google Benchmark {ctx.get('library_version', '?')}",
               "",
               "| Benchmark | CPU Time | Throughput |",
               "|-----------|----------|------------|",

@@ -109,6 +109,7 @@ static void BM_LogInfo_FlushEvery1(benchmark::State& state) {
         logger.flush();
         benchmark::ClobberMemory();
     }
+    logger.flush();
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_LogInfo_FlushEvery1);

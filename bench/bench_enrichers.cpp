@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <chrono>
 #include <limits>
 #include "lunar_log.hpp"
 #include "null_sink.hpp"

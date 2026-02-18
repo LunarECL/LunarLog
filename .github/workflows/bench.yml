@@ -24,7 +24,7 @@ jobs:
         run: cmake --build build --target lunar_log_bench -j$(nproc)
 
       # TODO: Add baseline comparison via benchmark-action/github-action-benchmark
-      # Tracked in: https://github.com/LunarECL/LunarLog/issues/57
+      # This is planned as a follow-up enhancement (open a new issue after merge)
       - name: Run
         run: >
           ./build/bench/lunar_log_bench

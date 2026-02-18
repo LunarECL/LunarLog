@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <chrono>
 #include <cstdio>
 #include <limits>
 #include <string>
@@ -57,5 +58,10 @@ static void BM_E2E_Realistic(benchmark::State& state) {
     }
     std::remove(jsonPath.c_str());
     std::remove(errPath.c_str());
+    for (int i = 1; i <= 5; ++i) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), ".%03d", i);
+        std::remove((errPath + buf + ".log").c_str());
+    }
 }
 BENCHMARK(BM_E2E_Realistic);

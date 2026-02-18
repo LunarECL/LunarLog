@@ -7,14 +7,21 @@
 
 #ifdef _WIN32
 #include <process.h>
+#include <windows.h>
 #define BENCH_GETPID() _getpid()
+static std::string tempDir() {
+    char buf[MAX_PATH];
+    GetTempPathA(MAX_PATH, buf);
+    return std::string(buf);
+}
 #else
 #include <unistd.h>
 #define BENCH_GETPID() getpid()
+static std::string tempDir() { return "/tmp/"; }
 #endif
 
 static std::string benchPath(const std::string& suffix) {
-    return "/tmp/lunar_bench_" + std::to_string(BENCH_GETPID()) + "_" + suffix;
+    return tempDir() + "lunar_bench_" + std::to_string(BENCH_GETPID()) + "_" + suffix;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,5 +133,10 @@ static void BM_Sink_Rolling(benchmark::State& state) {
         state.SetItemsProcessed(state.iterations());
     }
     std::remove(path.c_str());
+    for (int i = 1; i <= 5; ++i) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), ".%03d", i);
+        std::remove((path + buf + ".log").c_str());
+    }
 }
 BENCHMARK(BM_Sink_Rolling);

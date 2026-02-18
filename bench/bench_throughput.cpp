@@ -68,20 +68,25 @@ BENCHMARK(BM_LogTrace_Disabled);
 // A single shared logger is used across all threads to measure real
 // contention on the internal queue and synchronisation primitives.
 // ---------------------------------------------------------------------------
-static void BM_LogInfo_MultiThread(benchmark::State& state) {
-    // Shared logger — single instance used by all threads to measure
-    // shared-logger contention (lock/queue pressure under concurrent writes).
-    // C++11 guarantees thread-safe initialisation of function-local statics.
-    static auto* logger = []() {
-        auto* l = new minta::LunarLog(minta::LogLevel::TRACE, false);
-        l->addCustomSink(minta::detail::make_unique<minta::NullSink>());
-        l->setRateLimit(std::numeric_limits<size_t>::max(),
-                        std::chrono::milliseconds(1000));
-        return l;
+// Shared logger — single instance used by all threads to measure
+// shared-logger contention (lock/queue pressure under concurrent writes).
+// C++11 guarantees thread-safe initialisation of function-local statics.
+// Using a static local object (not new) so the destructor runs at program exit.
+static minta::LunarLog& sharedLogger() {
+    static minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    static bool init = [&]() {
+        logger.addCustomSink(minta::detail::make_unique<minta::NullSink>());
+        logger.setRateLimit(std::numeric_limits<size_t>::max(),
+                            std::chrono::milliseconds(1000));
+        return true;
     }();
+    (void)init;
+    return logger;
+}
 
+static void BM_LogInfo_MultiThread(benchmark::State& state) {
     for (auto _ : state) {
-        logger->info("Hello {name}", "World");
+        sharedLogger().info("Hello {name}", "World");
         benchmark::ClobberMemory();
     }
     state.SetItemsProcessed(state.iterations());

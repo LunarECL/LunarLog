@@ -369,7 +369,7 @@ namespace detail {
                         value = renderThreadId(entry);
                         break;
                     case OutputTokenType::Exception:
-                        // No exception field in LogEntry currently — render empty
+                        value = renderException(entry);
                         break;
                 }
 
@@ -435,12 +435,33 @@ namespace detail {
             return result;
         }
 
-        // Note: ostringstream allocation per call. Acceptable for human-readable
-        // output; for high-throughput scenarios, use JSON/XML formatters instead.
         static std::string renderThreadId(const LogEntry& entry) {
             std::ostringstream oss;
             oss << entry.threadId;
             return oss.str();
+        }
+
+        static std::string renderException(const LogEntry& entry) {
+            if (entry.exceptionType.empty()) return std::string();
+            std::string result;
+            result += entry.exceptionType;
+            result += ": ";
+            result += entry.exceptionMessage;
+            if (!entry.exceptionChain.empty()) {
+                size_t pos = 0;
+                const std::string& chain = entry.exceptionChain;
+                while (pos < chain.size()) {
+                    size_t nl = chain.find('\n', pos);
+                    result += "\n  --- ";
+                    if (nl == std::string::npos) {
+                        result.append(chain, pos, chain.size() - pos);
+                        break;
+                    }
+                    result.append(chain, pos, nl - pos);
+                    pos = nl + 1;
+                }
+            }
+            return result;
         }
     };
 

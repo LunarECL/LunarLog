@@ -5,6 +5,7 @@
 #include "core/log_common.hpp"
 #include "core/filter_rule.hpp"
 #include "core/compact_filter.hpp"
+#include "core/exception_info.hpp"
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
@@ -264,6 +265,12 @@ namespace detail {
         }
 
         template<typename... Args>
+        void logWithSourceLocationAndException(LogLevel level, const char* file, int line, const char* function,
+                                               const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            logInternalWithException(level, file, line, function, ex, messageTemplate, args...);
+        }
+
+        template<typename... Args>
         void trace(const std::string &messageTemplate, const Args &... args) {
             log(LogLevel::TRACE, messageTemplate, args...);
         }
@@ -292,6 +299,51 @@ namespace detail {
         void fatal(const std::string &messageTemplate, const Args &... args) {
             log(LogLevel::FATAL, messageTemplate, args...);
         }
+
+        template<typename... Args>
+        void log(LogLevel level, const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            logInternalWithException(level, "", 0, "", ex, messageTemplate, args...);
+        }
+
+        void log(LogLevel level, const std::exception& ex) {
+            logInternalWithException(level, "", 0, "", ex, detail::safeWhat(ex));
+        }
+
+        template<typename... Args>
+        void trace(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::TRACE, ex, messageTemplate, args...);
+        }
+        void trace(const std::exception& ex) { log(LogLevel::TRACE, ex); }
+
+        template<typename... Args>
+        void debug(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::DEBUG, ex, messageTemplate, args...);
+        }
+        void debug(const std::exception& ex) { log(LogLevel::DEBUG, ex); }
+
+        template<typename... Args>
+        void info(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::INFO, ex, messageTemplate, args...);
+        }
+        void info(const std::exception& ex) { log(LogLevel::INFO, ex); }
+
+        template<typename... Args>
+        void warn(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::WARN, ex, messageTemplate, args...);
+        }
+        void warn(const std::exception& ex) { log(LogLevel::WARN, ex); }
+
+        template<typename... Args>
+        void error(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::ERROR, ex, messageTemplate, args...);
+        }
+        void error(const std::exception& ex) { log(LogLevel::ERROR, ex); }
+
+        template<typename... Args>
+        void fatal(const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            log(LogLevel::FATAL, ex, messageTemplate, args...);
+        }
+        void fatal(const std::exception& ex) { log(LogLevel::FATAL, ex); }
 
         /// @note The predicate is invoked on the consumer thread while holding an
         ///       internal mutex. It must be fast, non-blocking, and must NOT call
@@ -481,14 +533,30 @@ namespace detail {
             if (level < m_minLevel.load(std::memory_order_relaxed)) return;
             if (!rateLimitCheck()) return;
 
-            auto now = std::chrono::system_clock::now();
+            std::vector<std::string> values{toString(args)...};
+            detail::ExceptionInfo noException;
+            emitLogEntry(level, file, line, function, messageTemplate, values, noException);
+        }
+
+        template<typename... Args>
+        void logInternalWithException(LogLevel level, const char* file, int line, const char* function,
+                                      const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+            if (!m_isRunning.load(std::memory_order_acquire)) return;
+            if (level < m_minLevel.load(std::memory_order_relaxed)) return;
+            if (!rateLimitCheck()) return;
 
             std::vector<std::string> values{toString(args)...};
+            detail::ExceptionInfo exInfo = detail::extractExceptionInfo(ex);
+            emitLogEntry(level, file, line, function, messageTemplate, values, exInfo);
+        }
 
-            // Parse tags from message template
+        void emitLogEntry(LogLevel level, const char* file, int line, const char* function,
+                          const std::string &messageTemplate, std::vector<std::string>& values,
+                          detail::ExceptionInfo& exInfo) {
+            auto now = std::chrono::system_clock::now();
+
             auto tagResult = detail::parseTags(messageTemplate);
             std::vector<std::string> entryTags = std::move(tagResult.first);
-            // Use stripped template for formatting if tags were found
             const std::string& effectiveTemplate = entryTags.empty() ? messageTemplate : tagResult.second;
 
             uint32_t hash = detail::fnv1a(effectiveTemplate);
@@ -499,9 +567,6 @@ namespace detail {
                 if (m_templateCacheSize > 0) {
                     auto it = m_templateCache.find(effectiveTemplate);
                     if (it != m_templateCache.end()) {
-                        // Deep-copy the cached vector while holding the lock.
-                        // A shared_ptr<const vector> would eliminate this copy
-                        // if profiling shows cache-lock contention is measurable.
                         placeholders = it->second;
                         cacheHit = true;
                     }
@@ -511,11 +576,6 @@ namespace detail {
                 placeholders = extractPlaceholders(effectiveTemplate);
                 std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
-                    // Soft cap: concurrent threads may each pass the size
-                    // check before any inserts, so the map can temporarily
-                    // hold up to N-1 extra entries (N = thread count).
-                    // This is by design — avoiding a hard cap keeps the
-                    // critical section short.
                     if (m_templateCache.size() < m_templateCacheSize) {
                         m_templateCache[effectiveTemplate] = placeholders;
                     }
@@ -530,8 +590,6 @@ namespace detail {
 
             std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, placeholders, values);
             std::string message = formatMessage(effectiveTemplate, placeholders, values, localeCopy);
-            // Both representations are kept: arguments is simple name-value pairs
-            // for backward compat; properties is the richer form with operator context.
             auto argumentPairs = mapArgumentsToPlaceholders(placeholders, values);
             auto properties = mapProperties(placeholders, values);
 
@@ -553,39 +611,42 @@ namespace detail {
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.emplace(LogEntry(
-                /* level */         level,
-                /* message */       std::move(message),
-                /* timestamp */     now,
-                /* templateStr */   effectiveTemplate,
-                /* templateHash */  hash,
-                /* arguments */     std::move(argumentPairs),
-                /* file */          captureCtx ? file : "",
-                /* line */          captureCtx ? line : 0,
-                /* function */      captureCtx ? function : "",
-                /* customContext */ std::move(contextCopy),
-                /* properties */    std::move(properties),
-                /* tags */          std::move(entryTags),
-                /* locale */        std::move(localeCopy),
-                /* threadId */      std::this_thread::get_id()
+                /* level */          level,
+                /* message */        std::move(message),
+                /* timestamp */      now,
+                /* templateStr */    effectiveTemplate,
+                /* templateHash */   hash,
+                /* arguments */      std::move(argumentPairs),
+                /* file */           captureCtx ? file : "",
+                /* line */           captureCtx ? line : 0,
+                /* function */       captureCtx ? function : "",
+                /* customContext */   std::move(contextCopy),
+                /* properties */     std::move(properties),
+                /* tags */           std::move(entryTags),
+                /* locale */         std::move(localeCopy),
+                /* threadId */       std::this_thread::get_id(),
+                /* exceptionType */  std::move(exInfo.type),
+                /* exceptionMsg */   std::move(exInfo.message),
+                /* exceptionChain */ std::move(exInfo.chain)
             ));
 
             for (const auto& warning : warnings) {
                 uint32_t warnHash = detail::fnv1a(warning);
                 m_logQueue.emplace(LogEntry(
-                    /* level */         LogLevel::WARN,
-                    /* message */       warning,
-                    /* timestamp */     now,
-                    /* templateStr */   warning,
-                    /* templateHash */  warnHash,
-                    /* arguments */     {},
-                    /* file */          captureCtx ? file : "",
-                    /* line */          captureCtx ? line : 0,
-                    /* function */      captureCtx ? function : "",
-                    /* customContext */ {},
-                    /* properties */    {},
-                    /* tags */          {},
-                    /* locale */        "C",
-                    /* threadId */      std::this_thread::get_id()
+                    /* level */        LogLevel::WARN,
+                    /* message */      warning,
+                    /* timestamp */    now,
+                    /* templateStr */  warning,
+                    /* templateHash */ warnHash,
+                    /* arguments */    {},
+                    /* file */         captureCtx ? file : "",
+                    /* line */         captureCtx ? line : 0,
+                    /* function */     captureCtx ? function : "",
+                    /* customContext */{},
+                    /* properties */   {},
+                    /* tags */         {},
+                    /* locale */       "C",
+                    /* threadId */     std::this_thread::get_id()
                 ));
             }
 

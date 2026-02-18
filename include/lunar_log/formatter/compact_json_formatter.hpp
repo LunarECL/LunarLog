@@ -19,7 +19,7 @@ namespace minta {
     ///   @mt = message template
     ///   @m  = rendered message (optional, off by default)
     ///   @i  = template hash (included when template is present)
-    ///   @x  = exception info (reserved for future use)
+    ///   @x  = exception info (type: message, with nested chain if present)
     ///
     /// Properties and context are flattened to top level.  User property names
     /// starting with @ are escaped to @@ to prevent collision with system fields.
@@ -77,7 +77,22 @@ namespace minta {
                 json += '"';
             }
 
-            // Flatten properties to top level
+            if (!entry.exceptionType.empty()) {
+                // Build the full @x string first, then escape once to avoid
+                // fragmented escaping that can produce inconsistent output.
+                std::string xValue;
+                xValue += entry.exceptionType;
+                xValue += ": ";
+                xValue += entry.exceptionMessage;
+                if (!entry.exceptionChain.empty()) {
+                    xValue += '\n';
+                    xValue += entry.exceptionChain;
+                }
+                json += R"(,"@x":")";
+                json += detail::json::escapeJsonString(xValue);
+                json += '"';
+            }
+
             for (const auto &prop : entry.properties) {
                 json += ',';
                 json += '"';

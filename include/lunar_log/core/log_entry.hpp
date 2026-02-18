@@ -17,32 +17,28 @@ namespace minta {
         std::vector<std::string> transforms;
     };
 
-    // No default constructor — all fields must be provided at creation time.
     struct LogEntry {
-        LogLevel level;
+        LogLevel level = LogLevel::INFO;
         std::string message;
         std::chrono::system_clock::time_point timestamp;
         std::string templateStr;
-        uint32_t templateHash;
-        // Maintained for backward compatibility with custom formatters.
-        // Prefer `properties` for new code — it carries operator context (@/$).
+        uint32_t templateHash = 0;
         std::vector<std::pair<std::string, std::string>> arguments;
         std::string file;
-        int line;
+        int line = 0;
         std::string function;
         std::map<std::string, std::string> customContext;
         std::vector<PlaceholderProperty> properties;
-        /// Tags parsed from [bracketed] prefixes in the message template.
         std::vector<std::string> tags;
-        /// The locale used when formatting this entry's message.
-        /// Formatters with a different per-sink locale can re-render
-        /// via detail::reformatMessage using the raw values in properties.
-        std::string locale;
-        /// The ID of the thread that created this log entry.
-        /// Captured at construction time so that async formatters
-        /// render the originating thread, not the consumer thread.
+        std::string locale = "C";
         std::thread::id threadId;
+        std::string exceptionType;
+        std::string exceptionMessage;
+        std::string exceptionChain;
 
+        LogEntry() = default;
+
+        /// Backward-compatible positional constructor for custom formatters.
         LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
                  std::string templateStr_, uint32_t templateHash_,
                  std::vector<std::pair<std::string, std::string>> arguments_,
@@ -51,7 +47,10 @@ namespace minta {
                  std::vector<PlaceholderProperty> properties_,
                  std::vector<std::string> tags_ = {},
                  std::string locale_ = "C",
-                 std::thread::id threadId_ = std::thread::id())
+                 std::thread::id threadId_ = std::thread::id(),
+                 std::string exceptionType_ = "",
+                 std::string exceptionMessage_ = "",
+                 std::string exceptionChain_ = "")
             : level(level_), message(std::move(message_)), timestamp(timestamp_),
               templateStr(std::move(templateStr_)), templateHash(templateHash_),
               arguments(std::move(arguments_)),
@@ -59,7 +58,10 @@ namespace minta {
               customContext(std::move(customContext_)), properties(std::move(properties_)),
               tags(std::move(tags_)),
               locale(std::move(locale_)),
-              threadId(threadId_) {}
+              threadId(threadId_),
+              exceptionType(std::move(exceptionType_)),
+              exceptionMessage(std::move(exceptionMessage_)),
+              exceptionChain(std::move(exceptionChain_)) {}
     };
 } // namespace minta
 

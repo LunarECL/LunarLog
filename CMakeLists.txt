@@ -33,6 +33,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             TagRouting
             PipeTransforms
             OutputTemplate
+            ExceptionAttachment
     )
 
     set(EXAMPLE_SOURCES
@@ -52,6 +53,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/tag_routing.cpp
             examples/pipe_transforms.cpp
             examples/output_template.cpp
+            examples/exception_attachment.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -119,6 +121,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_indexed_parameters.cpp
             test/tests/test_alignment_padding.cpp
             test/tests/test_compact_json_formatter.cpp
+            test/tests/test_exception_attachment.cpp
             test/tests/utils/test_utils.cpp
     )
 

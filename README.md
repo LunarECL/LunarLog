@@ -93,7 +93,7 @@ Once in the official registry: `vcpkg install lunarlog`
 **Conan** *(pending ConanCenter acceptance)*:
 
 ```bash
-conan install --requires="lunarlog/1.21.0"
+conan install --requires="lunarlog/1.22.0"
 ```
 
 Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/wiki/Getting-Started)

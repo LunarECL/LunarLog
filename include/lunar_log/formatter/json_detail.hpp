@@ -33,7 +33,7 @@ namespace json {
     /// platforms.
     inline double strtodLocaleIndependent(const char* str, char** endptr) {
 #if defined(_MSC_VER)
-        static _locale_t c_locale = _create_locale(_LC_ALL, "C");
+        static _locale_t c_locale = _create_locale(LC_ALL, "C");
         return _strtod_l(str, endptr, c_locale);
 #elif defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
         static locale_t c_locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);

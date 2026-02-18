@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
-project(LunarLog VERSION 1.0.0 LANGUAGES CXX)
+project(LunarLog VERSION 1.21.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(LUNARLOG_CXX_STANDARD "11" CACHE STRING "C++ standard to use (11, 14, or 17)")
 set_property(CACHE LUNARLOG_CXX_STANDARD PROPERTY STRINGS 11 14 17)
@@ -11,7 +13,8 @@ find_package(Threads REQUIRED)
 
 add_library(LunarLog INTERFACE)
 target_include_directories(LunarLog INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_compile_features(LunarLog INTERFACE cxx_std_11)
 
@@ -167,3 +170,41 @@ option(LUNARLOG_BUILD_BENCHMARKS "Build benchmark suite" OFF)
 if(LUNARLOG_BUILD_BENCHMARKS)
     add_subdirectory(bench)
 endif()
+
+# ── Install & CMake package config ──────────────────────────────────────────
+include(CMakePackageConfigHelpers)
+
+install(
+    DIRECTORY include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(
+    TARGETS LunarLog
+    EXPORT LunarLogTargets
+)
+
+install(
+    EXPORT LunarLogTargets
+    FILE LunarLogTargets.cmake
+    NAMESPACE LunarLog::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LunarLog
+)
+
+configure_package_config_file(
+    cmake/LunarLogConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/LunarLogConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LunarLog
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/LunarLogConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/LunarLogConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/LunarLogConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LunarLog
+)

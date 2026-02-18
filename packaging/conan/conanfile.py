@@ -18,6 +18,7 @@ class LunarLogConan(ConanFile):
         "message-templates",
     )
     package_type = "header-library"
+    implements = ["auto_header_only"]
     settings = "os", "compiler", "build_type", "arch"
     no_copy_source = True
 

@@ -6,8 +6,9 @@ include(GNUInstallDirs)
 set(LUNARLOG_CXX_STANDARD "11" CACHE STRING "C++ standard to use (11, 14, or 17)")
 set_property(CACHE LUNARLOG_CXX_STANDARD PROPERTY STRINGS 11 14 17)
 
-option(LUNARLOG_BUILD_TESTS "Build LunarLog tests" ON)
-option(LUNARLOG_BUILD_EXAMPLES "Build LunarLog examples" ON)
+string(COMPARE EQUAL "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}" LUNARLOG_IS_TOP_LEVEL)
+option(LUNARLOG_BUILD_TESTS    "Build LunarLog tests"    ${LUNARLOG_IS_TOP_LEVEL})
+option(LUNARLOG_BUILD_EXAMPLES "Build LunarLog examples" ${LUNARLOG_IS_TOP_LEVEL})
 
 find_package(Threads REQUIRED)
 

@@ -16,7 +16,7 @@ Header-only C++ logging library with pluggable formatters, sinks, and transports
 - [Message Templates](https://messagetemplates.org/) with named placeholders
 - **`@` and `$` operators** — `{@val}` for destructuring, `{$val}` for stringify
 - **Per-sink output templates** for human-readable formatting via `SinkProxy::outputTemplate()`
-- Built-in formatters: human-readable, JSON, XML
+- Built-in formatters: human-readable, JSON, XML, **Compact JSON** (JSONL for pipelines)
 - Multiple sinks (console, file) with independent formatters
 - **Structured template output** — JSON/XML include raw template + hash for log aggregation
 - **Template caching** — parsed templates are cached for repeated use
@@ -382,6 +382,29 @@ logger.addSink<minta::RollingFileSink>(
 ```
 
 See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) for full documentation.
+
+## Compact JSON Formatter
+
+JSONL output optimized for log collection pipelines (ELK, Datadog, Loki). Short `@`-prefixed keys, flattened properties, single-line output.
+
+```cpp
+logger.addSink<minta::FileSink, minta::CompactJsonFormatter>("logs/app.jsonl");
+```
+
+**Output:**
+```json
+{"@t":"2026-02-18T00:30:05.123Z","@l":"WRN","@mt":"Connection to {host} failed","host":"db-01"}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `@t` | Timestamp (ISO 8601 UTC) |
+| `@l` | Level (`TRC`/`DBG`/`INF`/`WRN`/`ERR`/`FTL`) — omitted for INFO |
+| `@mt` | Message template |
+| `@m` | Rendered message (optional, off by default) |
+| `@i` | Template hash |
+
+Properties are flattened to top level. User keys starting with `@` are escaped to `@@`. See the [wiki](https://github.com/LunarECL/LunarLog/wiki/Compact-JSON-Formatter) for full documentation.
 
 ## Compact Filters
 

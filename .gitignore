@@ -50,3 +50,6 @@ culture_sci_double_test.txt
 test_detail.json
 test_concurrent_tpl.txt
 test_detail.xml
+build_11/
+build_11_fresh/
+cjson_*.txt

@@ -446,9 +446,7 @@ namespace detail {
                 newRules->push_back(std::move(rules[i]));
             }
             m_globalFilterRules = std::move(newRules);
-            if (!m_globalFilterRules->empty()) {
-                m_hasGlobalFilters.store(true, std::memory_order_release);
-            }
+            m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void setSinkLevel(size_t sinkIndex, LogLevel level) {

@@ -23,12 +23,15 @@ class LunarLogConan(ConanFile):
     no_copy_source = True
 
     def layout(self):
+        """Set the source and build folder layout for CMake."""
         cmake_layout(self, src_folder="src")
 
     def source(self):
+        """Download the source archive for the requested version."""
         get(self, **self.conan_data["sources"][self.version], strip_root=True)
 
     def package(self):
+        """Copy headers and license into the package folder."""
         copy(
             self,
             "LICENSE",
@@ -43,6 +46,7 @@ class LunarLogConan(ConanFile):
         )
 
     def package_info(self):
+        """Declare CMake target name and suppress lib/bin dirs (header-only)."""
         self.cpp_info.bindirs = []
         self.cpp_info.libdirs = []
         self.cpp_info.set_property("cmake_file_name", "LunarLog")

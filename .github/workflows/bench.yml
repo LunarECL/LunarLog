@@ -10,6 +10,9 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -32,9 +35,89 @@ jobs:
           --benchmark_out=bench_results.json
           --benchmark_repetitions=5
           --benchmark_report_aggregates_only=true
+          --benchmark_min_time=0.1s
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
           path: bench_results.json
+
+      - name: Publish results to Wiki
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, subprocess, datetime, os
+
+          with open('bench_results.json') as f:
+              data = json.load(f)
+
+          rows = []
+          for b in data.get('benchmarks', []):
+              if b.get('run_type') != 'aggregate' or b.get('aggregate_name') != 'mean':
+                  continue
+              name = b['name'].rsplit('_mean', 1)[0]
+              cpu  = b.get('cpu_time', 0)
+              unit = b.get('time_unit', 'ns')
+              ips  = b.get('items_per_second', 0)
+              if ips >= 1e9:
+                  ips_str = f"{ips/1e9:.1f}B/s"
+              elif ips >= 1e6:
+                  ips_str = f"{ips/1e6:.1f}M/s"
+              elif ips >= 1e3:
+                  ips_str = f"{ips/1e3:.1f}K/s"
+              else:
+                  ips_str = f"{ips:.0f}/s"
+              rows.append(f"| `{name}` | {cpu:.1f} {unit} | {ips_str} |")
+
+          date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+          ctx  = data.get('context', {})
+          cpus = ctx.get('num_cpus', '?')
+          mhz  = ctx.get('mhz_per_cpu', '?')
+
+          table = "\n".join([
+              "## CI Benchmark Results",
+              "",
+              f"> Last updated: {date} · Ubuntu (GitHub Actions) · {cpus} vCPU @ {mhz} MHz · Release mode · Google Benchmark {ctx.get('library_version', '?')}",
+              "",
+              "| Benchmark | CPU Time | Throughput |",
+              "|-----------|----------|------------|",
+          ] + rows + [
+              "",
+              "*Results vary by hardware. Run locally for your platform.*",
+          ])
+
+          wiki_path = 'Benchmark-Suite.md'
+          subprocess.run(['git', 'clone',
+              f"https://x-access-token:{os.environ['GITHUB_TOKEN']}@github.com/LunarECL/LunarLog.wiki.git",
+              '/tmp/wiki'], check=True)
+
+          wiki_file = f'/tmp/wiki/{wiki_path}'
+          try:
+              with open(wiki_file) as f:
+                  content = f.read()
+          except FileNotFoundError:
+              content = ''
+
+          marker = '## CI Benchmark Results'
+          if marker in content:
+              content = content[:content.index(marker)] + table
+          else:
+              content = content.rstrip() + '\n\n' + table + '\n'
+
+          with open(wiki_file, 'w') as f:
+              f.write(content)
+
+          subprocess.run(['git', '-C', '/tmp/wiki', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', '-C', '/tmp/wiki', 'config', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', '-C', '/tmp/wiki', 'add', wiki_path], check=True)
+          status = subprocess.run(['git', '-C', '/tmp/wiki', 'diff', '--cached', '--quiet'])
+          if status.returncode != 0:
+              subprocess.run(['git', '-C', '/tmp/wiki', 'commit', '-m', f'ci: update benchmark results ({date})'], check=True)
+              subprocess.run(['git', '-C', '/tmp/wiki', 'push'], check=True)
+              print("Wiki updated successfully")
+          else:
+              print("No changes to publish — results unchanged")
+          PYEOF

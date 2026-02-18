@@ -92,3 +92,66 @@ static void BM_LogInfo_MultiThread(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_LogInfo_MultiThread)->Threads(1)->Threads(2)->Threads(4)->Threads(8);
+
+// ---------------------------------------------------------------------------
+// BM_LogInfo_FlushEvery1
+// Flush after every single message — measures worst-case end-to-end latency.
+// Includes: enqueue + consumer processing + sink write + sync round-trip.
+// ---------------------------------------------------------------------------
+static void BM_LogInfo_FlushEvery1(benchmark::State& state) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addCustomSink(minta::detail::make_unique<minta::NullSink>());
+    logger.setRateLimit(std::numeric_limits<size_t>::max(),
+                        std::chrono::milliseconds(1000));
+
+    for (auto _ : state) {
+        logger.info("Flush-every-1 {n}", 1);
+        logger.flush();
+        benchmark::ClobberMemory();
+    }
+    logger.flush();
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_LogInfo_FlushEvery1);
+
+// ---------------------------------------------------------------------------
+// BM_LogInfo_FlushEvery100
+// Flush every 100 messages — balanced latency/throughput trade-off.
+// ---------------------------------------------------------------------------
+static void BM_LogInfo_FlushEvery100(benchmark::State& state) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addCustomSink(minta::detail::make_unique<minta::NullSink>());
+    logger.setRateLimit(std::numeric_limits<size_t>::max(),
+                        std::chrono::milliseconds(1000));
+
+    size_t count = 0;
+    for (auto _ : state) {
+        logger.info("Flush-every-100 {n}", count);
+        if (++count % 100 == 0) logger.flush();
+        benchmark::ClobberMemory();
+    }
+    logger.flush();
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_LogInfo_FlushEvery100);
+
+// ---------------------------------------------------------------------------
+// BM_LogInfo_FlushEvery1000
+// Flush every 1000 messages — high-throughput batch mode.
+// ---------------------------------------------------------------------------
+static void BM_LogInfo_FlushEvery1000(benchmark::State& state) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addCustomSink(minta::detail::make_unique<minta::NullSink>());
+    logger.setRateLimit(std::numeric_limits<size_t>::max(),
+                        std::chrono::milliseconds(1000));
+
+    size_t count = 0;
+    for (auto _ : state) {
+        logger.info("Flush-every-1000 {n}", count);
+        if (++count % 1000 == 0) logger.flush();
+        benchmark::ClobberMemory();
+    }
+    logger.flush();
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_LogInfo_FlushEvery1000);

@@ -3456,6 +3456,1138 @@ namespace minta {
 } // namespace minta
 
 
+// --- lunar_log/sink/async_sink.hpp ---
+
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <vector>
+#include <deque>
+#include <memory>
+#include <cassert>
+
+namespace minta {
+
+    /// Policy for handling queue overflow when the bounded queue is full.
+    enum class OverflowPolicy {
+        Block,       ///< Block the producer until space is available (backpressure)
+        DropOldest,  ///< Drop the oldest item in the queue to make room
+        DropNewest   ///< Drop the new item (default)
+    };
+
+    /// Configuration options for AsyncSink.
+    struct AsyncOptions {
+        size_t queueSize;            ///< Maximum number of entries in the queue
+        OverflowPolicy overflowPolicy; ///< What to do when the queue is full
+        size_t flushIntervalMs;      ///< Periodic flush interval in ms (0 = disabled)
+
+        AsyncOptions()
+            : queueSize(8192)
+            , overflowPolicy(OverflowPolicy::DropNewest)
+            , flushIntervalMs(0) {}
+    };
+
+namespace detail {
+
+    /// Thread-safe bounded queue for LogEntry objects.
+    /// Uses mutex + condition_variable + deque for C++11 compatibility.
+    class BoundedQueue {
+    public:
+        explicit BoundedQueue(size_t capacity)
+            : m_capacity(capacity > 0 ? capacity : 1)
+            , m_stopped(false) {}
+
+        /// Push an entry into the queue with the specified overflow policy.
+        /// Returns true if the entry was enqueued, false if dropped.
+        bool push(LogEntry&& entry, OverflowPolicy policy) {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            if (m_stopped) return false;
+
+            if (m_queue.size() >= m_capacity) {
+                switch (policy) {
+                    case OverflowPolicy::Block:
+                        m_notFull.wait(lock, [this] {
+                            return m_queue.size() < m_capacity || m_stopped;
+                        });
+                        if (m_stopped) return false;
+                        break;
+                    case OverflowPolicy::DropOldest:
+                        m_queue.pop_front();
+                        break;
+                    case OverflowPolicy::DropNewest:
+                        return false;
+                }
+            }
+
+            m_queue.push_back(std::move(entry));
+            m_notEmpty.notify_one();
+            return true;
+        }
+
+        /// Drain all available entries into the output vector.
+        /// Returns number of entries drained.
+        size_t drain(std::vector<LogEntry>& out) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            size_t count = m_queue.size();
+            out.reserve(out.size() + count);
+            for (size_t i = 0; i < count; ++i) {
+                out.push_back(std::move(m_queue.front()));
+                m_queue.pop_front();
+            }
+            if (count > 0) {
+                m_notFull.notify_all();
+            }
+            return count;
+        }
+
+        /// Wait until at least one entry is available or the queue is stopped.
+        /// Returns false if stopped with empty queue.
+        bool waitForData() {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_notEmpty.wait(lock, [this] {
+                return !m_queue.empty() || m_stopped;
+            });
+            return !m_queue.empty();
+        }
+
+        /// Wait until at least one entry is available or timeout expires.
+        /// Returns false if timed out or stopped with empty queue.
+        bool waitForData(std::chrono::milliseconds timeout) {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_notEmpty.wait_for(lock, timeout, [this] {
+                return !m_queue.empty() || m_stopped;
+            });
+            return !m_queue.empty();
+        }
+
+        /// Wake all waiters (used for shutdown).
+        void wake() {
+            m_notEmpty.notify_all();
+            m_notFull.notify_all();
+        }
+
+        /// Stop the queue. All blocking operations return immediately.
+        void stop() {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_stopped = true;
+            m_notEmpty.notify_all();
+            m_notFull.notify_all();
+        }
+
+        size_t size() const {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            return m_queue.size();
+        }
+
+        bool empty() const {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            return m_queue.empty();
+        }
+
+    private:
+        mutable std::mutex m_mutex;
+        std::condition_variable m_notEmpty;
+        std::condition_variable m_notFull;
+        std::deque<LogEntry> m_queue;
+        size_t m_capacity;
+        bool m_stopped;
+    };
+
+} // namespace detail
+
+    /// Asynchronous sink decorator.
+    ///
+    /// Wraps any ISink-derived sink type with a dedicated queue and consumer
+    /// thread. Log entries are enqueued by the producer and written by the
+    /// consumer thread, decoupling slow sinks (file, network) from fast
+    /// producers.
+    ///
+    /// The decorator pattern means existing sinks work unchanged:
+    /// @code
+    ///   // Wrap a FileSink in an async decorator
+    ///   logger.addSink<AsyncSink<FileSink>>("app.log");
+    ///
+    ///   // With options
+    ///   AsyncOptions opts;
+    ///   opts.queueSize = 4096;
+    ///   opts.overflowPolicy = OverflowPolicy::Block;
+    ///   logger.addSink<AsyncSink<FileSink>>(opts, "app.log");
+    /// @endcode
+    ///
+    /// Order guarantee: entries from a single producer are delivered in FIFO
+    /// order. Multiple producers have no cross-thread ordering guarantee.
+    template<typename SinkType>
+    class AsyncSink : public ISink {
+    public:
+        /// Construct an AsyncSink with default options.
+        /// All arguments are forwarded to the SinkType constructor.
+        template<typename... Args>
+        explicit AsyncSink(Args&&... args)
+            : m_innerSink(detail::make_unique<SinkType>(std::forward<Args>(args)...))
+            , m_queue(AsyncOptions().queueSize)
+            , m_running(true)
+            , m_opts()
+        {
+            startConsumer();
+        }
+
+        /// Construct an AsyncSink with custom options.
+        /// Remaining arguments are forwarded to the SinkType constructor.
+        template<typename... Args>
+        explicit AsyncSink(AsyncOptions opts, Args&&... args)
+            : m_innerSink(detail::make_unique<SinkType>(std::forward<Args>(args)...))
+            , m_queue(opts.queueSize)
+            , m_running(true)
+            , m_opts(opts)
+        {
+            startConsumer();
+        }
+
+        ~AsyncSink() noexcept {
+            // Signal consumer to stop
+            m_running.store(false, std::memory_order_release);
+            m_queue.stop();
+
+            // Wait for consumer thread to finish
+            if (m_thread.joinable()) {
+                m_thread.join();
+            }
+
+            // Flush any remaining entries in the queue
+            std::vector<LogEntry> remaining;
+            m_queue.drain(remaining);
+            for (size_t i = 0; i < remaining.size(); ++i) {
+                try {
+                    m_innerSink->write(remaining[i]);
+                } catch (...) {}
+            }
+        }
+
+        /// Enqueue an entry for asynchronous writing.
+        void write(const LogEntry& entry) override {
+            // LogEntry is move-only, but ISink::write takes const ref.
+            // We must create a copy of the entry to enqueue it.
+            // This is done by constructing a new LogEntry with the same fields.
+            LogEntry copy(
+                entry.level,
+                std::string(entry.message),
+                entry.timestamp,
+                std::string(entry.templateStr),
+                entry.templateHash,
+                std::vector<std::pair<std::string, std::string>>(entry.arguments),
+                std::string(entry.file),
+                entry.line,
+                std::string(entry.function),
+                std::map<std::string, std::string>(entry.customContext),
+                std::vector<PlaceholderProperty>(entry.properties),
+                std::vector<std::string>(entry.tags),
+                std::string(entry.locale),
+                entry.threadId
+            );
+            if (entry.exception) {
+                std::unique_ptr<detail::ExceptionInfo> exCopy(new detail::ExceptionInfo());
+                exCopy->type = entry.exception->type;
+                exCopy->message = entry.exception->message;
+                exCopy->chain = entry.exception->chain;
+                copy.exception = std::move(exCopy);
+            }
+            m_queue.push(std::move(copy), m_opts.overflowPolicy);
+        }
+
+        /// Flush: drain the queue synchronously and wait for the inner sink
+        /// to process all entries.
+        void flush() {
+            // Signal the consumer to wake up and process
+            m_queue.wake();
+
+            // Spin-wait until queue is empty
+            // This is a best-effort synchronization point
+            while (!m_queue.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // Give consumer thread a moment to finish writing the last batch
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        /// Access the inner sink (for testing/inspection).
+        SinkType* innerSink() { return m_innerSink.get(); }
+        const SinkType* innerSink() const { return m_innerSink.get(); }
+
+    private:
+        void startConsumer() {
+            m_thread = std::thread(&AsyncSink::consumerLoop, this);
+        }
+
+        void consumerLoop() {
+            std::vector<LogEntry> batch;
+            while (m_running.load(std::memory_order_acquire)) {
+                batch.clear();
+
+                if (m_opts.flushIntervalMs > 0) {
+                    m_queue.waitForData(std::chrono::milliseconds(m_opts.flushIntervalMs));
+                } else {
+                    m_queue.waitForData();
+                }
+
+                m_queue.drain(batch);
+                for (size_t i = 0; i < batch.size(); ++i) {
+                    try {
+                        m_innerSink->write(batch[i]);
+                    } catch (...) {}
+                }
+            }
+
+            // Final drain after stop signal
+            batch.clear();
+            m_queue.drain(batch);
+            for (size_t i = 0; i < batch.size(); ++i) {
+                try {
+                    m_innerSink->write(batch[i]);
+                } catch (...) {}
+            }
+        }
+
+        std::unique_ptr<SinkType> m_innerSink;
+        detail::BoundedQueue m_queue;
+        std::thread m_thread;
+        std::atomic<bool> m_running;
+        AsyncOptions m_opts;
+    };
+
+} // namespace minta
+
+
+// --- lunar_log/sink/batched_sink.hpp ---
+
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <vector>
+#include <memory>
+#include <stdexcept>
+#include <cstdio>
+
+namespace minta {
+
+    /// Configuration options for BatchedSink.
+    ///
+    /// Controls batch size, flush interval, queue limits, and retry behavior.
+    /// All setters return `*this` for fluent chaining:
+    /// @code
+    ///   BatchOptions opts;
+    ///   opts.setBatchSize(200).setFlushIntervalMs(3000).setMaxRetries(5);
+    /// @endcode
+    struct BatchOptions {
+        size_t batchSize_;         ///< Flush when buffer reaches this size
+        size_t flushIntervalMs_;   ///< Periodic flush interval in ms
+        size_t maxQueueSize_;      ///< Maximum buffered entries before dropping
+        size_t maxRetries_;        ///< Retry count on writeBatch failure
+        size_t retryDelayMs_;      ///< Delay between retries in ms
+
+        BatchOptions()
+            : batchSize_(100)
+            , flushIntervalMs_(5000)
+            , maxQueueSize_(10000)
+            , maxRetries_(3)
+            , retryDelayMs_(1000) {}
+
+        BatchOptions& setBatchSize(size_t n) { batchSize_ = n; return *this; }
+        BatchOptions& setFlushIntervalMs(size_t ms) { flushIntervalMs_ = ms; return *this; }
+        BatchOptions& setMaxQueueSize(size_t n) { maxQueueSize_ = n; return *this; }
+        BatchOptions& setMaxRetries(size_t n) { maxRetries_ = n; return *this; }
+        BatchOptions& setRetryDelayMs(size_t ms) { retryDelayMs_ = ms; return *this; }
+    };
+
+    /// Abstract base class for batched sink implementations.
+    ///
+    /// Buffers log entries and delivers them in batches via the protected
+    /// writeBatch() method. A background timer thread ensures entries are
+    /// flushed even when the batch size threshold is not reached.
+    ///
+    /// Subclasses must implement writeBatch() and may optionally override
+    /// onFlush() and onBatchError().
+    ///
+    /// @code
+    ///   class MyHttpSink : public BatchedSink {
+    ///   public:
+    ///       MyHttpSink() : BatchedSink(BatchOptions().setBatchSize(50)) {}
+    ///   protected:
+    ///       void writeBatch(const std::vector<const LogEntry*>& batch) override {
+    ///           // Send batch over HTTP
+    ///       }
+    ///   };
+    /// @endcode
+    class BatchedSink : public ISink {
+    public:
+        explicit BatchedSink(BatchOptions opts = BatchOptions())
+            : m_opts(opts)
+            , m_running(true)
+        {
+            m_buffer.reserve(m_opts.batchSize_);
+            startTimer();
+        }
+
+        ~BatchedSink() noexcept {
+            stopAndFlush();
+        }
+
+        /// Subclasses MUST call stopAndFlush() from their destructor to flush
+        /// remaining entries while writeBatch() is still resolvable.
+        void stopAndFlush() noexcept {
+            bool expected = true;
+            if (!m_running.compare_exchange_strong(expected, false,
+                    std::memory_order_acq_rel)) {
+                return; // already shut down
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_timerMutex);
+                m_timerCV.notify_all();
+            }
+
+            if (m_timerThread.joinable()) {
+                m_timerThread.join();
+            }
+
+            try {
+                flushBuffer();
+            } catch (...) {}
+        }
+
+        /// Buffer an entry. Triggers a flush if batchSize is reached.
+        void write(const LogEntry& entry) final {
+            std::lock_guard<std::mutex> lock(m_bufferMutex);
+
+            // Drop if buffer exceeds max queue size
+            if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
+                return;
+            }
+
+            // Copy the entry into the buffer (LogEntry is move-only,
+            // but write() receives a const ref)
+            LogEntry copy(
+                entry.level,
+                std::string(entry.message),
+                entry.timestamp,
+                std::string(entry.templateStr),
+                entry.templateHash,
+                std::vector<std::pair<std::string, std::string>>(entry.arguments),
+                std::string(entry.file),
+                entry.line,
+                std::string(entry.function),
+                std::map<std::string, std::string>(entry.customContext),
+                std::vector<PlaceholderProperty>(entry.properties),
+                std::vector<std::string>(entry.tags),
+                std::string(entry.locale),
+                entry.threadId
+            );
+            if (entry.exception) {
+                std::unique_ptr<detail::ExceptionInfo> exCopy(new detail::ExceptionInfo());
+                exCopy->type = entry.exception->type;
+                exCopy->message = entry.exception->message;
+                exCopy->chain = entry.exception->chain;
+                copy.exception = std::move(exCopy);
+            }
+            m_buffer.push_back(std::move(copy));
+
+            if (m_buffer.size() >= m_opts.batchSize_) {
+                flushBufferLocked();
+            }
+        }
+
+        /// Force flush all buffered entries.
+        void flush() {
+            std::lock_guard<std::mutex> lock(m_bufferMutex);
+            flushBufferLocked();
+        }
+
+        /// Access options (for testing).
+        const BatchOptions& options() const { return m_opts; }
+
+    protected:
+        /// Subclasses implement this to process a batch of entries.
+        /// The pointers are valid only for the duration of this call.
+        virtual void writeBatch(const std::vector<const LogEntry*>& batch) = 0;
+
+        /// Called after a successful flush. Override for post-flush logic.
+        virtual void onFlush() {}
+
+        /// Called when writeBatch throws an exception.
+        /// @param e The caught exception
+        /// @param retryCount Current retry attempt (0-based)
+        virtual void onBatchError(const std::exception& e, size_t retryCount) {
+            (void)e;
+            (void)retryCount;
+        }
+
+    private:
+        void startTimer() {
+            if (m_opts.flushIntervalMs_ == 0) return;
+            m_timerThread = std::thread(&BatchedSink::timerLoop, this);
+        }
+
+        void timerLoop() {
+            while (m_running.load(std::memory_order_acquire)) {
+                std::unique_lock<std::mutex> lock(m_timerMutex);
+                m_timerCV.wait_for(lock,
+                    std::chrono::milliseconds(m_opts.flushIntervalMs_),
+                    [this] { return !m_running.load(std::memory_order_acquire); });
+
+                if (!m_running.load(std::memory_order_acquire)) break;
+
+                try {
+                    std::lock_guard<std::mutex> bufLock(m_bufferMutex);
+                    flushBufferLocked();
+                } catch (...) {}
+            }
+        }
+
+        /// Flush without acquiring m_bufferMutex (caller must hold it).
+        void flushBufferLocked() {
+            if (m_buffer.empty()) return;
+
+            // Build pointer vector for writeBatch
+            std::vector<const LogEntry*> ptrs;
+            ptrs.reserve(m_buffer.size());
+            for (size_t i = 0; i < m_buffer.size(); ++i) {
+                ptrs.push_back(&m_buffer[i]);
+            }
+
+            // Try with retries
+            bool success = false;
+            for (size_t attempt = 0; attempt <= m_opts.maxRetries_; ++attempt) {
+                try {
+                    writeBatch(ptrs);
+                    success = true;
+                    break;
+                } catch (const std::exception& e) {
+                    onBatchError(e, attempt);
+                    if (attempt < m_opts.maxRetries_) {
+                        // Release buffer lock during sleep to avoid blocking writes
+                        // But we can't release it here since we need the buffer intact.
+                        // Instead, just sleep briefly.
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(m_opts.retryDelayMs_));
+                    }
+                } catch (...) {
+                    // Non-std::exception — no retry
+                    break;
+                }
+            }
+
+            // Clear buffer regardless of success (avoid infinite retry loops)
+            m_buffer.clear();
+
+            if (success) {
+                try { onFlush(); } catch (...) {}
+            }
+        }
+
+        /// Non-locked flush (acquires m_bufferMutex).
+        void flushBuffer() {
+            std::lock_guard<std::mutex> lock(m_bufferMutex);
+            flushBufferLocked();
+        }
+
+        BatchOptions m_opts;
+        std::vector<LogEntry> m_buffer;
+        std::mutex m_bufferMutex;
+        std::thread m_timerThread;
+        std::mutex m_timerMutex;
+        std::condition_variable m_timerCV;
+        std::atomic<bool> m_running;
+    };
+
+} // namespace minta
+
+
+// --- lunar_log/sink/syslog_sink.hpp ---
+
+#ifdef _WIN32
+#error "SyslogSink is not available on Windows. Use FileSink or a custom EventLog sink instead."
+#endif
+
+#ifndef _WIN32
+
+#include <syslog.h>
+#include <string>
+
+namespace minta {
+
+    /// Configuration options for SyslogSink.
+    struct SyslogOptions {
+        int facility_;      ///< syslog facility (LOG_USER, LOG_LOCAL0, etc.)
+        int logopt_;        ///< openlog() options (LOG_PID, LOG_NDELAY, etc.)
+        bool includeLevel_; ///< Prefix messages with "[LEVEL] "
+
+        SyslogOptions()
+            : facility_(LOG_USER)
+            , logopt_(LOG_PID | LOG_NDELAY)
+            , includeLevel_(false) {}
+
+        SyslogOptions& setFacility(int f) { facility_ = f; return *this; }
+        SyslogOptions& setLogopt(int o) { logopt_ = o; return *this; }
+        SyslogOptions& setIncludeLevel(bool b) { includeLevel_ = b; return *this; }
+    };
+
+    /// Sink that writes log entries to the POSIX syslog daemon.
+    ///
+    /// Uses the standard `<syslog.h>` API. No external dependencies.
+    /// Available on Linux, macOS, and BSD. Not available on Windows —
+    /// including this header on Windows produces a compile-time error.
+    ///
+    /// @code
+    ///   logger.addSink<SyslogSink>("my-app");
+    ///   logger.addSink<SyslogSink>("my-app", SyslogOptions().setFacility(LOG_LOCAL0));
+    /// @endcode
+    class SyslogSink : public ISink {
+    public:
+        /// @param ident  The syslog identity string (typically the program name).
+        ///               Stored internally — the pointer passed to openlog() remains
+        ///               valid for the lifetime of this sink.
+        /// @param opts   Syslog configuration options.
+        explicit SyslogSink(const std::string& ident,
+                            SyslogOptions opts = SyslogOptions())
+            : m_ident(ident)
+            , m_opts(opts)
+        {
+            // openlog() requires a pointer that remains valid until closelog().
+            // m_ident is a std::string member, so c_str() is stable.
+            openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);
+        }
+
+        ~SyslogSink() noexcept {
+            closelog();
+        }
+
+        void write(const LogEntry& entry) override {
+            int priority = toSyslogPriority(entry.level);
+
+            if (m_opts.includeLevel_) {
+                std::string msg = "[";
+                msg += getLevelString(entry.level);
+                msg += "] ";
+                msg += entry.message;
+                syslog(priority, "%s", msg.c_str());
+            } else {
+                syslog(priority, "%s", entry.message.c_str());
+            }
+        }
+
+        /// Convert a LunarLog LogLevel to a syslog priority value.
+        /// Public and static for testability.
+        static int toSyslogPriority(LogLevel level) {
+            switch (level) {
+                case LogLevel::TRACE: return LOG_DEBUG;
+                case LogLevel::DEBUG: return LOG_DEBUG;
+                case LogLevel::INFO:  return LOG_INFO;
+                case LogLevel::WARN:  return LOG_WARNING;
+                case LogLevel::ERROR: return LOG_ERR;
+                case LogLevel::FATAL: return LOG_CRIT;
+                default: return LOG_INFO;
+            }
+        }
+
+    private:
+        std::string m_ident;
+        SyslogOptions m_opts;
+    };
+
+} // namespace minta
+
+#endif // !_WIN32
+
+
+// --- lunar_log/sink/http_sink.hpp ---
+
+#include <string>
+#include <map>
+#include <memory>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <sstream>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/select.h>
+#endif
+
+namespace minta {
+
+    /// Configuration options for HttpSink.
+    ///
+    /// @code
+    ///   HttpSinkOptions opts("http://localhost:8080/logs");
+    ///   opts.setHeader("Authorization", "Bearer token123")
+    ///       .setContentType("application/json")
+    ///       .setBatchSize(100)
+    ///       .setFlushIntervalMs(3000);
+    /// @endcode
+    struct HttpSinkOptions {
+        std::string url;
+        std::string contentType;
+        std::map<std::string, std::string> headers;
+        size_t timeoutMs;
+        bool verifySsl;
+
+        // Batch options (forwarded to BatchedSink)
+        size_t batchSize;
+        size_t flushIntervalMs;
+        size_t maxRetries;
+        size_t maxQueueSize;
+
+        explicit HttpSinkOptions(const std::string& url_)
+            : url(url_)
+            , contentType("application/json")
+            , timeoutMs(10000)
+            , verifySsl(true)
+            , batchSize(50)
+            , flushIntervalMs(5000)
+            , maxRetries(3)
+            , maxQueueSize(10000) {}
+
+        HttpSinkOptions& setHeader(const std::string& key, const std::string& val) {
+            headers[key] = val;
+            return *this;
+        }
+        HttpSinkOptions& setContentType(const std::string& ct) {
+            contentType = ct;
+            return *this;
+        }
+        HttpSinkOptions& setTimeoutMs(size_t ms) {
+            timeoutMs = ms;
+            return *this;
+        }
+        HttpSinkOptions& setBatchSize(size_t n) {
+            batchSize = n;
+            return *this;
+        }
+        HttpSinkOptions& setFlushIntervalMs(size_t ms) {
+            flushIntervalMs = ms;
+            return *this;
+        }
+        HttpSinkOptions& setMaxRetries(size_t n) {
+            maxRetries = n;
+            return *this;
+        }
+        HttpSinkOptions& setMaxQueueSize(size_t n) {
+            maxQueueSize = n;
+            return *this;
+        }
+        HttpSinkOptions& setVerifySsl(bool v) {
+            verifySsl = v;
+            return *this;
+        }
+    };
+
+namespace detail {
+
+    /// Parse a URL into scheme, host, port, and path components.
+    struct ParsedUrl {
+        std::string scheme;  // "http" or "https"
+        std::string host;
+        int port;
+        std::string path;
+        bool valid;
+
+        ParsedUrl() : port(80), valid(false) {}
+    };
+
+    inline ParsedUrl parseUrl(const std::string& url) {
+        ParsedUrl result;
+        result.valid = false;
+
+        // Find scheme
+        size_t schemeEnd = url.find("://");
+        if (schemeEnd == std::string::npos) return result;
+
+        result.scheme = url.substr(0, schemeEnd);
+        if (result.scheme != "http" && result.scheme != "https") return result;
+
+        size_t hostStart = schemeEnd + 3;
+        if (hostStart >= url.size()) return result;
+
+        // Find path
+        size_t pathStart = url.find('/', hostStart);
+        std::string hostPort;
+        if (pathStart == std::string::npos) {
+            hostPort = url.substr(hostStart);
+            result.path = "/";
+        } else {
+            hostPort = url.substr(hostStart, pathStart - hostStart);
+            result.path = url.substr(pathStart);
+        }
+
+        // Find port
+        size_t colonPos = hostPort.find(':');
+        if (colonPos != std::string::npos) {
+            result.host = hostPort.substr(0, colonPos);
+            std::string portStr = hostPort.substr(colonPos + 1);
+            if (portStr.empty()) return result;
+            result.port = std::atoi(portStr.c_str());
+            if (result.port <= 0 || result.port > 65535) return result;
+        } else {
+            result.host = hostPort;
+            result.port = (result.scheme == "https") ? 443 : 80;
+        }
+
+        if (result.host.empty()) return result;
+
+        result.valid = true;
+        return result;
+    }
+
+} // namespace detail
+
+    /// HTTP/HTTPS sink that sends log batches as HTTP POST requests.
+    ///
+    /// Extends BatchedSink to batch log entries and send them as JSONL
+    /// (newline-delimited JSON) payloads. Uses CompactJsonFormatter by default.
+    ///
+    /// Transport strategy:
+    /// - http:// on POSIX: raw TCP socket with HTTP/1.1
+    /// - https:// on POSIX: curl subprocess fallback
+    /// - Windows: WinHTTP API
+    ///
+    /// @code
+    ///   // Send logs to a local endpoint
+    ///   HttpSinkOptions opts("http://localhost:8080/api/logs");
+    ///   opts.setHeader("Authorization", "Bearer mytoken");
+    ///   logger.addSink<HttpSink>(opts);
+    ///
+    ///   // Datadog example
+    ///   HttpSinkOptions dd("https://http-intake.logs.datadoghq.com/api/v2/logs");
+    ///   dd.setHeader("DD-API-KEY", "your-api-key");
+    ///   dd.setBatchSize(100).setFlushIntervalMs(5000);
+    ///   logger.addSink<HttpSink>(dd);
+    /// @endcode
+    class HttpSink : public BatchedSink {
+    public:
+        explicit HttpSink(HttpSinkOptions opts)
+            : BatchedSink(makeBatchOptions(opts))
+            , m_opts(std::move(opts))
+            , m_formatter(detail::make_unique<CompactJsonFormatter>())
+        {}
+
+        ~HttpSink() noexcept {
+            stopAndFlush();
+        }
+
+    protected:
+        void writeBatch(const std::vector<const LogEntry*>& batch) override {
+            std::string body = formatBatch(batch);
+            if (body.empty()) return;
+
+            detail::ParsedUrl parsed = detail::parseUrl(m_opts.url);
+            if (!parsed.valid) {
+                throw std::runtime_error("HttpSink: invalid URL: " + m_opts.url);
+            }
+
+            std::map<std::string, std::string> allHeaders = m_opts.headers;
+            allHeaders["Content-Type"] = m_opts.contentType;
+
+            bool ok = httpPost(m_opts.url, body, allHeaders, m_opts.timeoutMs);
+            if (!ok) {
+                throw std::runtime_error("HttpSink: HTTP POST failed to " + m_opts.url);
+            }
+        }
+
+        void onBatchError(const std::exception& e, size_t retryCount) override {
+            std::fprintf(stderr, "[HttpSink] Batch error (retry %zu): %s\n",
+                        retryCount, e.what());
+        }
+
+    private:
+        static BatchOptions makeBatchOptions(const HttpSinkOptions& opts) {
+            BatchOptions bo;
+            bo.setBatchSize(opts.batchSize)
+              .setFlushIntervalMs(opts.flushIntervalMs)
+              .setMaxRetries(opts.maxRetries)
+              .setMaxQueueSize(opts.maxQueueSize);
+            return bo;
+        }
+
+        std::string formatBatch(const std::vector<const LogEntry*>& batch) {
+            std::string result;
+            result.reserve(batch.size() * 256);
+            for (size_t i = 0; i < batch.size(); ++i) {
+                if (i > 0) result += '\n';
+                result += m_formatter->format(*batch[i]);
+            }
+            return result;
+        }
+
+        bool httpPost(const std::string& url, const std::string& body,
+                      const std::map<std::string, std::string>& headers,
+                      size_t timeoutMs) {
+            detail::ParsedUrl parsed = detail::parseUrl(url);
+            if (!parsed.valid) return false;
+
+#ifdef _WIN32
+            return httpPostWinHTTP(url, body, headers, timeoutMs);
+#else
+            if (parsed.scheme == "https") {
+                return httpPostCurl(url, body, headers, timeoutMs);
+            }
+            return httpPostPosix(parsed.host, parsed.port, parsed.path,
+                                body, headers, timeoutMs);
+#endif
+        }
+
+#ifndef _WIN32
+        bool httpPostPosix(const std::string& host, int port,
+                          const std::string& path, const std::string& body,
+                          const std::map<std::string, std::string>& headers,
+                          size_t timeoutMs) {
+            // Resolve host
+            struct addrinfo hints, *res = nullptr;
+            std::memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+
+            std::string portStr = std::to_string(port);
+            int gaiResult = getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res);
+            if (gaiResult != 0 || !res) {
+                if (res) freeaddrinfo(res);
+                return false;
+            }
+
+            int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+            if (sockfd < 0) {
+                freeaddrinfo(res);
+                return false;
+            }
+
+            // Set timeout via select
+            struct timeval tv;
+            tv.tv_sec = static_cast<long>(timeoutMs / 1000);
+            tv.tv_usec = static_cast<long>((timeoutMs % 1000) * 1000);
+
+            // Set non-blocking for connect timeout
+            int flags = fcntl(sockfd, F_GETFL, 0);
+            fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+            int connectResult = connect(sockfd, res->ai_addr, res->ai_addrlen);
+            freeaddrinfo(res);
+
+            if (connectResult < 0) {
+                if (errno != EINPROGRESS) {
+                    close(sockfd);
+                    return false;
+                }
+                // Wait for connection with timeout
+                fd_set writefds;
+                FD_ZERO(&writefds);
+                FD_SET(sockfd, &writefds);
+
+                int sel = select(sockfd + 1, nullptr, &writefds, nullptr, &tv);
+                if (sel <= 0) {
+                    close(sockfd);
+                    return false;
+                }
+
+                int so_error = 0;
+                socklen_t len = sizeof(so_error);
+                getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &so_error, &len);
+                if (so_error != 0) {
+                    close(sockfd);
+                    return false;
+                }
+            }
+
+            // Set back to blocking
+            fcntl(sockfd, F_SETFL, flags);
+
+            // Set socket timeout for send/recv
+            setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+            setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+            // Build HTTP request
+            std::string request;
+            request += "POST " + path + " HTTP/1.1\r\n";
+            request += "Host: " + host + "\r\n";
+            request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+            request += "Connection: close\r\n";
+            for (std::map<std::string, std::string>::const_iterator it = headers.begin();
+                 it != headers.end(); ++it) {
+                request += it->first + ": " + it->second + "\r\n";
+            }
+            request += "\r\n";
+            request += body;
+
+            // Send
+            ssize_t totalSent = 0;
+            ssize_t requestLen = static_cast<ssize_t>(request.size());
+            while (totalSent < requestLen) {
+                ssize_t sent = send(sockfd, request.c_str() + totalSent,
+                                   static_cast<size_t>(requestLen - totalSent), 0);
+                if (sent <= 0) {
+                    close(sockfd);
+                    return false;
+                }
+                totalSent += sent;
+            }
+
+            // Read response status line
+            char buf[1024];
+            ssize_t received = recv(sockfd, buf, sizeof(buf) - 1, 0);
+            close(sockfd);
+
+            if (received <= 0) return false;
+            buf[received] = '\0';
+
+            // Parse HTTP status code
+            // Expected: "HTTP/1.1 200 OK\r\n..."
+            const char* statusPtr = std::strstr(buf, " ");
+            if (!statusPtr) return false;
+            int statusCode = std::atoi(statusPtr + 1);
+            return (statusCode >= 200 && statusCode < 300);
+        }
+
+        bool httpPostCurl(const std::string& url, const std::string& body,
+                         const std::map<std::string, std::string>& headers,
+                         size_t timeoutMs) {
+            // Build curl command
+            std::string cmd = "curl -s -o /dev/null -w '%{http_code}' -X POST";
+            cmd += " --max-time " + std::to_string(timeoutMs / 1000);
+
+            for (std::map<std::string, std::string>::const_iterator it = headers.begin();
+                 it != headers.end(); ++it) {
+                cmd += " -H '" + it->first + ": " + it->second + "'";
+            }
+
+            cmd += " --data-binary @-";
+            cmd += " '" + url + "'";
+
+            // Use popen to pipe body to curl
+            FILE* pipe = popen(cmd.c_str(), "w");
+            if (!pipe) return false;
+
+            size_t written = fwrite(body.c_str(), 1, body.size(), pipe);
+            int exitCode = pclose(pipe);
+
+            if (written != body.size()) return false;
+
+            // pclose returns the exit status of the command
+            // curl returns 0 on success
+            return (exitCode == 0);
+        }
+#endif // !_WIN32
+
+#ifdef _WIN32
+        bool httpPostWinHTTP(const std::string& url, const std::string& body,
+                            const std::map<std::string, std::string>& headers,
+                            size_t timeoutMs) {
+            detail::ParsedUrl parsed = detail::parseUrl(url);
+            if (!parsed.valid) return false;
+
+            // Convert strings to wide chars for WinHTTP
+            std::wstring wHost(parsed.host.begin(), parsed.host.end());
+            std::wstring wPath(parsed.path.begin(), parsed.path.end());
+
+            HINTERNET hSession = WinHttpOpen(L"LunarLog/1.0",
+                WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                WINHTTP_NO_PROXY_NAME,
+                WINHTTP_NO_PROXY_BYPASS, 0);
+            if (!hSession) return false;
+
+            // Set timeouts
+            DWORD timeout = static_cast<DWORD>(timeoutMs);
+            WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
+
+            HINTERNET hConnect = WinHttpConnect(hSession,
+                wHost.c_str(),
+                static_cast<INTERNET_PORT>(parsed.port), 0);
+            if (!hConnect) {
+                WinHttpCloseHandle(hSession);
+                return false;
+            }
+
+            DWORD flags = (parsed.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
+            HINTERNET hRequest = WinHttpOpenRequest(hConnect,
+                L"POST", wPath.c_str(),
+                NULL, WINHTTP_NO_REFERER,
+                WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+            if (!hRequest) {
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return false;
+            }
+
+            // Add headers
+            for (std::map<std::string, std::string>::const_iterator it = headers.begin();
+                 it != headers.end(); ++it) {
+                std::string headerLine = it->first + ": " + it->second;
+                std::wstring wHeader(headerLine.begin(), headerLine.end());
+                WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),
+                    static_cast<DWORD>(wHeader.size()),
+                    WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+            }
+
+            // Send request
+            BOOL result = WinHttpSendRequest(hRequest,
+                WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                const_cast<char*>(body.c_str()),
+                static_cast<DWORD>(body.size()),
+                static_cast<DWORD>(body.size()), 0);
+
+            if (!result) {
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return false;
+            }
+
+            result = WinHttpReceiveResponse(hRequest, NULL);
+            if (!result) {
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return false;
+            }
+
+            // Get status code
+            DWORD statusCode = 0;
+            DWORD statusSize = sizeof(statusCode);
+            WinHttpQueryHeaders(hRequest,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX,
+                &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+
+            return (statusCode >= 200 && statusCode < 300);
+        }
+#endif // _WIN32
+
+        HttpSinkOptions m_opts;
+        std::unique_ptr<CompactJsonFormatter> m_formatter;
+    };
+
+} // namespace minta
+
+
 // --- lunar_log/log_manager.hpp ---
 
 #include <vector>

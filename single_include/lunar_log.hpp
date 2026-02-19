@@ -4334,8 +4334,12 @@ namespace detail {
             result.host = hostPort.substr(0, colonPos);
             std::string portStr = hostPort.substr(colonPos + 1);
             if (portStr.empty()) return result;
-            result.port = std::atoi(portStr.c_str());
-            if (result.port <= 0 || result.port > 65535) return result;
+            char* endPtr = nullptr;
+            long portLong = std::strtol(portStr.c_str(), &endPtr, 10);
+            if (endPtr == portStr.c_str() || *endPtr != '\0' || portLong < 1 || portLong > 65535) {
+                return result;
+            }
+            result.port = static_cast<int>(portLong);
         } else {
             result.host = hostPort;
             result.port = (result.scheme == "https") ? 443 : 80;
@@ -4378,13 +4382,12 @@ namespace detail {
             , m_opts(std::move(opts))
             , m_formatter(detail::make_unique<CompactJsonFormatter>())
         {
-            // Validate URL at construction time and cache parsed result
+            // Validate URL at construction time and cache parsed result.
+            // parseUrl() sets valid=false for missing host, unsupported scheme,
+            // and out-of-range port, so a single check covers all cases.
             m_parsedUrl = detail::parseUrl(m_opts.url);
-            if (m_parsedUrl.host.empty()) {
+            if (!m_parsedUrl.valid) {
                 throw std::invalid_argument("HttpSink: invalid URL: " + m_opts.url);
-            }
-            if (m_parsedUrl.scheme != "http" && m_parsedUrl.scheme != "https") {
-                throw std::invalid_argument("HttpSink: unsupported scheme '" + m_parsedUrl.scheme + "' in URL: " + m_opts.url);
             }
         }
 
@@ -4532,7 +4535,7 @@ namespace detail {
             std::string request;
             request += "POST " + path + " HTTP/1.1\r\n";
             std::string hostHeader = host;
-            // httpPostPosix is only called for http:// URLs (default port 80)
+            // httpPostPosix handles http:// only; default port is 80.
             if (port != 80) {
                 hostHeader += ":" + std::to_string(port);
             }
@@ -4681,7 +4684,8 @@ namespace detail {
                 const char* data = body.c_str();
                 size_t remaining = body.size();
                 while (remaining > 0) {
-                    ssize_t w = ::write(pipefd[1], data, remaining);
+                    ssize_t w;
+                    do { w = ::write(pipefd[1], data, remaining); } while (w < 0 && errno == EINTR);
                     if (w <= 0) { writeOk = false; break; }
                     data += w;
                     remaining -= static_cast<size_t>(w);
@@ -4698,6 +4702,15 @@ namespace detail {
 #endif // !_WIN32
 
 #ifdef _WIN32
+        struct WinHttpHandleGuard {
+            HINTERNET h;
+            explicit WinHttpHandleGuard(HINTERNET handle) : h(handle) {}
+            ~WinHttpHandleGuard() { if (h) WinHttpCloseHandle(h); }
+            operator HINTERNET() const { return h; }
+            WinHttpHandleGuard(const WinHttpHandleGuard&) = delete;
+            WinHttpHandleGuard& operator=(const WinHttpHandleGuard&) = delete;
+        };
+
         static std::wstring utf8ToWide(const std::string& str) {
             if (str.empty()) return std::wstring();
             int needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
@@ -4715,34 +4728,26 @@ namespace detail {
             std::wstring wHost = utf8ToWide(m_parsedUrl.host);
             std::wstring wPath = utf8ToWide(m_parsedUrl.path);
 
-            HINTERNET hSession = WinHttpOpen(L"LunarLog/1.0",
+            WinHttpHandleGuard hSession(WinHttpOpen(L"LunarLog/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                 WINHTTP_NO_PROXY_NAME,
-                WINHTTP_NO_PROXY_BYPASS, 0);
+                WINHTTP_NO_PROXY_BYPASS, 0));
             if (!hSession) return false;
 
-            // Set timeouts
             DWORD timeout = static_cast<DWORD>(timeoutMs);
             WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
 
-            HINTERNET hConnect = WinHttpConnect(hSession,
+            WinHttpHandleGuard hConnect(WinHttpConnect(hSession,
                 wHost.c_str(),
-                static_cast<INTERNET_PORT>(m_parsedUrl.port), 0);
-            if (!hConnect) {
-                WinHttpCloseHandle(hSession);
-                return false;
-            }
+                static_cast<INTERNET_PORT>(m_parsedUrl.port), 0));
+            if (!hConnect) return false;
 
             DWORD flags = (m_parsedUrl.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
-            HINTERNET hRequest = WinHttpOpenRequest(hConnect,
+            WinHttpHandleGuard hRequest(WinHttpOpenRequest(hConnect,
                 L"POST", wPath.c_str(),
                 NULL, WINHTTP_NO_REFERER,
-                WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-            if (!hRequest) {
-                WinHttpCloseHandle(hConnect);
-                WinHttpCloseHandle(hSession);
-                return false;
-            }
+                WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
+            if (!hRequest) return false;
 
             if (!m_opts.verifySsl) {
                 DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA
@@ -4753,7 +4758,6 @@ namespace detail {
                                  &secFlags, sizeof(secFlags));
             }
 
-            // Add headers
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
                 std::string headerLine = it->first + ": " + it->second;
@@ -4763,39 +4767,21 @@ namespace detail {
                     WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
             }
 
-            // Send request
-            BOOL result = WinHttpSendRequest(hRequest,
+            BOOL sendOk = WinHttpSendRequest(hRequest,
                 WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                 static_cast<LPVOID>(const_cast<char*>(body.c_str())),
                 static_cast<DWORD>(body.size()),
                 static_cast<DWORD>(body.size()), 0);
+            if (!sendOk) return false;
 
-            if (!result) {
-                WinHttpCloseHandle(hRequest);
-                WinHttpCloseHandle(hConnect);
-                WinHttpCloseHandle(hSession);
-                return false;
-            }
+            if (!WinHttpReceiveResponse(hRequest, NULL)) return false;
 
-            result = WinHttpReceiveResponse(hRequest, NULL);
-            if (!result) {
-                WinHttpCloseHandle(hRequest);
-                WinHttpCloseHandle(hConnect);
-                WinHttpCloseHandle(hSession);
-                return false;
-            }
-
-            // Get status code
             DWORD statusCode = 0;
             DWORD statusSize = sizeof(statusCode);
             WinHttpQueryHeaders(hRequest,
                 WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                 WINHTTP_HEADER_NAME_BY_INDEX,
                 &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
-
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
 
             return (statusCode >= 200 && statusCode < 300);
         }

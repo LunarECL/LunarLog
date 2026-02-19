@@ -249,7 +249,21 @@ TEST_F(HttpSinkTest, HttpPostConnectionRefused) {
 }
 #endif // !_WIN32
 
-// --- Test 10: URL parsing edge cases ---
+// --- Test 10: Constructor rejects invalid port ---
+TEST_F(HttpSinkTest, ConstructorRejectsInvalidPort) {
+    EXPECT_THROW(
+        minta::HttpSink(minta::HttpSinkOptions("http://host:99999/path")),
+        std::invalid_argument);
+}
+
+// --- Test 11: Constructor rejects unsupported scheme ---
+TEST_F(HttpSinkTest, ConstructorRejectsUnsupportedScheme) {
+    EXPECT_THROW(
+        minta::HttpSink(minta::HttpSinkOptions("ftp://host/path")),
+        std::invalid_argument);
+}
+
+// --- Test 12: URL parsing edge cases ---
 TEST_F(HttpSinkTest, UrlParsingEdgeCases) {
     // Port out of range
     auto p1 = minta::detail::parseUrl("http://host:99999/path");

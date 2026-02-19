@@ -144,6 +144,30 @@ protected:
         removeMatchingFiles("roll_restart.log", "");
         removeMatchingFiles("roll_hybrid_sz.", ".log");
         removeMatchingFiles("roll_hybrid_sz.log", "");
+        removeMatchingFiles("roll_mid.", ".log");
+        removeMatchingFiles("roll_mid.log", "");
+        removeMatchingFiles("roll_disc_d.", ".log");
+        removeMatchingFiles("roll_disc_d.log", "");
+        removeMatchingFiles("roll_disc_dd.", ".log");
+        removeMatchingFiles("roll_disc_dd.log", "");
+        removeMatchingFiles("roll_disc_hh.", ".log");
+        removeMatchingFiles("roll_disc_hh.log", "");
+        removeMatchingFiles("roll_disc_inv.", ".log");
+        removeMatchingFiles("roll_disc_inv.log", "");
+        removeMatchingFiles("roll_disc_hr.", ".log");
+        removeMatchingFiles("roll_disc_hr.log", "");
+        removeIfExists("roll_same_sec.log");
+        removeMatchingFiles("roll_same_sec.", ".log");
+        removeMatchingFiles("roll_hhybrid.", ".log");
+        removeMatchingFiles("roll_hhybrid.log", "");
+        removeMatchingFiles("roll_total_cleanup.", ".log");
+        removeMatchingFiles("roll_total_cleanup.log", "");
+        removeIfExists("roll_open_fail_dir/roll.log");
+        removeMatchingFiles("roll_open_fail_dir/roll.", ".log");
+        removeDirIfExists("roll_open_fail_dir");
+        removeIfExists("roll_ren_dir/roll.log");
+        removeMatchingFiles("roll_ren_dir/roll.", ".log");
+        removeDirIfExists("roll_ren_dir");
     }
 };
 
@@ -609,4 +633,333 @@ TEST_F(RollingFileTest, HybridPolicySizeRotation) {
         if (fileExists(buf)) rolledCount++;
     }
     EXPECT_GE(rolledCount, 1);
+}
+
+// ---------------------------------------------------------------------------
+// ensureOpen() failure — directory is read-only, file cannot be opened
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, EnsureOpenFailure) {
+    std::string dir = "roll_open_fail_dir";
+    mkdir(dir.c_str(), 0755);
+
+    // Make directory read-only so file creation fails
+    chmod(dir.c_str(), 0555);
+
+    auto policy = minta::RollingPolicy::size(dir + "/roll.log", 1000);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    testing::internal::CaptureStderr();
+    // Write triggers ensureOpen → file cannot be opened → stderr
+    logger.info("This message triggers ensureOpen failure");
+    logger.flush();
+    std::string stderrOutput = testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(stderrOutput.find("RollingFileSink: failed to open file") != std::string::npos)
+        << "stderr: " << stderrOutput;
+    EXPECT_FALSE(fileExists(dir + "/roll.log"));
+
+    chmod(dir.c_str(), 0755);
+    removeIfExists(dir + "/roll.log");
+    removeDirIfExists(dir);
+}
+
+// ---------------------------------------------------------------------------
+// rename() failure during rotation — directory is read-only when rotating
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, RenameFailureDuringRotation) {
+    std::string dir = "roll_ren_dir";
+    mkdir(dir.c_str(), 0755);
+    // Pre-create the log file so ensureOpen succeeds
+    { std::ofstream f(dir + "/roll.log"); f << ""; }
+
+    auto policy = minta::RollingPolicy::size(dir + "/roll.log", 100);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    // First write triggers ensureOpen (succeeds, file exists)
+    logger.info("Initial padding message here");
+    logger.flush();
+
+    // Make directory read-only — rename needs write permission on directory
+    chmod(dir.c_str(), 0555);
+
+    testing::internal::CaptureStderr();
+    for (int i = 0; i < 30; ++i) {
+        logger.info("Rename failure test message {idx} padding", i);
+    }
+    logger.flush();
+    std::string stderrOutput = testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(stderrOutput.find("failed to rename") != std::string::npos)
+        << "stderr: " << stderrOutput;
+
+    // Cleanup
+    chmod(dir.c_str(), 0755);
+    removeMatchingFiles(dir + "/roll.", ".log");
+    removeIfExists(dir + "/roll.log");
+    removeDirIfExists(dir);
+}
+
+// ---------------------------------------------------------------------------
+// needsRotation() — same-second time check is skipped
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, SameSecondTimeCheckSkipped) {
+    // With an hourly policy (time-based only), many rapid writes within
+    // the same second should NOT trigger time-based rotation.
+    auto policy = minta::RollingPolicy::hourly("roll_same_sec.log");
+
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 100; ++i) {
+        logger.info("Same second message {idx}", i);
+    }
+    logger.flush();
+
+    EXPECT_TRUE(fileExists("roll_same_sec.log"));
+    // All 100 messages should be in one file (no time rotation within same second)
+    std::string content = readFile("roll_same_sec.log");
+    int lineCount = 0;
+    for (size_t c = 0; c < content.size(); ++c) {
+        if (content[c] == '\n') lineCount++;
+    }
+    EXPECT_EQ(lineCount, 100);
+}
+
+// ---------------------------------------------------------------------------
+// isValidRolledMiddle() — pure digits discovered, invalid patterns rejected
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, DiscoveryValidatesPureDigitMiddle) {
+    // Pre-create valid rolled files with pure digit middles
+    { std::ofstream f("roll_mid.003.log"); f << "x\n"; }
+    { std::ofstream f("roll_mid.005.log"); f << "x\n"; }
+    // Pre-create files with INVALID middles (should be ignored)
+    { std::ofstream f("roll_mid.abc.log"); f << "x\n"; }
+
+    auto policy = minta::RollingPolicy::size("roll_mid.log", 100);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 30; ++i) {
+        logger.info("Discovery msg {idx} with padding text here", i);
+    }
+    logger.flush();
+
+    // Sink discovered 003 and 005 → m_sizeRollIndex = 5
+    // First rotation creates 006 (not 001 or 006)
+    EXPECT_TRUE(fileExists("roll_mid.006.log"));
+    // Invalid file was not discovered and not cleaned up
+    EXPECT_TRUE(fileExists("roll_mid.abc.log"));
+}
+
+// ---------------------------------------------------------------------------
+// isValidRolledMiddle() — YYYY-MM-DD date pattern
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, DiscoveryRecognizesDatePattern) {
+    // Pre-create a date-pattern rolled file (date-only middle)
+    { std::ofstream f("roll_disc_d.2024-02-17.log"); f << "old data\n"; }
+
+    // daily + size with maxFiles(1) → old date file should be cleaned up
+    auto policy = minta::RollingPolicy::daily("roll_disc_d.log").maxSize(100).maxFiles(1);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 50; ++i) {
+        logger.info("Date discovery msg {idx} with padding text", i);
+    }
+    logger.flush();
+
+    // The old 2024-02-17 file was discovered (isValidRolledMiddle accepts
+    // date-only patterns) and cleaned up by maxFiles(1)
+    EXPECT_FALSE(fileExists("roll_disc_d.2024-02-17.log"));
+}
+
+// ---------------------------------------------------------------------------
+// isValidRolledMiddle() — YYYY-MM-DD.digits (daily+size hybrid)
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, DiscoveryRecognizesDateDigitsPattern) {
+    { std::ofstream f("roll_disc_dd.2024-02-17.001.log"); f << "old\n"; }
+
+    auto policy = minta::RollingPolicy::daily("roll_disc_dd.log").maxSize(100).maxFiles(1);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 50; ++i) {
+        logger.info("DD discovery msg {idx} padding text here", i);
+    }
+    logger.flush();
+
+    // Date.digits pattern accepted → discovered → cleaned up by maxFiles(1)
+    EXPECT_FALSE(fileExists("roll_disc_dd.2024-02-17.001.log"));
+}
+
+// ---------------------------------------------------------------------------
+// isValidRolledMiddle() — YYYY-MM-DD.HH.NNN (hourly+size hybrid)
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, DiscoveryRecognizesHourlyHybridPattern) {
+    { std::ofstream f("roll_disc_hh.2024-02-17.14.001.log"); f << "old\n"; }
+
+    auto policy = minta::RollingPolicy::hourly("roll_disc_hh.log").maxSize(100).maxFiles(1);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 50; ++i) {
+        logger.info("HH discovery msg {idx} padding text here", i);
+    }
+    logger.flush();
+
+    // Date.HH.NNN pattern accepted → discovered → cleaned up by maxFiles(1)
+    EXPECT_FALSE(fileExists("roll_disc_hh.2024-02-17.14.001.log"));
+}
+
+// ---------------------------------------------------------------------------
+// isValidRolledMiddle() — invalid patterns are rejected by discovery
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, DiscoveryRejectsInvalidPatterns) {
+    // Invalid middle patterns (should NOT be discovered)
+    { std::ofstream f("roll_disc_inv.abc.log"); f << "bad\n"; }        // letters
+    { std::ofstream f("roll_disc_inv.2024-02.log"); f << "bad\n"; }    // short (7 chars)
+    { std::ofstream f("roll_disc_inv.2024-02-17..log"); f << "bad\n"; }// date+dot, empty rest
+    // One VALID file to confirm selective discovery
+    { std::ofstream f("roll_disc_inv.003.log"); f << "good\n"; }
+
+    auto policy = minta::RollingPolicy::size("roll_disc_inv.log", 100).maxFiles(1);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 50; ++i) {
+        logger.info("Invalid discovery msg {idx} padding text", i);
+    }
+    logger.flush();
+
+    // Invalid files NOT discovered, so NOT cleaned up
+    EXPECT_TRUE(fileExists("roll_disc_inv.abc.log"));
+    EXPECT_TRUE(fileExists("roll_disc_inv.2024-02.log"));
+    EXPECT_TRUE(fileExists("roll_disc_inv.2024-02-17..log"));
+}
+
+// ---------------------------------------------------------------------------
+// discoverExistingRolledFiles() — hybrid mode index recovery from period.NNN
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, DiscoveryHybridIndexRecovery) {
+    // Compute today's date in the format the sink uses
+    std::time_t now = std::time(nullptr);
+    std::tm tmBuf;
+#ifdef _MSC_VER
+    localtime_s(&tmBuf, &now);
+#else
+    localtime_r(&now, &tmBuf);
+#endif
+    char dateBuf[16];
+    std::strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tmBuf);
+    std::string period(dateBuf);
+
+    // Pre-create hybrid rolled files for today's period
+    { std::ofstream f("roll_disc_hr." + period + ".003.log"); f << "h\n"; }
+    { std::ofstream f("roll_disc_hr." + period + ".007.log"); f << "h\n"; }
+
+    auto policy = minta::RollingPolicy::daily("roll_disc_hr.log").maxSize(100);
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 30; ++i) {
+        logger.info("Hybrid recovery msg {idx} with padding", i);
+    }
+    logger.flush();
+
+    // Sink discovered 003 and 007 for today → m_sizeRollIndex = 7
+    // First rotation continues at 008
+    std::string expectedFile = "roll_disc_hr." + period + ".008.log";
+    EXPECT_TRUE(fileExists(expectedFile)) << "Expected: " << expectedFile;
+}
+
+// ---------------------------------------------------------------------------
+// buildRolledName() — hourly + size hybrid naming
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, HybridHourlyPolicySizeRotation) {
+    auto policy = minta::RollingPolicy::hourly("roll_hhybrid.log").maxSize(200);
+
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 30; ++i) {
+        logger.info("Hourly hybrid rotation message {idx} padding text", i);
+    }
+    logger.flush();
+
+    EXPECT_TRUE(fileExists("roll_hhybrid.log"));
+
+    // Hourly hybrid rolled files: roll_hhybrid.YYYY-MM-DD.HH.NNN.log
+    int rolledCount = 0;
+    std::time_t now = std::time(nullptr);
+    std::tm tmBuf;
+#ifdef _MSC_VER
+    localtime_s(&tmBuf, &now);
+#else
+    localtime_r(&now, &tmBuf);
+#endif
+    char dateBuf[20];
+    std::strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d.%H", &tmBuf);
+
+    for (int i = 1; i <= 30; ++i) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "roll_hhybrid.%s.%03d.log", dateBuf, i);
+        if (fileExists(buf)) rolledCount++;
+    }
+    EXPECT_GE(rolledCount, 1);
+}
+
+// ---------------------------------------------------------------------------
+// cleanup() — maxTotalSize policy removes oldest rolled files
+// ---------------------------------------------------------------------------
+
+TEST_F(RollingFileTest, MaxTotalSizeRemovesOldestFiles) {
+    // Use a very small maxTotalSize to force aggressive cleanup
+    auto policy = minta::RollingPolicy::size("roll_total_cleanup.log", 100)
+        .maxTotalSize(200);
+
+    minta::LunarLog logger(minta::LogLevel::INFO, false);
+    auto sink = minta::detail::make_unique<minta::RollingFileSink>(policy);
+    logger.addCustomSink(std::move(sink));
+
+    for (int i = 0; i < 60; ++i) {
+        logger.info("Total cleanup msg {idx} with extra padding", i);
+    }
+    logger.flush();
+
+    // Count remaining rolled files and their total size
+    std::uint64_t totalRolledSize = 0;
+    int rolledCount = 0;
+    for (int i = 1; i <= 60; ++i) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "roll_total_cleanup.%03d.log", i);
+        if (fileExists(buf)) {
+            totalRolledSize += fileSize(buf);
+            rolledCount++;
+        }
+    }
+
+    EXPECT_GT(rolledCount, 0);
+    EXPECT_LE(totalRolledSize, 200u);
 }

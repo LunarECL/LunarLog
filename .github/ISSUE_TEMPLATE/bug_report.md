@@ -1,41 +1,41 @@
 ---
-name: Bug report
-about: Create a report to help us improve
+name: Bug Report
+about: Report a bug in LunarLog
 title: ''
-labels: ''
+labels: bug
 assignees: ''
 
 ---
 
+**LunarLog version**
+e.g. v1.23.0, or commit hash
+
+**Platform**
+- OS: [e.g. Ubuntu 22.04, macOS 14, Windows 11]
+- Compiler: [e.g. GCC 13, Clang 17, MSVC 19.38]
+- C++ standard: [e.g. C++11, C++17]
+
 **Describe the bug**
-A clear and concise description of what the bug is.
+A clear and concise description of the issue.
 
-**To Reproduce**
-Steps to reproduce the behavior:
+**To reproduce**
+Minimal code example that demonstrates the problem:
 
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+```cpp
+#include "lunar_log.hpp"
+
+int main() {
+    // ...
+}
+```
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
-
-**Desktop (please complete the following information):**
-
-- OS: [e.g. iOS]
-- Browser [e.g. chrome, safari]
-- Version [e.g. 22]
-
-**Smartphone (please complete the following information):**
-
-- Device: [e.g. iPhone6]
-- OS: [e.g. iOS8.1]
-- Browser [e.g. stock browser, safari]
-- Version [e.g. 22]
+**Actual behavior**
+What actually happened. Include log output or error messages if applicable.
 
 **Additional context**
-Add any other context about the problem here.
+- [ ] I am using the multi-header include (`include/lunar_log.hpp`)
+- [ ] I am using the single-header include (`single_include/lunar_log.hpp`)
+- Link to a repository or gist that reproduces the issue (if applicable)

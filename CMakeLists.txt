@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(LunarLog VERSION 1.23.0 LANGUAGES CXX)
+project(LunarLog VERSION 1.24.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -41,6 +41,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             Enrichers
             FluentBuilder
             SourceLocationMacros
+            ColorConsole
     )
 
     set(EXAMPLE_SOURCES
@@ -64,6 +65,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/enrichers.cpp
             examples/fluent_builder.cpp
             examples/source_location_macros.cpp
+            examples/color_console.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -136,6 +138,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_fluent_builder.cpp
             test/tests/test_source_location_macros.cpp
             test/tests/test_no_macros.cpp
+            test/tests/test_color_console_sink.cpp
             test/tests/utils/test_utils.cpp
     )
 

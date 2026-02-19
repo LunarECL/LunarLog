@@ -187,7 +187,9 @@ void TestUtils::cleanupLogFiles() {
         "macro_srcloc_levels.txt", "macro_srcloc_output.txt",
         "macro_srcloc_ifelse.txt",
         "macro_srcloc_trace_ex.txt", "macro_srcloc_debug_ex.txt",
-        "macro_srcloc_info_ex.txt", "macro_srcloc_warn_ex.txt"
+        "macro_srcloc_info_ex.txt", "macro_srcloc_warn_ex.txt",
+        // Color console sink tests
+        "color_console_test.txt", "color_console_fluent.txt"
     };
 
     for (const auto &filename : filesToRemove) {

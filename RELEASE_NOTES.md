@@ -1,53 +1,45 @@
-## What's New
+## What's New in v1.24.0
 
-### LogEntry Lightweight Refactor (#66)
+### ColorConsoleSink — ANSI-Colored Console Output (#71)
 
-This release refactors `LogEntry` exception storage to reduce per-entry memory overhead on the non-exception logging path.
+A drop-in alternative to `ConsoleSink` that colorizes the `[LEVEL]` bracket with ANSI escape codes. Each log level gets a distinct color; the message body is left uncolored.
 
-Before (`v1.22.x`):
-- `LogEntry` always carried three exception strings:
-  - `exceptionType`
-  - `exceptionMessage`
-  - `exceptionChain`
-- Even when no exception was attached, these fields still existed per entry.
+```cpp
+auto logger = minta::LunarLog::configure()
+    .minLevel(minta::LogLevel::TRACE)
+    .writeTo<minta::ColorConsoleSink>("color-console")
+    .build();
 
-After (`v1.23.0`):
-- `LogEntry` stores exception data only when present via:
-  - `std::unique_ptr<detail::ExceptionInfo> exception`
-- Exception access changed to:
-  - `entry.exception->type`
-  - `entry.exception->message`
-  - `entry.exception->chain`
-- Presence check:
-  - `entry.hasException()` (or `if (entry.exception)` for compatibility)
+logger.trace("Trace message");   // dim
+logger.info("Info message");     // green
+logger.warn("Warning!");         // yellow
+logger.error("Error occurred");  // red
+```
 
-| Area | Before | After |
-|------|--------|-------|
-| Exception storage | 3 inline string members on every log entry | Optional `unique_ptr<ExceptionInfo>` only when needed |
-| Formatter guard | `!entry.exceptionType.empty()` | `entry.hasException()` |
-| Hot path behavior | Placeholder exception object/string state always present | Non-exception path avoids exception object construction |
+#### Design
 
-> ⚠️ **Breaking change for custom formatter users**: direct field names changed from `exceptionType/exceptionMessage/exceptionChain` to `exception->type/message/chain`.
+- **Per-level colors** — TRACE (dim), DEBUG (cyan), INFO (green), WARN (yellow), ERROR (red), FATAL (bold red)
+- **TTY auto-detection** — color disabled automatically when stdout is piped or redirected
+- **`NO_COLOR` standard** — respects `NO_COLOR` env var (https://no-color.org/); any value disables color
+- **`LUNAR_LOG_NO_COLOR`** — project-specific override; non-empty value disables color
+- **Windows VTP** — `ENABLE_VIRTUAL_TERMINAL_PROCESSING` enabled automatically on Windows 10+
+- **Runtime toggle** — `sink.setColor(true/false)` overrides auto-detection at any time
+- **Fluent builder compatible** — works with `.writeTo<minta::ColorConsoleSink>("name")`
 
-### Design
+### GitHub Project Hygiene (#72)
 
-- Kept C++11 compatibility by using existing `detail::make_unique` polyfill path.
-- Made `LogEntry` move-only semantics explicit:
-  - move ctor/assignment: `= default`
-  - copy ctor/assignment: `= delete`
-- Refactored emission path in `log_source.hpp`:
-  - shared implementation with nullable exception pointer
-  - separate non-exception overload to avoid placeholder exception allocation
-- Updated all formatter surfaces consistently:
-  - human-readable
-  - JSON
-  - compact JSON
-  - XML
-  - output template
-- Regenerated `single_include/lunar_log.hpp` after code changes.
+- `CHANGELOG.md` — full project history in Keep a Changelog format with compare links
+- `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist (tests, single_include, examples, wiki, CHANGELOG, breaking changes, CI)
+- `.github/ISSUE_TEMPLATE/bug_report.md` — version, platform, compiler, minimal repro template
+- `.github/ISSUE_TEMPLATE/feature_request.md` — problem, solution, API sketch, alternatives
+
+### Codecov Coverage Badge (#73)
+
+- Codecov upload step added to CI coverage job
+- Coverage badge added to README
 
 ## Highlights
 
-- ✅ All platforms: GCC (C++11/14/17), Clang, AppleClang, MSVC
-- ✅ 823 tests passing, 0 failures
-- ✅ Review: R1 (1 Minor, 2 Nits) → fixes applied → R2 (all fixed, no new findings)
+- **844 tests**, 0 failures
+- `ColorConsoleSink` is fully header-only and C++11 compatible
+- MSVC fix: `#undef ERROR` after `<windows.h>` prevents macro collision with `LogLevel::ERROR`

@@ -247,6 +247,11 @@ namespace detail {
                 m_flushRequested.store(true, std::memory_order_release);
                 m_flushDone = false;
             }
+            // Note: setFlushPending() modifies the atomic flag without holding m_mutex.
+            // This is intentional: the flag is read atomically in the CV predicate.
+            // A theoretical lost-wakeup window exists if notify fires between predicate
+            // evaluation and CV wait, but is benign -- the next push() or timeout wakes
+            // the consumer. This pattern is accepted for performance.
             m_queue.setFlushPending(true);
             m_queue.wake();
 

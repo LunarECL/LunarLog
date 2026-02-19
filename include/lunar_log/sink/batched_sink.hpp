@@ -22,6 +22,11 @@ namespace minta {
     ///   BatchOptions opts;
     ///   opts.setBatchSize(200).setFlushIntervalMs(3000).setMaxRetries(5);
     /// @endcode
+    ///
+    /// @warning When a producer thread triggers a flush (by reaching batchSize),
+    ///          it blocks for up to (timeoutMs + retryDelayMs) * (maxRetries+1).
+    ///          For latency-sensitive producers, wrap in AsyncSink<BatchedSink<...>>
+    ///          to offload flush work to a dedicated thread.
     struct BatchOptions {
         size_t batchSize_;         ///< Flush when buffer reaches this size
         size_t flushIntervalMs_;   ///< Periodic flush interval in ms

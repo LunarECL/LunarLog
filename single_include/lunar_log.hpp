@@ -3734,6 +3734,11 @@ namespace detail {
                 m_flushRequested.store(true, std::memory_order_release);
                 m_flushDone = false;
             }
+            // Note: setFlushPending() modifies the atomic flag without holding m_mutex.
+            // This is intentional: the flag is read atomically in the CV predicate.
+            // A theoretical lost-wakeup window exists if notify fires between predicate
+            // evaluation and CV wait, but is benign -- the next push() or timeout wakes
+            // the consumer. This pattern is accepted for performance.
             m_queue.setFlushPending(true);
             m_queue.wake();
 
@@ -3856,6 +3861,11 @@ namespace minta {
     ///   BatchOptions opts;
     ///   opts.setBatchSize(200).setFlushIntervalMs(3000).setMaxRetries(5);
     /// @endcode
+    ///
+    /// @warning When a producer thread triggers a flush (by reaching batchSize),
+    ///          it blocks for up to (timeoutMs + retryDelayMs) * (maxRetries+1).
+    ///          For latency-sensitive producers, wrap in AsyncSink<BatchedSink<...>>
+    ///          to offload flush work to a dedicated thread.
     struct BatchOptions {
         size_t batchSize_;         ///< Flush when buffer reaches this size
         size_t flushIntervalMs_;   ///< Periodic flush interval in ms
@@ -4200,7 +4210,9 @@ namespace minta {
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/select.h>
+#include <poll.h>
+#include <signal.h>
+#include <pthread.h>
 #include <sys/wait.h>
 #endif
 
@@ -4437,7 +4449,7 @@ namespace detail {
             // Resolve host
             struct addrinfo hints, *res = nullptr;
             std::memset(&hints, 0, sizeof(hints));
-            hints.ai_family = AF_INET;
+            hints.ai_family = AF_UNSPEC;  // IPv4 + IPv6
             hints.ai_socktype = SOCK_STREAM;
 
             std::string portStr = std::to_string(port);
@@ -4478,11 +4490,12 @@ namespace detail {
                     return false;
                 }
                 // Wait for connection with timeout
-                fd_set writefds;
-                FD_ZERO(&writefds);
-                FD_SET(sockfd, &writefds);
+                struct pollfd pfd;
+                pfd.fd = sockfd;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
 
-                int sel = select(sockfd + 1, nullptr, &writefds, nullptr, &tv);
+                int sel = poll(&pfd, 1, static_cast<int>(timeoutMs));
                 if (sel <= 0) {
                     close(sockfd);
                     return false;
@@ -4540,6 +4553,10 @@ namespace detail {
             }
 
             // Read response status line
+            // Note: Single recv() may return a partial HTTP response under high load.
+            // Status line parsing below may fail if the response is split across
+            // TCP segments. This is a known limitation accepted for simplicity.
+            // For production use, consider AsyncSink<HttpSink> or a robust HTTP client.
             char buf[1024];
             ssize_t received = recv(sockfd, buf, sizeof(buf) - 1, 0);
             close(sockfd);
@@ -4623,6 +4640,14 @@ namespace detail {
             // Parent: write body then wait
             close(pipefd[0]);
 
+            // Block SIGPIPE so broken-pipe returns EPIPE instead of killing the process.
+            // If the child exits early (exec failure, connection refused), the pipe read-end
+            // closes and write() would otherwise raise SIGPIPE with the default handler.
+            sigset_t blockSet, oldSet;
+            sigemptyset(&blockSet);
+            sigaddset(&blockSet, SIGPIPE);
+            pthread_sigmask(SIG_BLOCK, &blockSet, &oldSet);
+
             const char* data = body.c_str();
             size_t remaining = body.size();
             bool writeOk = true;
@@ -4633,6 +4658,9 @@ namespace detail {
                 remaining -= static_cast<size_t>(w);
             }
             close(pipefd[1]);
+
+            // Restore original signal mask
+            pthread_sigmask(SIG_SETMASK, &oldSet, nullptr);
 
             int status = 0;
             waitpid(pid, &status, 0);

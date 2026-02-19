@@ -58,6 +58,7 @@ namespace minta {
         size_t flushIntervalMs;
         size_t maxRetries;
         size_t maxQueueSize;
+        size_t retryDelayMs;
 
         explicit HttpSinkOptions(const std::string& url_)
             : url(url_)
@@ -67,7 +68,8 @@ namespace minta {
             , batchSize(50)
             , flushIntervalMs(5000)
             , maxRetries(3)
-            , maxQueueSize(10000) {}
+            , maxQueueSize(10000)
+            , retryDelayMs(1000) {}
 
         HttpSinkOptions& setHeader(const std::string& key, const std::string& val) {
             headers[key] = val;
@@ -99,6 +101,10 @@ namespace minta {
         }
         HttpSinkOptions& setVerifySsl(bool v) {
             verifySsl = v;
+            return *this;
+        }
+        HttpSinkOptions& setRetryDelayMs(size_t ms) {
+            retryDelayMs = ms;
             return *this;
         }
     };
@@ -190,7 +196,16 @@ namespace detail {
             : BatchedSink(makeBatchOptions(opts))
             , m_opts(std::move(opts))
             , m_formatter(detail::make_unique<CompactJsonFormatter>())
-        {}
+        {
+            // Validate URL at construction time and cache parsed result
+            m_parsedUrl = detail::parseUrl(m_opts.url);
+            if (m_parsedUrl.host.empty()) {
+                throw std::invalid_argument("HttpSink: invalid URL: " + m_opts.url);
+            }
+            if (m_parsedUrl.scheme != "http" && m_parsedUrl.scheme != "https") {
+                throw std::invalid_argument("HttpSink: unsupported scheme '" + m_parsedUrl.scheme + "' in URL: " + m_opts.url);
+            }
+        }
 
         ~HttpSink() noexcept {
             stopAndFlush();
@@ -201,18 +216,13 @@ namespace detail {
             std::string body = formatBatch(batch);
             if (body.empty()) return;
 
-            detail::ParsedUrl parsed = detail::parseUrl(m_opts.url);
-            if (!parsed.valid) {
-                throw std::runtime_error("HttpSink: invalid URL: " + m_opts.url);
-            }
-
             std::map<std::string, std::string> allHeaders = m_opts.headers;
             allHeaders["Content-Type"] = m_opts.contentType;
             if (allHeaders.find("User-Agent") == allHeaders.end()) {
                 allHeaders["User-Agent"] = "LunarLog/1.0";
             }
 
-            bool ok = httpPost(m_opts.url, body, allHeaders, m_opts.timeoutMs);
+            bool ok = httpPost(body, allHeaders, m_opts.timeoutMs);
             if (!ok) {
                 throw std::runtime_error("HttpSink: HTTP POST failed to " + m_opts.url);
             }
@@ -229,7 +239,8 @@ namespace detail {
             bo.setBatchSize(opts.batchSize)
               .setFlushIntervalMs(opts.flushIntervalMs)
               .setMaxRetries(opts.maxRetries)
-              .setMaxQueueSize(opts.maxQueueSize);
+              .setMaxQueueSize(opts.maxQueueSize)
+              .setRetryDelayMs(opts.retryDelayMs);
             return bo;
         }
 
@@ -243,19 +254,16 @@ namespace detail {
             return result;
         }
 
-        bool httpPost(const std::string& url, const std::string& body,
+        bool httpPost(const std::string& body,
                       const std::map<std::string, std::string>& headers,
                       size_t timeoutMs) {
-            detail::ParsedUrl parsed = detail::parseUrl(url);
-            if (!parsed.valid) return false;
-
 #ifdef _WIN32
-            return httpPostWinHTTP(url, body, headers, timeoutMs);
+            return httpPostWinHTTP(body, headers, timeoutMs);
 #else
-            if (parsed.scheme == "https") {
-                return httpPostCurl(url, body, headers, timeoutMs);
+            if (m_parsedUrl.scheme == "https") {
+                return httpPostCurl(m_opts.url, body, headers, timeoutMs);
             }
-            return httpPostPosix(parsed.host, parsed.port, parsed.path,
+            return httpPostPosix(m_parsedUrl.host, m_parsedUrl.port, m_parsedUrl.path,
                                 body, headers, timeoutMs);
 #endif
         }
@@ -291,7 +299,7 @@ namespace detail {
             }
 #endif
 
-            // Set timeout via select
+            // Set timeout for send/recv via setsockopt
             struct timeval tv;
             tv.tv_sec = static_cast<long>(timeoutMs / 1000);
             tv.tv_usec = static_cast<long>((timeoutMs % 1000) * 1000);
@@ -314,7 +322,10 @@ namespace detail {
                 pfd.events = POLLOUT;
                 pfd.revents = 0;
 
-                int sel = poll(&pfd, 1, static_cast<int>(timeoutMs));
+                int sel;
+                do {
+                    sel = poll(&pfd, 1, static_cast<int>(timeoutMs));
+                } while (sel < 0 && errno == EINTR);
                 if (sel <= 0) {
                     close(sockfd);
                     return false;
@@ -340,6 +351,7 @@ namespace detail {
             std::string request;
             request += "POST " + path + " HTTP/1.1\r\n";
             std::string hostHeader = host;
+            // httpPostPosix is only called for http:// URLs (default port 80)
             if (port != 80) {
                 hostHeader += ":" + std::to_string(port);
             }
@@ -360,10 +372,14 @@ namespace detail {
             while (totalSent < requestLen) {
                 size_t remaining = static_cast<size_t>(requestLen - totalSent);
 #ifdef MSG_NOSIGNAL
-                ssize_t sent = send(sockfd, ptr + totalSent, remaining, MSG_NOSIGNAL);
+                int sendFlags = MSG_NOSIGNAL;
 #else
-                ssize_t sent = send(sockfd, ptr + totalSent, remaining, 0);
+                int sendFlags = 0;
 #endif
+                ssize_t sent;
+                do {
+                    sent = send(sockfd, ptr + totalSent, remaining, sendFlags);
+                } while (sent < 0 && errno == EINTR);
                 if (sent <= 0) {
                     close(sockfd);
                     return false;
@@ -377,7 +393,10 @@ namespace detail {
             // TCP segments. This is a known limitation accepted for simplicity.
             // For production use, consider AsyncSink<HttpSink> or a robust HTTP client.
             char buf[1024];
-            ssize_t received = recv(sockfd, buf, sizeof(buf) - 1, 0);
+            ssize_t received;
+            do {
+                received = recv(sockfd, buf, sizeof(buf) - 1, 0);
+            } while (received < 0 && errno == EINTR);
             close(sockfd);
 
             if (received <= 0) return false;
@@ -462,24 +481,32 @@ namespace detail {
             // Block SIGPIPE so broken-pipe returns EPIPE instead of killing the process.
             // If the child exits early (exec failure, connection refused), the pipe read-end
             // closes and write() would otherwise raise SIGPIPE with the default handler.
-            sigset_t blockSet, oldSet;
-            sigemptyset(&blockSet);
-            sigaddset(&blockSet, SIGPIPE);
-            pthread_sigmask(SIG_BLOCK, &blockSet, &oldSet);
+            struct ScopedSigpipeBlock {
+                sigset_t m_old;
+                ScopedSigpipeBlock() {
+                    sigset_t block;
+                    sigemptyset(&block);
+                    sigaddset(&block, SIGPIPE);
+                    pthread_sigmask(SIG_BLOCK, &block, &m_old);
+                }
+                ~ScopedSigpipeBlock() {
+                    pthread_sigmask(SIG_SETMASK, &m_old, nullptr);
+                }
+            };
 
-            const char* data = body.c_str();
-            size_t remaining = body.size();
             bool writeOk = true;
-            while (remaining > 0) {
-                ssize_t w = ::write(pipefd[1], data, remaining);
-                if (w <= 0) { writeOk = false; break; }
-                data += w;
-                remaining -= static_cast<size_t>(w);
+            {
+                ScopedSigpipeBlock sigGuard;
+                const char* data = body.c_str();
+                size_t remaining = body.size();
+                while (remaining > 0) {
+                    ssize_t w = ::write(pipefd[1], data, remaining);
+                    if (w <= 0) { writeOk = false; break; }
+                    data += w;
+                    remaining -= static_cast<size_t>(w);
+                }
+                close(pipefd[1]);
             }
-            close(pipefd[1]);
-
-            // Restore original signal mask
-            pthread_sigmask(SIG_SETMASK, &oldSet, nullptr);
 
             int status = 0;
             waitpid(pid, &status, 0);
@@ -501,14 +528,11 @@ namespace detail {
             return result;
         }
 
-        bool httpPostWinHTTP(const std::string& url, const std::string& body,
+        bool httpPostWinHTTP(const std::string& body,
                             const std::map<std::string, std::string>& headers,
                             size_t timeoutMs) {
-            detail::ParsedUrl parsed = detail::parseUrl(url);
-            if (!parsed.valid) return false;
-
-            std::wstring wHost = utf8ToWide(parsed.host);
-            std::wstring wPath = utf8ToWide(parsed.path);
+            std::wstring wHost = utf8ToWide(m_parsedUrl.host);
+            std::wstring wPath = utf8ToWide(m_parsedUrl.path);
 
             HINTERNET hSession = WinHttpOpen(L"LunarLog/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -522,13 +546,13 @@ namespace detail {
 
             HINTERNET hConnect = WinHttpConnect(hSession,
                 wHost.c_str(),
-                static_cast<INTERNET_PORT>(parsed.port), 0);
+                static_cast<INTERNET_PORT>(m_parsedUrl.port), 0);
             if (!hConnect) {
                 WinHttpCloseHandle(hSession);
                 return false;
             }
 
-            DWORD flags = (parsed.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
+            DWORD flags = (m_parsedUrl.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
             HINTERNET hRequest = WinHttpOpenRequest(hConnect,
                 L"POST", wPath.c_str(),
                 NULL, WINHTTP_NO_REFERER,
@@ -597,6 +621,7 @@ namespace detail {
 #endif // _WIN32
 
         HttpSinkOptions m_opts;
+        detail::ParsedUrl m_parsedUrl;
         std::unique_ptr<CompactJsonFormatter> m_formatter;
     };
 

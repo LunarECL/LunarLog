@@ -91,6 +91,9 @@ namespace detail {
         /// Returns false if stopped with empty queue.
         bool waitForData() {
             std::unique_lock<std::mutex> lock(m_mutex);
+            // Note: acquire ordering is redundant here since the mutex already
+            // provides the necessary happens-before guarantee; kept for
+            // defensive clarity.
             m_notEmpty.wait(lock, [this] {
                 return !m_queue.empty() || m_stopped || m_flushPending.load(std::memory_order_acquire);
             });

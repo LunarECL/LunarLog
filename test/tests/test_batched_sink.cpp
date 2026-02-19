@@ -301,3 +301,17 @@ TEST_F(BatchedSinkTest, ConcurrentWritesWithRetry) {
     EXPECT_EQ(ptr->totalEntries(), 40u);
     EXPECT_GE(ptr->errors().size(), 1u);
 }
+
+// --- Test 12: droppedCount incremented on queue overflow ---
+TEST_F(BatchedSinkTest, DroppedCountOnOverflow) {
+    minta::BatchOptions opts;
+    opts.setMaxQueueSize(5).setBatchSize(1000).setFlushIntervalMs(0);
+    MockBatchedSink sink(opts);
+
+    for (int i = 0; i < 10; ++i) {
+        auto entry = makeEntry("drop_" + std::to_string(i));
+        sink.write(entry);
+    }
+
+    EXPECT_EQ(sink.droppedCount(), 5u);
+}

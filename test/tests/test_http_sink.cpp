@@ -276,4 +276,16 @@ TEST_F(HttpSinkTest, UrlParsingEdgeCases) {
     // Just scheme
     auto p3 = minta::detail::parseUrl("http://");
     EXPECT_FALSE(p3.valid);
+
+    // Port 0 (below valid range)
+    auto p4 = minta::detail::parseUrl("http://host:0/path");
+    EXPECT_FALSE(p4.valid);
+
+    // Non-numeric port
+    auto p5 = minta::detail::parseUrl("http://host:abc/path");
+    EXPECT_FALSE(p5.valid);
+
+    // Empty port (trailing colon)
+    auto p6 = minta::detail::parseUrl("http://host:/path");
+    EXPECT_FALSE(p6.valid);
 }

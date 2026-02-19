@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <climits>
 #include <sstream>
 
 #ifdef _WIN32
@@ -33,6 +34,13 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/wait.h>
+#include <time.h>
+
+#ifdef MSG_NOSIGNAL
+#define MSG_NOSIGNAL_COMPAT MSG_NOSIGNAL
+#else
+#define MSG_NOSIGNAL_COMPAT 0
+#endif
 #endif
 
 namespace minta {
@@ -147,8 +155,11 @@ namespace detail {
             result.path = url.substr(pathStart);
         }
 
-        // TODO: IPv6 literal URLs (e.g. http://[::1]:8080/path) are not currently
-        // supported. The bracket notation confuses the port-finding find(':').
+        // Note: IPv6 literal URLs (e.g. http://[::1]:8080/path) are not supported.
+        // The bracket notation in the host conflicts with port-separator detection.
+        if (!hostPort.empty() && hostPort[0] == '[') {
+            return result; // valid=false — IPv6 not supported
+        }
 
         // Find port
         size_t colonPos = hostPort.find(':');
@@ -279,6 +290,25 @@ namespace detail {
                           const std::string& path, const std::string& body,
                           const std::map<std::string, std::string>& headers,
                           size_t timeoutMs) {
+            // Absolute deadline: caps total elapsed time across all syscalls
+            // to prevent slow-drip attacks that reset per-call timeouts.
+            struct timespec deadline;
+            clock_gettime(CLOCK_MONOTONIC, &deadline);
+            deadline.tv_sec += static_cast<long>(timeoutMs / 1000);
+            deadline.tv_nsec += static_cast<long>((timeoutMs % 1000) * 1000000L);
+            if (deadline.tv_nsec >= 1000000000L) {
+                deadline.tv_sec += 1;
+                deadline.tv_nsec -= 1000000000L;
+            }
+
+            auto remainingMs = [&]() -> long {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long ms = (deadline.tv_sec - now.tv_sec) * 1000L
+                        + (deadline.tv_nsec - now.tv_nsec) / 1000000L;
+                return ms > 0 ? ms : 0;
+            };
+
             // Resolve host
             struct addrinfo hints, *res = nullptr;
             std::memset(&hints, 0, sizeof(hints));
@@ -312,11 +342,6 @@ namespace detail {
             }
 #endif
 
-            // Set timeout for send/recv via setsockopt
-            struct timeval tv;
-            tv.tv_sec = static_cast<long>(timeoutMs / 1000);
-            tv.tv_usec = static_cast<long>((timeoutMs % 1000) * 1000);
-
             // Set non-blocking for connect timeout
             int flags = fcntl(sockfd, F_GETFL, 0);
             fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
@@ -336,7 +361,9 @@ namespace detail {
 
                 int sel;
                 do {
-                    sel = poll(&pfd, 1, static_cast<int>(timeoutMs));
+                    long rm = remainingMs();
+                    if (rm <= 0) { sel = 0; break; }
+                    sel = poll(&pfd, 1, static_cast<int>(rm > static_cast<long>(INT_MAX) ? INT_MAX : rm));
                 } while (sel < 0 && errno == EINTR);
                 if (sel <= 0) {
                     return false;
@@ -353,9 +380,15 @@ namespace detail {
             // Set back to blocking
             fcntl(sockfd, F_SETFL, flags);
 
-            // Set socket timeout for send/recv
-            setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-            setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            {
+                long rm = remainingMs();
+                if (rm <= 0) return false;
+                struct timeval tv;
+                tv.tv_sec = static_cast<long>(rm / 1000);
+                tv.tv_usec = static_cast<long>((rm % 1000) * 1000);
+                setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            }
 
             // Build HTTP request
             std::string request;
@@ -380,15 +413,11 @@ namespace detail {
             ssize_t requestLen = static_cast<ssize_t>(request.size());
             const char* ptr = request.c_str();
             while (totalSent < requestLen) {
+                if (remainingMs() <= 0) return false;
                 size_t remaining = static_cast<size_t>(requestLen - totalSent);
-#ifdef MSG_NOSIGNAL
-                int sendFlags = MSG_NOSIGNAL;
-#else
-                int sendFlags = 0;
-#endif
                 ssize_t sent;
                 do {
-                    sent = send(sockfd, ptr + totalSent, remaining, sendFlags);
+                    sent = send(sockfd, ptr + totalSent, remaining, MSG_NOSIGNAL_COMPAT);
                 } while (sent < 0 && errno == EINTR);
                 if (sent <= 0) {
                     return false;
@@ -396,33 +425,39 @@ namespace detail {
                 totalSent += sent;
             }
 
-            // Read HTTP status line byte-by-byte until \r\n.
-            // Looping ensures correct parsing even when TCP segments
-            // split the status line across multiple recv() calls.
+            // Read HTTP status line in bulk (up to 256 B per recv) to reduce
+            // syscall overhead.  Accumulate until \r\n for TCP segmentation.
             std::string responseBuf;
             responseBuf.reserve(256);
             {
-                char byte = 0;
+                char buf[256];
                 while (responseBuf.size() < 4096) {
+                    if (remainingMs() <= 0) break;
                     ssize_t n;
-                    do { n = ::recv(sockfd, &byte, 1, 0); }
+                    do { n = ::recv(sockfd, buf, sizeof(buf) - 1, MSG_NOSIGNAL_COMPAT); }
                     while (n < 0 && errno == EINTR);
                     if (n <= 0) break;
-                    responseBuf += byte;
-                    if (responseBuf.size() >= 2 &&
-                        responseBuf[responseBuf.size()-2] == '\r' &&
-                        responseBuf[responseBuf.size()-1] == '\n') break;
+                    responseBuf.append(buf, static_cast<size_t>(n));
+                    if (responseBuf.find("\r\n") != std::string::npos) break;
                 }
             }
 
             if (responseBuf.empty()) return false;
 
-            // Parse HTTP status code
             // Expected: "HTTP/1.1 200 OK\r\n"
             size_t spacePos = responseBuf.find(' ');
             if (spacePos == std::string::npos) return false;
             int statusCode = std::atoi(responseBuf.c_str() + spacePos + 1);
-            return (statusCode >= 200 && statusCode < 300);
+            bool success = (statusCode >= 200 && statusCode < 300);
+
+            // Drain remaining response to avoid TCP RST on close.
+            // Bounded by SO_RCVTIMEO already set from deadline.
+            if (remainingMs() > 0) {
+                char drain[1024];
+                while (::recv(sockfd, drain, sizeof(drain), MSG_NOSIGNAL_COMPAT) > 0) {}
+            }
+
+            return success;
         }
 
         // CWE-78 fix: uses fork/execvp instead of popen to avoid shell injection.

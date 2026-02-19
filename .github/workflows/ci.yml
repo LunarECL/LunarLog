@@ -87,12 +87,13 @@ jobs:
       - name: Generate coverage report
         run: |
           lcov --capture --directory build --base-directory . --output-file coverage_raw.info \
-            --no-external --ignore-errors mismatch
+            --no-external --ignore-errors mismatch,unused,empty
           lcov --remove coverage_raw.info \
             '*/build/_deps/*' \
             '*/test/*' \
             '*/examples/*' \
-            --output-file coverage.info
+            --output-file coverage.info \
+            --ignore-errors unused,empty
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           lcov --list coverage.info >> $GITHUB_STEP_SUMMARY || true

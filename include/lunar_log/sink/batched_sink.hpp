@@ -141,6 +141,11 @@ namespace minta {
         /// stopAndFlush() before their vtable is destroyed; otherwise any
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
+        ///
+        /// @note writeBatch() may be called concurrently from the timer thread
+        ///       and from write() (when batchSize is reached). Implementors must
+        ///       ensure writeBatch() is thread-safe, or use external synchronization.
+        ///       Both call paths hold no mutex when invoking writeBatch().
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
             (void)batch;
         }

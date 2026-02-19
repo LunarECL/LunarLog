@@ -57,8 +57,6 @@ TEST_F(AsyncSinkTest, WriteReachesInnerSink) {
     logger.addSink<minta::AsyncSink<minta::FileSink>>("async_test_write.txt");
     logger.info("Hello async world");
     logger.flush();
-    // Give async consumer time to process
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     TestUtils::waitForFileContent("async_test_write.txt");
     std::string content = TestUtils::readLogFile("async_test_write.txt");
@@ -164,7 +162,6 @@ TEST_F(AsyncSinkTest, GracefulShutdownFlushesRemaining) {
             logger.info("Shutdown test message {i}", i);
         }
         logger.flush();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     } // Logger and AsyncSink destroyed here — should flush remaining
 
     TestUtils::waitForFileContent("async_test_shutdown.txt");
@@ -194,7 +191,6 @@ TEST_F(AsyncSinkTest, MultiSinkSyncAndAsyncMixed) {
 
     logger.info("Multi-sink test");
     logger.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // Both sinks should have the message
     std::string syncContent = TestUtils::readLogFile("async_test_sync.txt");
@@ -213,7 +209,6 @@ TEST_F(AsyncSinkTest, FifoOrderSingleProducer) {
         logger.info("Seq {idx}", i);
     }
     logger.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     TestUtils::waitForFileContent("async_test_order.txt", 30);
     std::string content = TestUtils::readLogFile("async_test_order.txt");
@@ -264,7 +259,6 @@ TEST_F(AsyncSinkTest, FluentBuilderWithAsyncSink) {
 
     logger.info("Fluent async test");
     logger.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     TestUtils::waitForFileContent("async_test_fluent.txt");
     std::string content = TestUtils::readLogFile("async_test_fluent.txt");

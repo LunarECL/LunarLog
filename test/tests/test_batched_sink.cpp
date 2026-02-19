@@ -58,12 +58,12 @@ public:
         return m_errors;
     }
 
-    void setThrowCount(int n) { m_throwCount = n; }
+    void setThrowCount(int n) { m_throwCount.store(n, std::memory_order_release); }
 
 protected:
     void writeBatch(const std::vector<const minta::LogEntry*>& batch) override {
-        if (m_throwCount > 0) {
-            --m_throwCount;
+        if (m_throwCount.load(std::memory_order_acquire) > 0) {
+            m_throwCount.fetch_sub(1, std::memory_order_acq_rel);
             throw std::runtime_error("Mock batch error");
         }
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -86,7 +86,7 @@ protected:
 private:
     mutable std::mutex m_mutex;
     std::vector<std::vector<std::string>> m_batches;
-    int m_throwCount;
+    std::atomic<int> m_throwCount;
     std::atomic<size_t> m_flushCallCount;
     std::vector<std::pair<std::string, size_t>> m_errors;
 };

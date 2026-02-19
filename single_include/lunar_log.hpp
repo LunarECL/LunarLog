@@ -3712,6 +3712,9 @@ namespace detail {
                     m_innerSink->write(remaining[i]);
                 } catch (...) {}
             }
+            try {
+                if (m_innerSink) m_innerSink->flush();
+            } catch (...) {}
         }
 
         /// Enqueue an entry for asynchronous writing.
@@ -3781,6 +3784,14 @@ namespace detail {
                             m_innerSink->write(extra[i]);
                         } catch (...) {}
                     }
+
+                    // Propagate flush to inner sink so buffered sinks
+                    // (e.g. BatchedSink inside HttpSink) actually deliver.
+                    try {
+                        if (m_innerSink) {
+                            m_innerSink->flush();
+                        }
+                    } catch (...) {}
 
                     {
                         std::lock_guard<std::mutex> lock(m_flushMutex);
@@ -3964,6 +3975,11 @@ namespace minta {
         /// stopAndFlush() before their vtable is destroyed; otherwise any
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
+        ///
+        /// @note writeBatch() may be called concurrently from the timer thread
+        ///       and from write() (when batchSize is reached). Implementors must
+        ///       ensure writeBatch() is thread-safe, or use external synchronization.
+        ///       Both call paths hold no mutex when invoking writeBatch().
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
             (void)batch;
         }
@@ -4361,6 +4377,9 @@ namespace detail {
 
             std::map<std::string, std::string> allHeaders = m_opts.headers;
             allHeaders["Content-Type"] = m_opts.contentType;
+            if (allHeaders.find("User-Agent") == allHeaders.end()) {
+                allHeaders["User-Agent"] = "LunarLog/1.0";
+            }
 
             bool ok = httpPost(m_opts.url, body, allHeaders, m_opts.timeoutMs);
             if (!ok) {
@@ -4434,6 +4453,13 @@ namespace detail {
                 return false;
             }
 
+#ifdef SO_NOSIGPIPE
+            {
+                int one = 1;
+                setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+            }
+#endif
+
             // Set timeout via select
             struct timeval tv;
             tv.tv_sec = static_cast<long>(timeoutMs / 1000);
@@ -4498,9 +4524,14 @@ namespace detail {
             // Send
             ssize_t totalSent = 0;
             ssize_t requestLen = static_cast<ssize_t>(request.size());
+            const char* ptr = request.c_str();
             while (totalSent < requestLen) {
-                ssize_t sent = send(sockfd, request.c_str() + totalSent,
-                                   static_cast<size_t>(requestLen - totalSent), 0);
+                size_t remaining = static_cast<size_t>(requestLen - totalSent);
+#ifdef MSG_NOSIGNAL
+                ssize_t sent = send(sockfd, ptr + totalSent, remaining, MSG_NOSIGNAL);
+#else
+                ssize_t sent = send(sockfd, ptr + totalSent, remaining, 0);
+#endif
                 if (sent <= 0) {
                     close(sockfd);
                     return false;

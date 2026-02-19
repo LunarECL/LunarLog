@@ -225,6 +225,9 @@ namespace detail {
                     m_innerSink->write(remaining[i]);
                 } catch (...) {}
             }
+            try {
+                if (m_innerSink) m_innerSink->flush();
+            } catch (...) {}
         }
 
         /// Enqueue an entry for asynchronous writing.
@@ -294,6 +297,14 @@ namespace detail {
                             m_innerSink->write(extra[i]);
                         } catch (...) {}
                     }
+
+                    // Propagate flush to inner sink so buffered sinks
+                    // (e.g. BatchedSink inside HttpSink) actually deliver.
+                    try {
+                        if (m_innerSink) {
+                            m_innerSink->flush();
+                        }
+                    } catch (...) {}
 
                     {
                         std::lock_guard<std::mutex> lock(m_flushMutex);

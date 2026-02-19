@@ -326,7 +326,11 @@ namespace detail {
             // Build HTTP request
             std::string request;
             request += "POST " + path + " HTTP/1.1\r\n";
-            request += "Host: " + host + "\r\n";
+            std::string hostHeader = host;
+            if (port != 80) {
+                hostHeader += ":" + std::to_string(port);
+            }
+            request += "Host: " + hostHeader + "\r\n";
             request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
@@ -367,6 +371,8 @@ namespace detail {
 
         // CWE-78 fix: uses fork/execvp instead of popen to avoid shell injection.
         // argv elements go directly to curl with no shell interpretation.
+        // Requires C++11 or later (SSO guaranteed, no COW string implementations).
+        // argv strings are valid in child process after fork() due to value semantics.
         bool httpPostCurl(const std::string& url, const std::string& body,
                          const std::map<std::string, std::string>& headers,
                          size_t timeoutMs) {
@@ -378,8 +384,11 @@ namespace detail {
             args.push_back("/dev/null");
             args.push_back("-X");
             args.push_back("POST");
+            if (!m_opts.verifySsl) {
+                args.push_back("--insecure");
+            }
             args.push_back("--max-time");
-            args.push_back(std::to_string(timeoutMs / 1000));
+            args.push_back(std::to_string((timeoutMs + 999) / 1000));
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
@@ -497,6 +506,15 @@ namespace detail {
                 return false;
             }
 
+            if (!m_opts.verifySsl) {
+                DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA
+                               | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE
+                               | SECURITY_FLAG_IGNORE_CERT_CN_INVALID
+                               | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
+                WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS,
+                                 &secFlags, sizeof(secFlags));
+            }
+
             // Add headers
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
@@ -510,7 +528,7 @@ namespace detail {
             // Send request
             BOOL result = WinHttpSendRequest(hRequest,
                 WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                const_cast<char*>(body.c_str()),
+                static_cast<LPVOID>(const_cast<char*>(body.c_str())),
                 static_cast<DWORD>(body.size()),
                 static_cast<DWORD>(body.size()), 0);
 

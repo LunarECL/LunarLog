@@ -41,7 +41,8 @@ namespace detail {
     public:
         explicit BoundedQueue(size_t capacity)
             : m_capacity(capacity > 0 ? capacity : 1)
-            , m_stopped(false) {}
+            , m_stopped(false)
+            , m_flushPending(false) {}
 
         /// Push an entry into the queue with the specified overflow policy.
         /// Returns true if the entry was enqueued, false if dropped.
@@ -91,9 +92,9 @@ namespace detail {
         bool waitForData() {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_notEmpty.wait(lock, [this] {
-                return !m_queue.empty() || m_stopped;
+                return !m_queue.empty() || m_stopped || m_flushPending.load(std::memory_order_acquire);
             });
-            return !m_queue.empty();
+            return !m_queue.empty() || m_flushPending.load(std::memory_order_acquire);
         }
 
         /// Wait until at least one entry is available or timeout expires.
@@ -101,9 +102,9 @@ namespace detail {
         bool waitForData(std::chrono::milliseconds timeout) {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_notEmpty.wait_for(lock, timeout, [this] {
-                return !m_queue.empty() || m_stopped;
+                return !m_queue.empty() || m_stopped || m_flushPending.load(std::memory_order_acquire);
             });
-            return !m_queue.empty();
+            return !m_queue.empty() || m_flushPending.load(std::memory_order_acquire);
         }
 
         /// Wake all waiters (used for shutdown).
@@ -130,6 +131,13 @@ namespace detail {
             return m_queue.empty();
         }
 
+        /// Set the flush-pending flag. When true, waitForData() predicates
+        /// are satisfied even if the queue is empty, unblocking the consumer
+        /// so it can process a flush request.
+        void setFlushPending(bool v) {
+            m_flushPending.store(v, std::memory_order_release);
+        }
+
     private:
         mutable std::mutex m_mutex;
         std::condition_variable m_notEmpty;
@@ -137,6 +145,7 @@ namespace detail {
         std::deque<LogEntry> m_queue;
         size_t m_capacity;
         bool m_stopped;
+        std::atomic<bool> m_flushPending;
     };
 
 } // namespace detail
@@ -227,7 +236,7 @@ namespace detail {
         }
 
         /// Flush: wait for the consumer to finish processing all queued entries.
-        void flush() {
+        void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
             {
@@ -235,6 +244,7 @@ namespace detail {
                 m_flushRequested.store(true, std::memory_order_release);
                 m_flushDone = false;
             }
+            m_queue.setFlushPending(true);
             m_queue.wake();
 
             std::unique_lock<std::mutex> lock(m_flushMutex);
@@ -276,6 +286,7 @@ namespace detail {
                 }
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
+                    m_queue.setFlushPending(false);
                     std::vector<LogEntry> extra;
                     m_queue.drain(extra);
                     for (size_t i = 0; i < extra.size(); ++i) {

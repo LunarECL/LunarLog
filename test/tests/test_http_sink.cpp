@@ -209,6 +209,7 @@ TEST_F(HttpSinkTest, HttpPostToLocalhostMockServer) {
     EXPECT_NE(receivedBody.find("Test log message"), std::string::npos);
 }
 
+// Note: TOCTOU race is acceptable here; the port is intentionally unused.
 static int findFreePort() {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return 19999;

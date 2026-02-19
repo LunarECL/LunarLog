@@ -164,6 +164,14 @@ namespace minta {
             m_sinks[index]->setLocale(locale);
         }
 
+        void flushSinks() {
+            for (auto& sink : m_sinks) {
+                try {
+                    sink->flush();
+                } catch (...) {}
+            }
+        }
+
     private:
         void requireValidIndex(size_t index) const {
             if (index >= m_sinks.size()) {

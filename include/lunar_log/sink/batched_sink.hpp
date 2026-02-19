@@ -120,7 +120,7 @@ namespace minta {
         }
 
         /// Force flush all buffered entries.
-        void flush() {
+        void flush() override {
             std::vector<LogEntry> toFlush;
             {
                 std::lock_guard<std::mutex> lock(m_bufferMutex);

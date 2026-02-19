@@ -202,10 +202,13 @@ namespace detail {
         ///          complete, so calling it from inside write() will deadlock.
         void flush() {
             if (!m_threadStarted.load(std::memory_order_acquire)) return;
-            std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_flushCV.wait(lock, [this] {
-                return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
-            });
+            {
+                std::unique_lock<std::mutex> lock(m_queueMutex);
+                m_flushCV.wait(lock, [this] {
+                    return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
+                });
+            }
+            m_logManager.flushSinks();
         }
 
         /// Add an unnamed sink (auto-named "sink_0", "sink_1", etc.).

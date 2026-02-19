@@ -273,3 +273,31 @@ TEST_F(BatchedSinkTest, EmptyBufferNoWriteBatch) {
     sink.flush(); // Should not call writeBatch
     EXPECT_EQ(sink.batchCount(), 0u);
 }
+
+// --- Test 11: Concurrent writes with retry ---
+TEST_F(BatchedSinkTest, ConcurrentWritesWithRetry) {
+    minta::BatchOptions opts;
+    opts.setBatchSize(5).setFlushIntervalMs(0).setMaxRetries(3).setRetryDelayMs(10);
+    auto sink = std::make_shared<MockBatchedSink>(opts);
+    auto* ptr = sink.get();
+
+    ptr->setThrowCount(1);
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 8; ++t) {
+        threads.emplace_back([ptr, t] {
+            for (int i = 0; i < 5; ++i) {
+                auto entry = makeEntry("retry_t" + std::to_string(t) + "_" + std::to_string(i));
+                ptr->write(entry);
+            }
+        });
+    }
+
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    ptr->flush();
+    EXPECT_EQ(ptr->totalEntries(), 40u);
+    EXPECT_GE(ptr->errors().size(), 1u);
+}

@@ -181,9 +181,7 @@ TEST_F(AsyncSinkTest, FlushSynchronization) {
 
     logger.info("Before flush");
     logger.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    TestUtils::waitForFileContent("async_test_flush.txt");
     std::string content = TestUtils::readLogFile("async_test_flush.txt");
     EXPECT_NE(content.find("Before flush"), std::string::npos);
 }

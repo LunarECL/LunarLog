@@ -2,11 +2,13 @@
 #define LUNAR_LOG_ENTRY_HPP
 
 #include "log_level.hpp"
+#include "exception_info.hpp"
 #include <string>
 #include <chrono>
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <memory>
 #include <thread>
 
 namespace minta {
@@ -32,11 +34,16 @@ namespace minta {
         std::vector<std::string> tags;
         std::string locale = "C";
         std::thread::id threadId;
-        std::string exceptionType;
-        std::string exceptionMessage;
-        std::string exceptionChain;
+        std::unique_ptr<detail::ExceptionInfo> exception;
+
+        /// Returns true if this log entry has exception information attached.
+        bool hasException() const { return exception != nullptr; }
 
         LogEntry() = default;
+        LogEntry(LogEntry&&) = default;
+        LogEntry& operator=(LogEntry&&) = default;
+        LogEntry(const LogEntry&) = delete;
+        LogEntry& operator=(const LogEntry&) = delete;
 
         /// Backward-compatible positional constructor for custom formatters.
         LogEntry(LogLevel level_, std::string message_, std::chrono::system_clock::time_point timestamp_,
@@ -47,10 +54,7 @@ namespace minta {
                  std::vector<PlaceholderProperty> properties_,
                  std::vector<std::string> tags_ = {},
                  std::string locale_ = "C",
-                 std::thread::id threadId_ = std::thread::id(),
-                 std::string exceptionType_ = "",
-                 std::string exceptionMessage_ = "",
-                 std::string exceptionChain_ = "")
+                 std::thread::id threadId_ = std::thread::id())
             : level(level_), message(std::move(message_)), timestamp(timestamp_),
               templateStr(std::move(templateStr_)), templateHash(templateHash_),
               arguments(std::move(arguments_)),
@@ -58,10 +62,7 @@ namespace minta {
               customContext(std::move(customContext_)), properties(std::move(properties_)),
               tags(std::move(tags_)),
               locale(std::move(locale_)),
-              threadId(threadId_),
-              exceptionType(std::move(exceptionType_)),
-              exceptionMessage(std::move(exceptionMessage_)),
-              exceptionChain(std::move(exceptionChain_)) {}
+              threadId(threadId_) {}
     };
 } // namespace minta
 

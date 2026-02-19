@@ -77,16 +77,16 @@ namespace minta {
                 json += '"';
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 // Build the full @x string first, then escape once to avoid
                 // fragmented escaping that can produce inconsistent output.
                 std::string xValue;
-                xValue += entry.exceptionType;
+                xValue += entry.exception->type;
                 xValue += ": ";
-                xValue += entry.exceptionMessage;
-                if (!entry.exceptionChain.empty()) {
+                xValue += entry.exception->message;
+                if (!entry.exception->chain.empty()) {
                     xValue += '\n';
-                    xValue += entry.exceptionChain;
+                    xValue += entry.exception->chain;
                 }
                 json += R"(,"@x":")";
                 json += detail::json::escapeJsonString(xValue);

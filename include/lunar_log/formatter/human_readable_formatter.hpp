@@ -77,13 +77,13 @@ namespace minta {
                 result += '}';
             }
 
-            if (!entry.exceptionType.empty()) {
+            if (entry.hasException()) {
                 result += "\n  ";
-                result += entry.exceptionType;
+                result += entry.exception->type;
                 result += ": ";
-                result += entry.exceptionMessage;
-                if (!entry.exceptionChain.empty()) {
-                    const std::string& chain = entry.exceptionChain;
+                result += entry.exception->message;
+                if (!entry.exception->chain.empty()) {
+                    const std::string& chain = entry.exception->chain;
                     size_t pos = 0;
                     while (pos < chain.size()) {
                         size_t nl = chain.find('\n', pos);

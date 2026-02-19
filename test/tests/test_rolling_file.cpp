@@ -637,8 +637,10 @@ TEST_F(RollingFileTest, HybridPolicySizeRotation) {
 
 // ---------------------------------------------------------------------------
 // ensureOpen() failure — directory is read-only, file cannot be opened
+// (POSIX only: Windows does not enforce read-only on directories via chmod)
 // ---------------------------------------------------------------------------
 
+#ifndef _WIN32
 TEST_F(RollingFileTest, EnsureOpenFailure) {
     std::string dir = "roll_open_fail_dir";
     mkdir(dir.c_str(), 0755);
@@ -665,11 +667,14 @@ TEST_F(RollingFileTest, EnsureOpenFailure) {
     removeIfExists(dir + "/roll.log");
     removeDirIfExists(dir);
 }
+#endif  // !_WIN32
 
 // ---------------------------------------------------------------------------
 // rename() failure during rotation — directory is read-only when rotating
+// (POSIX only: Windows does not enforce read-only on directories via chmod)
 // ---------------------------------------------------------------------------
 
+#ifndef _WIN32
 TEST_F(RollingFileTest, RenameFailureDuringRotation) {
     std::string dir = "roll_ren_dir";
     mkdir(dir.c_str(), 0755);
@@ -704,6 +709,7 @@ TEST_F(RollingFileTest, RenameFailureDuringRotation) {
     removeIfExists(dir + "/roll.log");
     removeDirIfExists(dir);
 }
+#endif  // !_WIN32
 
 // ---------------------------------------------------------------------------
 // needsRotation() — same-second time check is skipped

@@ -138,6 +138,17 @@ namespace detail {
             m_flushPending.store(v, std::memory_order_release);
         }
 
+        /// Atomically set the flush-pending flag and wake all waiters.
+        /// Must be used instead of separate setFlushPending(true) + wake()
+        /// to avoid lost-wakeup between flag set and notify.
+        void requestFlush() {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_flushPending.store(true, std::memory_order_release);
+            }
+            m_notEmpty.notify_all();
+        }
+
     private:
         mutable std::mutex m_mutex;
         std::condition_variable m_notEmpty;
@@ -247,13 +258,7 @@ namespace detail {
                 m_flushRequested.store(true, std::memory_order_release);
                 m_flushDone = false;
             }
-            // Note: setFlushPending() modifies the atomic flag without holding m_mutex.
-            // This is intentional: the flag is read atomically in the CV predicate.
-            // A theoretical lost-wakeup window exists if notify fires between predicate
-            // evaluation and CV wait, but is benign -- the next push() or timeout wakes
-            // the consumer. This pattern is accepted for performance.
-            m_queue.setFlushPending(true);
-            m_queue.wake();
+            m_queue.requestFlush();
 
             std::unique_lock<std::mutex> lock(m_flushMutex);
             m_flushCV.wait(lock, [this] {

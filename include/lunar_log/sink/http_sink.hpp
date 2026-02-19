@@ -147,6 +147,9 @@ namespace detail {
             result.path = url.substr(pathStart);
         }
 
+        // TODO: IPv6 literal URLs (e.g. http://[::1]:8080/path) are not currently
+        // supported. The bracket notation confuses the port-finding find(':').
+
         // Find port
         size_t colonPos = hostPort.find(':');
         if (colonPos != std::string::npos) {
@@ -295,6 +298,14 @@ namespace detail {
                 return false;
             }
 
+            struct ScopedSocket {
+                int fd;
+                explicit ScopedSocket(int f) : fd(f) {}
+                ~ScopedSocket() { if (fd >= 0) { ::close(fd); } }
+                void release() { fd = -1; }
+            };
+            ScopedSocket guard(sockfd);
+
 #ifdef SO_NOSIGPIPE
             {
                 int one = 1;
@@ -316,7 +327,6 @@ namespace detail {
 
             if (connectResult < 0) {
                 if (errno != EINPROGRESS) {
-                    close(sockfd);
                     return false;
                 }
                 // Wait for connection with timeout
@@ -330,7 +340,6 @@ namespace detail {
                     sel = poll(&pfd, 1, static_cast<int>(timeoutMs));
                 } while (sel < 0 && errno == EINTR);
                 if (sel <= 0) {
-                    close(sockfd);
                     return false;
                 }
 
@@ -338,7 +347,6 @@ namespace detail {
                 socklen_t len = sizeof(so_error);
                 getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &so_error, &len);
                 if (so_error != 0) {
-                    close(sockfd);
                     return false;
                 }
             }
@@ -384,7 +392,6 @@ namespace detail {
                     sent = send(sockfd, ptr + totalSent, remaining, sendFlags);
                 } while (sent < 0 && errno == EINTR);
                 if (sent <= 0) {
-                    close(sockfd);
                     return false;
                 }
                 totalSent += sent;
@@ -400,7 +407,6 @@ namespace detail {
             do {
                 received = recv(sockfd, buf, sizeof(buf) - 1, 0);
             } while (received < 0 && errno == EINTR);
-            close(sockfd);
 
             if (received <= 0) return false;
             buf[received] = '\0';
@@ -452,7 +458,13 @@ namespace detail {
             argv.push_back(nullptr);
 
             int pipefd[2];
+#if defined(__linux__) || defined(__FreeBSD__)
+            if (pipe2(pipefd, O_CLOEXEC) != 0) return false;
+#else
             if (pipe(pipefd) != 0) return false;
+            fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+            fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+#endif
 
             pid_t pid = fork();
             if (pid < 0) {
@@ -513,10 +525,11 @@ namespace detail {
             }
 
             int status = 0;
-            waitpid(pid, &status, 0);
+            pid_t w;
+            do { w = waitpid(pid, &status, 0); } while (w < 0 && errno == EINTR);
 
             if (!writeOk) return false;
-            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            return w >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
 #endif // !_WIN32
 

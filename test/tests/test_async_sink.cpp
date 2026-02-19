@@ -67,17 +67,6 @@ TEST_F(AsyncSinkTest, WriteReachesInnerSink) {
 
 // --- Test 2: DropNewest — queue full, new items dropped ---
 TEST_F(AsyncSinkTest, DropNewestPolicy) {
-    // Create a small queue size
-    minta::AsyncOptions opts;
-    opts.queueSize = 2;
-    opts.overflowPolicy = minta::OverflowPolicy::DropNewest;
-
-    // Use a slow inner sink (we'll use a recording sink accessed after)
-    auto* rawSink = new RecordingSink();
-    auto asyncSink = minta::detail::make_unique<minta::AsyncSink<RecordingSink>>(opts);
-
-    // Enqueue entries directly using BoundedQueue behavior
-    // We test the queue directly instead
     minta::detail::BoundedQueue queue(2);
 
     minta::LogEntry e1;
@@ -100,8 +89,6 @@ TEST_F(AsyncSinkTest, DropNewestPolicy) {
     EXPECT_FALSE(queue.push(std::move(e3), minta::OverflowPolicy::DropNewest));
 
     EXPECT_EQ(queue.size(), 2u);
-
-    delete rawSink;
 }
 
 // --- Test 3: DropOldest — oldest items removed ---

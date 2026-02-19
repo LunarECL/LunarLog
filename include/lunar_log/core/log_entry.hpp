@@ -64,6 +64,37 @@ namespace minta {
               locale(std::move(locale_)),
               threadId(threadId_) {}
     };
+
+namespace detail {
+    /// Deep-copy a LogEntry (which is move-only due to unique_ptr member).
+    inline LogEntry cloneEntry(const LogEntry& src) {
+        LogEntry dst(
+            src.level,
+            std::string(src.message),
+            src.timestamp,
+            std::string(src.templateStr),
+            src.templateHash,
+            std::vector<std::pair<std::string, std::string>>(src.arguments),
+            std::string(src.file),
+            src.line,
+            std::string(src.function),
+            std::map<std::string, std::string>(src.customContext),
+            std::vector<PlaceholderProperty>(src.properties),
+            std::vector<std::string>(src.tags),
+            std::string(src.locale),
+            src.threadId
+        );
+        if (src.exception) {
+            std::unique_ptr<ExceptionInfo> exCopy(new ExceptionInfo());
+            exCopy->type = src.exception->type;
+            exCopy->message = src.exception->message;
+            exCopy->chain = src.exception->chain;
+            dst.exception = std::move(exCopy);
+        }
+        return dst;
+    }
+} // namespace detail
+
 } // namespace minta
 
 #endif // LUNAR_LOG_ENTRY_HPP

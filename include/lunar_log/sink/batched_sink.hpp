@@ -101,49 +101,33 @@ namespace minta {
 
         /// Buffer an entry. Triggers a flush if batchSize is reached.
         void write(const LogEntry& entry) final {
-            std::lock_guard<std::mutex> lock(m_bufferMutex);
+            if (!m_running.load(std::memory_order_acquire)) return;
 
-            // Drop if buffer exceeds max queue size
-            if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
-                return;
+            std::vector<LogEntry> toFlush;
+            {
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
+                    return;
+                }
+                m_buffer.push_back(detail::cloneEntry(entry));
+                if (m_buffer.size() >= m_opts.batchSize_) {
+                    toFlush.swap(m_buffer);
+                }
             }
-
-            // Copy the entry into the buffer (LogEntry is move-only,
-            // but write() receives a const ref)
-            LogEntry copy(
-                entry.level,
-                std::string(entry.message),
-                entry.timestamp,
-                std::string(entry.templateStr),
-                entry.templateHash,
-                std::vector<std::pair<std::string, std::string>>(entry.arguments),
-                std::string(entry.file),
-                entry.line,
-                std::string(entry.function),
-                std::map<std::string, std::string>(entry.customContext),
-                std::vector<PlaceholderProperty>(entry.properties),
-                std::vector<std::string>(entry.tags),
-                std::string(entry.locale),
-                entry.threadId
-            );
-            if (entry.exception) {
-                std::unique_ptr<detail::ExceptionInfo> exCopy(new detail::ExceptionInfo());
-                exCopy->type = entry.exception->type;
-                exCopy->message = entry.exception->message;
-                exCopy->chain = entry.exception->chain;
-                copy.exception = std::move(exCopy);
-            }
-            m_buffer.push_back(std::move(copy));
-
-            if (m_buffer.size() >= m_opts.batchSize_) {
-                flushBufferLocked();
+            if (!toFlush.empty()) {
+                doFlush(std::move(toFlush));
             }
         }
 
         /// Force flush all buffered entries.
         void flush() {
-            std::lock_guard<std::mutex> lock(m_bufferMutex);
-            flushBufferLocked();
+            std::vector<LogEntry> toFlush;
+            {
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (m_buffer.empty()) return;
+                toFlush.swap(m_buffer);
+            }
+            doFlush(std::move(toFlush));
         }
 
         /// Access options (for testing).
@@ -152,7 +136,14 @@ namespace minta {
     protected:
         /// Subclasses implement this to process a batch of entries.
         /// The pointers are valid only for the duration of this call.
-        virtual void writeBatch(const std::vector<const LogEntry*>& batch) = 0;
+        ///
+        /// Default implementation is a no-op.  Subclass destructors MUST call
+        /// stopAndFlush() before their vtable is destroyed; otherwise any
+        /// remaining buffered entries will be silently discarded by this
+        /// empty default.
+        virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
+            (void)batch;
+        }
 
         /// Called after a successful flush. Override for post-flush logic.
         virtual void onFlush() {}
@@ -181,24 +172,27 @@ namespace minta {
                 if (!m_running.load(std::memory_order_acquire)) break;
 
                 try {
-                    std::lock_guard<std::mutex> bufLock(m_bufferMutex);
-                    flushBufferLocked();
+                    std::vector<LogEntry> toFlush;
+                    {
+                        std::lock_guard<std::mutex> bufLock(m_bufferMutex);
+                        if (m_buffer.empty()) continue;
+                        toFlush.swap(m_buffer);
+                    }
+                    doFlush(std::move(toFlush));
                 } catch (...) {}
             }
         }
 
-        /// Flush without acquiring m_bufferMutex (caller must hold it).
-        void flushBufferLocked() {
-            if (m_buffer.empty()) return;
+        /// Flush a batch with retries. Does NOT hold m_bufferMutex.
+        void doFlush(std::vector<LogEntry> entries) {
+            if (entries.empty()) return;
 
-            // Build pointer vector for writeBatch
             std::vector<const LogEntry*> ptrs;
-            ptrs.reserve(m_buffer.size());
-            for (size_t i = 0; i < m_buffer.size(); ++i) {
-                ptrs.push_back(&m_buffer[i]);
+            ptrs.reserve(entries.size());
+            for (size_t i = 0; i < entries.size(); ++i) {
+                ptrs.push_back(&entries[i]);
             }
 
-            // Try with retries
             bool success = false;
             for (size_t attempt = 0; attempt <= m_opts.maxRetries_; ++attempt) {
                 try {
@@ -208,30 +202,27 @@ namespace minta {
                 } catch (const std::exception& e) {
                     onBatchError(e, attempt);
                     if (attempt < m_opts.maxRetries_) {
-                        // Release buffer lock during sleep to avoid blocking writes
-                        // But we can't release it here since we need the buffer intact.
-                        // Instead, just sleep briefly.
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(m_opts.retryDelayMs_));
                     }
                 } catch (...) {
-                    // Non-std::exception — no retry
                     break;
                 }
             }
-
-            // Clear buffer regardless of success (avoid infinite retry loops)
-            m_buffer.clear();
 
             if (success) {
                 try { onFlush(); } catch (...) {}
             }
         }
 
-        /// Non-locked flush (acquires m_bufferMutex).
         void flushBuffer() {
-            std::lock_guard<std::mutex> lock(m_bufferMutex);
-            flushBufferLocked();
+            std::vector<LogEntry> toFlush;
+            {
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (m_buffer.empty()) return;
+                toFlush.swap(m_buffer);
+            }
+            doFlush(std::move(toFlush));
         }
 
         BatchOptions m_opts;

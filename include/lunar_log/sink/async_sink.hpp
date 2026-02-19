@@ -173,6 +173,8 @@ namespace detail {
             , m_queue(AsyncOptions().queueSize)
             , m_running(true)
             , m_opts()
+            , m_droppedCount(0)
+            , m_flushDone(false)
         {
             startConsumer();
         }
@@ -185,16 +187,23 @@ namespace detail {
             , m_queue(opts.queueSize)
             , m_running(true)
             , m_opts(opts)
+            , m_droppedCount(0)
+            , m_flushDone(false)
         {
             startConsumer();
         }
 
         ~AsyncSink() noexcept {
-            // Signal consumer to stop
             m_running.store(false, std::memory_order_release);
             m_queue.stop();
 
-            // Wait for consumer thread to finish
+            // Unblock any pending flush()
+            {
+                std::lock_guard<std::mutex> lock(m_flushMutex);
+                m_flushDone = true;
+            }
+            m_flushCV.notify_all();
+
             if (m_thread.joinable()) {
                 m_thread.join();
             }
@@ -211,48 +220,32 @@ namespace detail {
 
         /// Enqueue an entry for asynchronous writing.
         void write(const LogEntry& entry) override {
-            // LogEntry is move-only, but ISink::write takes const ref.
-            // We must create a copy of the entry to enqueue it.
-            // This is done by constructing a new LogEntry with the same fields.
-            LogEntry copy(
-                entry.level,
-                std::string(entry.message),
-                entry.timestamp,
-                std::string(entry.templateStr),
-                entry.templateHash,
-                std::vector<std::pair<std::string, std::string>>(entry.arguments),
-                std::string(entry.file),
-                entry.line,
-                std::string(entry.function),
-                std::map<std::string, std::string>(entry.customContext),
-                std::vector<PlaceholderProperty>(entry.properties),
-                std::vector<std::string>(entry.tags),
-                std::string(entry.locale),
-                entry.threadId
-            );
-            if (entry.exception) {
-                std::unique_ptr<detail::ExceptionInfo> exCopy(new detail::ExceptionInfo());
-                exCopy->type = entry.exception->type;
-                exCopy->message = entry.exception->message;
-                exCopy->chain = entry.exception->chain;
-                copy.exception = std::move(exCopy);
+            LogEntry copy = detail::cloneEntry(entry);
+            if (!m_queue.push(std::move(copy), m_opts.overflowPolicy)) {
+                m_droppedCount.fetch_add(1, std::memory_order_relaxed);
             }
-            m_queue.push(std::move(copy), m_opts.overflowPolicy);
         }
 
-        /// Flush: drain the queue synchronously and wait for the inner sink
-        /// to process all entries.
+        /// Flush: wait for the consumer to finish processing all queued entries.
         void flush() {
-            // Signal the consumer to wake up and process
+            if (!m_running.load(std::memory_order_acquire)) return;
+
+            {
+                std::lock_guard<std::mutex> lock(m_flushMutex);
+                m_flushRequested.store(true, std::memory_order_release);
+                m_flushDone = false;
+            }
             m_queue.wake();
 
-            // Spin-wait until queue is empty
-            // This is a best-effort synchronization point
-            while (!m_queue.empty()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            // Give consumer thread a moment to finish writing the last batch
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::unique_lock<std::mutex> lock(m_flushMutex);
+            m_flushCV.wait(lock, [this] {
+                return m_flushDone || !m_running.load(std::memory_order_acquire);
+            });
+        }
+
+        /// Number of entries dropped due to queue overflow.
+        size_t droppedCount() const {
+            return m_droppedCount.load(std::memory_order_relaxed);
         }
 
         /// Access the inner sink (for testing/inspection).
@@ -281,6 +274,23 @@ namespace detail {
                         m_innerSink->write(batch[i]);
                     } catch (...) {}
                 }
+
+                if (m_flushRequested.load(std::memory_order_acquire)) {
+                    std::vector<LogEntry> extra;
+                    m_queue.drain(extra);
+                    for (size_t i = 0; i < extra.size(); ++i) {
+                        try {
+                            m_innerSink->write(extra[i]);
+                        } catch (...) {}
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(m_flushMutex);
+                        m_flushRequested.store(false, std::memory_order_release);
+                        m_flushDone = true;
+                    }
+                    m_flushCV.notify_all();
+                }
             }
 
             // Final drain after stop signal
@@ -291,6 +301,13 @@ namespace detail {
                     m_innerSink->write(batch[i]);
                 } catch (...) {}
             }
+
+            // Unblock any pending flush on shutdown
+            {
+                std::lock_guard<std::mutex> lock(m_flushMutex);
+                m_flushDone = true;
+            }
+            m_flushCV.notify_all();
         }
 
         std::unique_ptr<SinkType> m_innerSink;
@@ -298,6 +315,12 @@ namespace detail {
         std::thread m_thread;
         std::atomic<bool> m_running;
         AsyncOptions m_opts;
+        std::atomic<size_t> m_droppedCount;
+
+        std::atomic<bool> m_flushRequested{false};
+        std::mutex m_flushMutex;
+        std::condition_variable m_flushCV;
+        bool m_flushDone;
     };
 
 } // namespace minta

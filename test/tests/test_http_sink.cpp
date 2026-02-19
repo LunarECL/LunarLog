@@ -209,10 +209,30 @@ TEST_F(HttpSinkTest, HttpPostToLocalhostMockServer) {
     EXPECT_NE(receivedBody.find("Test log message"), std::string::npos);
 }
 
+static int findFreePort() {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return 19999;
+    struct sockaddr_in addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        close(sock);
+        return 19999;
+    }
+    socklen_t len = sizeof(addr);
+    getsockname(sock, (struct sockaddr*)&addr, &len);
+    int port = ntohs(addr.sin_port);
+    close(sock);
+    return port;
+}
+
 // --- Test 9: HTTP POST failure on connection refused ---
 TEST_F(HttpSinkTest, HttpPostConnectionRefused) {
-    // Use a port that nothing is listening on
-    minta::HttpSinkOptions opts("http://127.0.0.1:19999/logs");
+    int freePort = findFreePort();
+    std::string url = "http://127.0.0.1:" + std::to_string(freePort) + "/logs";
+    minta::HttpSinkOptions opts(url);
     opts.setBatchSize(1).setFlushIntervalMs(0).setMaxRetries(0).setTimeoutMs(1000);
 
     minta::HttpSink sink(opts);

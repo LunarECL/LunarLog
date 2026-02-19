@@ -1,10 +1,6 @@
 #ifndef LUNAR_LOG_SYSLOG_SINK_HPP
 #define LUNAR_LOG_SYSLOG_SINK_HPP
 
-#ifdef _WIN32
-#error "SyslogSink is not available on Windows. Use FileSink or a custom EventLog sink instead."
-#endif
-
 #ifndef _WIN32
 
 #include "sink_interface.hpp"
@@ -34,7 +30,10 @@ namespace minta {
     ///
     /// Uses the standard `<syslog.h>` API. No external dependencies.
     /// Available on Linux, macOS, and BSD. Not available on Windows —
-    /// including this header on Windows produces a compile-time error.
+    /// on Windows this header is silently skipped (no definitions are emitted).
+    ///
+    /// @note openlog() is a process-global call. Only one SyslogSink per process
+    ///       is recommended. Multiple instances will overwrite each other's ident.
     ///
     /// @code
     ///   logger.addSink<SyslogSink>("my-app");

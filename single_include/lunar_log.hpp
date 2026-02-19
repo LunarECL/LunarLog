@@ -680,6 +680,37 @@ namespace minta {
               locale(std::move(locale_)),
               threadId(threadId_) {}
     };
+
+namespace detail {
+    /// Deep-copy a LogEntry (which is move-only due to unique_ptr member).
+    inline LogEntry cloneEntry(const LogEntry& src) {
+        LogEntry dst(
+            src.level,
+            std::string(src.message),
+            src.timestamp,
+            std::string(src.templateStr),
+            src.templateHash,
+            std::vector<std::pair<std::string, std::string>>(src.arguments),
+            std::string(src.file),
+            src.line,
+            std::string(src.function),
+            std::map<std::string, std::string>(src.customContext),
+            std::vector<PlaceholderProperty>(src.properties),
+            std::vector<std::string>(src.tags),
+            std::string(src.locale),
+            src.threadId
+        );
+        if (src.exception) {
+            std::unique_ptr<ExceptionInfo> exCopy(new ExceptionInfo());
+            exCopy->type = src.exception->type;
+            exCopy->message = src.exception->message;
+            exCopy->chain = src.exception->chain;
+            dst.exception = std::move(exCopy);
+        }
+        return dst;
+    }
+} // namespace detail
+
 } // namespace minta
 
 
@@ -3628,6 +3659,8 @@ namespace detail {
             , m_queue(AsyncOptions().queueSize)
             , m_running(true)
             , m_opts()
+            , m_droppedCount(0)
+            , m_flushDone(false)
         {
             startConsumer();
         }
@@ -3640,16 +3673,23 @@ namespace detail {
             , m_queue(opts.queueSize)
             , m_running(true)
             , m_opts(opts)
+            , m_droppedCount(0)
+            , m_flushDone(false)
         {
             startConsumer();
         }
 
         ~AsyncSink() noexcept {
-            // Signal consumer to stop
             m_running.store(false, std::memory_order_release);
             m_queue.stop();
 
-            // Wait for consumer thread to finish
+            // Unblock any pending flush()
+            {
+                std::lock_guard<std::mutex> lock(m_flushMutex);
+                m_flushDone = true;
+            }
+            m_flushCV.notify_all();
+
             if (m_thread.joinable()) {
                 m_thread.join();
             }
@@ -3666,48 +3706,32 @@ namespace detail {
 
         /// Enqueue an entry for asynchronous writing.
         void write(const LogEntry& entry) override {
-            // LogEntry is move-only, but ISink::write takes const ref.
-            // We must create a copy of the entry to enqueue it.
-            // This is done by constructing a new LogEntry with the same fields.
-            LogEntry copy(
-                entry.level,
-                std::string(entry.message),
-                entry.timestamp,
-                std::string(entry.templateStr),
-                entry.templateHash,
-                std::vector<std::pair<std::string, std::string>>(entry.arguments),
-                std::string(entry.file),
-                entry.line,
-                std::string(entry.function),
-                std::map<std::string, std::string>(entry.customContext),
-                std::vector<PlaceholderProperty>(entry.properties),
-                std::vector<std::string>(entry.tags),
-                std::string(entry.locale),
-                entry.threadId
-            );
-            if (entry.exception) {
-                std::unique_ptr<detail::ExceptionInfo> exCopy(new detail::ExceptionInfo());
-                exCopy->type = entry.exception->type;
-                exCopy->message = entry.exception->message;
-                exCopy->chain = entry.exception->chain;
-                copy.exception = std::move(exCopy);
+            LogEntry copy = detail::cloneEntry(entry);
+            if (!m_queue.push(std::move(copy), m_opts.overflowPolicy)) {
+                m_droppedCount.fetch_add(1, std::memory_order_relaxed);
             }
-            m_queue.push(std::move(copy), m_opts.overflowPolicy);
         }
 
-        /// Flush: drain the queue synchronously and wait for the inner sink
-        /// to process all entries.
+        /// Flush: wait for the consumer to finish processing all queued entries.
         void flush() {
-            // Signal the consumer to wake up and process
+            if (!m_running.load(std::memory_order_acquire)) return;
+
+            {
+                std::lock_guard<std::mutex> lock(m_flushMutex);
+                m_flushRequested.store(true, std::memory_order_release);
+                m_flushDone = false;
+            }
             m_queue.wake();
 
-            // Spin-wait until queue is empty
-            // This is a best-effort synchronization point
-            while (!m_queue.empty()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            // Give consumer thread a moment to finish writing the last batch
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::unique_lock<std::mutex> lock(m_flushMutex);
+            m_flushCV.wait(lock, [this] {
+                return m_flushDone || !m_running.load(std::memory_order_acquire);
+            });
+        }
+
+        /// Number of entries dropped due to queue overflow.
+        size_t droppedCount() const {
+            return m_droppedCount.load(std::memory_order_relaxed);
         }
 
         /// Access the inner sink (for testing/inspection).
@@ -3736,6 +3760,23 @@ namespace detail {
                         m_innerSink->write(batch[i]);
                     } catch (...) {}
                 }
+
+                if (m_flushRequested.load(std::memory_order_acquire)) {
+                    std::vector<LogEntry> extra;
+                    m_queue.drain(extra);
+                    for (size_t i = 0; i < extra.size(); ++i) {
+                        try {
+                            m_innerSink->write(extra[i]);
+                        } catch (...) {}
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(m_flushMutex);
+                        m_flushRequested.store(false, std::memory_order_release);
+                        m_flushDone = true;
+                    }
+                    m_flushCV.notify_all();
+                }
             }
 
             // Final drain after stop signal
@@ -3746,6 +3787,13 @@ namespace detail {
                     m_innerSink->write(batch[i]);
                 } catch (...) {}
             }
+
+            // Unblock any pending flush on shutdown
+            {
+                std::lock_guard<std::mutex> lock(m_flushMutex);
+                m_flushDone = true;
+            }
+            m_flushCV.notify_all();
         }
 
         std::unique_ptr<SinkType> m_innerSink;
@@ -3753,6 +3801,12 @@ namespace detail {
         std::thread m_thread;
         std::atomic<bool> m_running;
         AsyncOptions m_opts;
+        std::atomic<size_t> m_droppedCount;
+
+        std::atomic<bool> m_flushRequested{false};
+        std::mutex m_flushMutex;
+        std::condition_variable m_flushCV;
+        bool m_flushDone;
     };
 
 } // namespace minta
@@ -3858,49 +3912,33 @@ namespace minta {
 
         /// Buffer an entry. Triggers a flush if batchSize is reached.
         void write(const LogEntry& entry) final {
-            std::lock_guard<std::mutex> lock(m_bufferMutex);
+            if (!m_running.load(std::memory_order_acquire)) return;
 
-            // Drop if buffer exceeds max queue size
-            if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
-                return;
+            std::vector<LogEntry> toFlush;
+            {
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
+                    return;
+                }
+                m_buffer.push_back(detail::cloneEntry(entry));
+                if (m_buffer.size() >= m_opts.batchSize_) {
+                    toFlush.swap(m_buffer);
+                }
             }
-
-            // Copy the entry into the buffer (LogEntry is move-only,
-            // but write() receives a const ref)
-            LogEntry copy(
-                entry.level,
-                std::string(entry.message),
-                entry.timestamp,
-                std::string(entry.templateStr),
-                entry.templateHash,
-                std::vector<std::pair<std::string, std::string>>(entry.arguments),
-                std::string(entry.file),
-                entry.line,
-                std::string(entry.function),
-                std::map<std::string, std::string>(entry.customContext),
-                std::vector<PlaceholderProperty>(entry.properties),
-                std::vector<std::string>(entry.tags),
-                std::string(entry.locale),
-                entry.threadId
-            );
-            if (entry.exception) {
-                std::unique_ptr<detail::ExceptionInfo> exCopy(new detail::ExceptionInfo());
-                exCopy->type = entry.exception->type;
-                exCopy->message = entry.exception->message;
-                exCopy->chain = entry.exception->chain;
-                copy.exception = std::move(exCopy);
-            }
-            m_buffer.push_back(std::move(copy));
-
-            if (m_buffer.size() >= m_opts.batchSize_) {
-                flushBufferLocked();
+            if (!toFlush.empty()) {
+                doFlush(std::move(toFlush));
             }
         }
 
         /// Force flush all buffered entries.
         void flush() {
-            std::lock_guard<std::mutex> lock(m_bufferMutex);
-            flushBufferLocked();
+            std::vector<LogEntry> toFlush;
+            {
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (m_buffer.empty()) return;
+                toFlush.swap(m_buffer);
+            }
+            doFlush(std::move(toFlush));
         }
 
         /// Access options (for testing).
@@ -3909,7 +3947,14 @@ namespace minta {
     protected:
         /// Subclasses implement this to process a batch of entries.
         /// The pointers are valid only for the duration of this call.
-        virtual void writeBatch(const std::vector<const LogEntry*>& batch) = 0;
+        ///
+        /// Default implementation is a no-op.  Subclass destructors MUST call
+        /// stopAndFlush() before their vtable is destroyed; otherwise any
+        /// remaining buffered entries will be silently discarded by this
+        /// empty default.
+        virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
+            (void)batch;
+        }
 
         /// Called after a successful flush. Override for post-flush logic.
         virtual void onFlush() {}
@@ -3938,24 +3983,27 @@ namespace minta {
                 if (!m_running.load(std::memory_order_acquire)) break;
 
                 try {
-                    std::lock_guard<std::mutex> bufLock(m_bufferMutex);
-                    flushBufferLocked();
+                    std::vector<LogEntry> toFlush;
+                    {
+                        std::lock_guard<std::mutex> bufLock(m_bufferMutex);
+                        if (m_buffer.empty()) continue;
+                        toFlush.swap(m_buffer);
+                    }
+                    doFlush(std::move(toFlush));
                 } catch (...) {}
             }
         }
 
-        /// Flush without acquiring m_bufferMutex (caller must hold it).
-        void flushBufferLocked() {
-            if (m_buffer.empty()) return;
+        /// Flush a batch with retries. Does NOT hold m_bufferMutex.
+        void doFlush(std::vector<LogEntry> entries) {
+            if (entries.empty()) return;
 
-            // Build pointer vector for writeBatch
             std::vector<const LogEntry*> ptrs;
-            ptrs.reserve(m_buffer.size());
-            for (size_t i = 0; i < m_buffer.size(); ++i) {
-                ptrs.push_back(&m_buffer[i]);
+            ptrs.reserve(entries.size());
+            for (size_t i = 0; i < entries.size(); ++i) {
+                ptrs.push_back(&entries[i]);
             }
 
-            // Try with retries
             bool success = false;
             for (size_t attempt = 0; attempt <= m_opts.maxRetries_; ++attempt) {
                 try {
@@ -3965,30 +4013,27 @@ namespace minta {
                 } catch (const std::exception& e) {
                     onBatchError(e, attempt);
                     if (attempt < m_opts.maxRetries_) {
-                        // Release buffer lock during sleep to avoid blocking writes
-                        // But we can't release it here since we need the buffer intact.
-                        // Instead, just sleep briefly.
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(m_opts.retryDelayMs_));
                     }
                 } catch (...) {
-                    // Non-std::exception — no retry
                     break;
                 }
             }
-
-            // Clear buffer regardless of success (avoid infinite retry loops)
-            m_buffer.clear();
 
             if (success) {
                 try { onFlush(); } catch (...) {}
             }
         }
 
-        /// Non-locked flush (acquires m_bufferMutex).
         void flushBuffer() {
-            std::lock_guard<std::mutex> lock(m_bufferMutex);
-            flushBufferLocked();
+            std::vector<LogEntry> toFlush;
+            {
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (m_buffer.empty()) return;
+                toFlush.swap(m_buffer);
+            }
+            doFlush(std::move(toFlush));
         }
 
         BatchOptions m_opts;
@@ -4004,10 +4049,6 @@ namespace minta {
 
 
 // --- lunar_log/sink/syslog_sink.hpp ---
-
-#ifdef _WIN32
-#error "SyslogSink is not available on Windows. Use FileSink or a custom EventLog sink instead."
-#endif
 
 #ifndef _WIN32
 
@@ -4036,7 +4077,10 @@ namespace minta {
     ///
     /// Uses the standard `<syslog.h>` API. No external dependencies.
     /// Available on Linux, macOS, and BSD. Not available on Windows —
-    /// including this header on Windows produces a compile-time error.
+    /// on Windows this header is silently skipped (no definitions are emitted).
+    ///
+    /// @note openlog() is a process-global call. Only one SyslogSink per process
+    ///       is recommended. Multiple instances will overwrite each other's ident.
     ///
     /// @code
     ///   logger.addSink<SyslogSink>("my-app");
@@ -4129,6 +4173,7 @@ namespace minta {
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #endif
 
 namespace minta {
@@ -4463,46 +4508,108 @@ namespace detail {
             return (statusCode >= 200 && statusCode < 300);
         }
 
+        // CWE-78 fix: uses fork/execvp instead of popen to avoid shell injection.
+        // argv elements go directly to curl with no shell interpretation.
         bool httpPostCurl(const std::string& url, const std::string& body,
                          const std::map<std::string, std::string>& headers,
                          size_t timeoutMs) {
-            // Build curl command
-            std::string cmd = "curl -s -o /dev/null -w '%{http_code}' -X POST";
-            cmd += " --max-time " + std::to_string(timeoutMs / 1000);
+            std::vector<std::string> args;
+            args.push_back("curl");
+            args.push_back("--silent");
+            args.push_back("--fail");
+            args.push_back("-o");
+            args.push_back("/dev/null");
+            args.push_back("-X");
+            args.push_back("POST");
+            args.push_back("--max-time");
+            args.push_back(std::to_string(timeoutMs / 1000));
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                cmd += " -H '" + it->first + ": " + it->second + "'";
+                args.push_back("-H");
+                args.push_back(it->first + ": " + it->second);
             }
 
-            cmd += " --data-binary @-";
-            cmd += " '" + url + "'";
+            args.push_back("--data-binary");
+            args.push_back("@-");
+            args.push_back(url);
 
-            // Use popen to pipe body to curl
-            FILE* pipe = popen(cmd.c_str(), "w");
-            if (!pipe) return false;
+            std::vector<char*> argv;
+            argv.reserve(args.size() + 1);
+            for (size_t i = 0; i < args.size(); ++i) {
+                argv.push_back(const_cast<char*>(args[i].c_str()));
+            }
+            argv.push_back(nullptr);
 
-            size_t written = fwrite(body.c_str(), 1, body.size(), pipe);
-            int exitCode = pclose(pipe);
+            int pipefd[2];
+            if (pipe(pipefd) != 0) return false;
 
-            if (written != body.size()) return false;
+            pid_t pid = fork();
+            if (pid < 0) {
+                close(pipefd[0]);
+                close(pipefd[1]);
+                return false;
+            }
 
-            // pclose returns the exit status of the command
-            // curl returns 0 on success
-            return (exitCode == 0);
+            if (pid == 0) {
+                // Child: wire pipe read-end to stdin, discard stdout/stderr
+                close(pipefd[1]);
+                dup2(pipefd[0], STDIN_FILENO);
+                close(pipefd[0]);
+
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) {
+                    dup2(devnull, STDOUT_FILENO);
+                    dup2(devnull, STDERR_FILENO);
+                    close(devnull);
+                }
+
+                execvp("curl", argv.data());
+                _exit(127);
+            }
+
+            // Parent: write body then wait
+            close(pipefd[0]);
+
+            const char* data = body.c_str();
+            size_t remaining = body.size();
+            bool writeOk = true;
+            while (remaining > 0) {
+                ssize_t w = ::write(pipefd[1], data, remaining);
+                if (w <= 0) { writeOk = false; break; }
+                data += w;
+                remaining -= static_cast<size_t>(w);
+            }
+            close(pipefd[1]);
+
+            int status = 0;
+            waitpid(pid, &status, 0);
+
+            if (!writeOk) return false;
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
 #endif // !_WIN32
 
 #ifdef _WIN32
+        static std::wstring utf8ToWide(const std::string& str) {
+            if (str.empty()) return std::wstring();
+            int needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
+                             static_cast<int>(str.size()), nullptr, 0);
+            if (needed <= 0) return std::wstring(str.begin(), str.end());
+            std::wstring result(static_cast<size_t>(needed), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
+                static_cast<int>(str.size()), &result[0], needed);
+            return result;
+        }
+
         bool httpPostWinHTTP(const std::string& url, const std::string& body,
                             const std::map<std::string, std::string>& headers,
                             size_t timeoutMs) {
             detail::ParsedUrl parsed = detail::parseUrl(url);
             if (!parsed.valid) return false;
 
-            // Convert strings to wide chars for WinHTTP
-            std::wstring wHost(parsed.host.begin(), parsed.host.end());
-            std::wstring wPath(parsed.path.begin(), parsed.path.end());
+            std::wstring wHost = utf8ToWide(parsed.host);
+            std::wstring wPath = utf8ToWide(parsed.path);
 
             HINTERNET hSession = WinHttpOpen(L"LunarLog/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -4537,7 +4644,7 @@ namespace detail {
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
                 std::string headerLine = it->first + ": " + it->second;
-                std::wstring wHeader(headerLine.begin(), headerLine.end());
+                std::wstring wHeader = utf8ToWide(headerLine);
                 WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),
                     static_cast<DWORD>(wHeader.size()),
                     WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);

@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #endif
 
 namespace minta {
@@ -364,46 +365,108 @@ namespace detail {
             return (statusCode >= 200 && statusCode < 300);
         }
 
+        // CWE-78 fix: uses fork/execvp instead of popen to avoid shell injection.
+        // argv elements go directly to curl with no shell interpretation.
         bool httpPostCurl(const std::string& url, const std::string& body,
                          const std::map<std::string, std::string>& headers,
                          size_t timeoutMs) {
-            // Build curl command
-            std::string cmd = "curl -s -o /dev/null -w '%{http_code}' -X POST";
-            cmd += " --max-time " + std::to_string(timeoutMs / 1000);
+            std::vector<std::string> args;
+            args.push_back("curl");
+            args.push_back("--silent");
+            args.push_back("--fail");
+            args.push_back("-o");
+            args.push_back("/dev/null");
+            args.push_back("-X");
+            args.push_back("POST");
+            args.push_back("--max-time");
+            args.push_back(std::to_string(timeoutMs / 1000));
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                cmd += " -H '" + it->first + ": " + it->second + "'";
+                args.push_back("-H");
+                args.push_back(it->first + ": " + it->second);
             }
 
-            cmd += " --data-binary @-";
-            cmd += " '" + url + "'";
+            args.push_back("--data-binary");
+            args.push_back("@-");
+            args.push_back(url);
 
-            // Use popen to pipe body to curl
-            FILE* pipe = popen(cmd.c_str(), "w");
-            if (!pipe) return false;
+            std::vector<char*> argv;
+            argv.reserve(args.size() + 1);
+            for (size_t i = 0; i < args.size(); ++i) {
+                argv.push_back(const_cast<char*>(args[i].c_str()));
+            }
+            argv.push_back(nullptr);
 
-            size_t written = fwrite(body.c_str(), 1, body.size(), pipe);
-            int exitCode = pclose(pipe);
+            int pipefd[2];
+            if (pipe(pipefd) != 0) return false;
 
-            if (written != body.size()) return false;
+            pid_t pid = fork();
+            if (pid < 0) {
+                close(pipefd[0]);
+                close(pipefd[1]);
+                return false;
+            }
 
-            // pclose returns the exit status of the command
-            // curl returns 0 on success
-            return (exitCode == 0);
+            if (pid == 0) {
+                // Child: wire pipe read-end to stdin, discard stdout/stderr
+                close(pipefd[1]);
+                dup2(pipefd[0], STDIN_FILENO);
+                close(pipefd[0]);
+
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) {
+                    dup2(devnull, STDOUT_FILENO);
+                    dup2(devnull, STDERR_FILENO);
+                    close(devnull);
+                }
+
+                execvp("curl", argv.data());
+                _exit(127);
+            }
+
+            // Parent: write body then wait
+            close(pipefd[0]);
+
+            const char* data = body.c_str();
+            size_t remaining = body.size();
+            bool writeOk = true;
+            while (remaining > 0) {
+                ssize_t w = ::write(pipefd[1], data, remaining);
+                if (w <= 0) { writeOk = false; break; }
+                data += w;
+                remaining -= static_cast<size_t>(w);
+            }
+            close(pipefd[1]);
+
+            int status = 0;
+            waitpid(pid, &status, 0);
+
+            if (!writeOk) return false;
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
 #endif // !_WIN32
 
 #ifdef _WIN32
+        static std::wstring utf8ToWide(const std::string& str) {
+            if (str.empty()) return std::wstring();
+            int needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
+                             static_cast<int>(str.size()), nullptr, 0);
+            if (needed <= 0) return std::wstring(str.begin(), str.end());
+            std::wstring result(static_cast<size_t>(needed), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
+                static_cast<int>(str.size()), &result[0], needed);
+            return result;
+        }
+
         bool httpPostWinHTTP(const std::string& url, const std::string& body,
                             const std::map<std::string, std::string>& headers,
                             size_t timeoutMs) {
             detail::ParsedUrl parsed = detail::parseUrl(url);
             if (!parsed.valid) return false;
 
-            // Convert strings to wide chars for WinHTTP
-            std::wstring wHost(parsed.host.begin(), parsed.host.end());
-            std::wstring wPath(parsed.path.begin(), parsed.path.end());
+            std::wstring wHost = utf8ToWide(parsed.host);
+            std::wstring wPath = utf8ToWide(parsed.path);
 
             HINTERNET hSession = WinHttpOpen(L"LunarLog/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -438,7 +501,7 @@ namespace detail {
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
                 std::string headerLine = it->first + ": " + it->second;
-                std::wstring wHeader(headerLine.begin(), headerLine.end());
+                std::wstring wHeader = utf8ToWide(headerLine);
                 WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),
                     static_cast<DWORD>(wHeader.size()),
                     WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);

@@ -38,7 +38,7 @@ namespace detail {
 
     // Cap nested exception unwinding to prevent stack overflow from
     // pathological or circular exception chains.
-    static const int kMaxNestedExceptionDepth = 20;
+    static constexpr int kMaxNestedExceptionDepth = 20;
 
     struct ExceptionInfo {
         std::string type;

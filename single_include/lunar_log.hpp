@@ -4223,7 +4223,7 @@ namespace detail {
                 std::this_thread::get_id()
             );
 
-            if (exInfo && !exInfo->type.empty()) {
+            if (exInfo) {
                 entry.exception = detail::make_unique<detail::ExceptionInfo>(std::move(*exInfo));
             }
 

@@ -6,7 +6,6 @@
 #include "core/filter_rule.hpp"
 #include "core/compact_filter.hpp"
 #include "core/enricher.hpp"
-#include "core/exception_info.hpp"
 #include "core/sink_proxy.hpp"
 #include "logger_configuration.hpp"
 #include "log_manager.hpp"
@@ -731,7 +730,7 @@ namespace detail {
                 std::this_thread::get_id()
             );
 
-            if (exInfo && !exInfo->type.empty()) {
+            if (exInfo) {
                 entry.exception = detail::make_unique<detail::ExceptionInfo>(std::move(*exInfo));
             }
 

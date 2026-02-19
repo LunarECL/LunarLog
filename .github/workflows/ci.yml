@@ -95,7 +95,7 @@ jobs:
             --output-file coverage.info
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lcov --list coverage.info >> $GITHUB_STEP_SUMMARY
+          lcov --list coverage.info >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Generate HTML report

@@ -75,7 +75,14 @@ jobs:
 
       - name: Run tests
         working-directory: build
-        run: ctest --output-on-failure
+        run: ctest --output-on-failure --output-junit junit.xml
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: build/junit.xml
 
       - name: Generate coverage report
         run: |
@@ -84,6 +91,7 @@ jobs:
           lcov --remove coverage_raw.info \
             '*/build/_deps/*' \
             '*/test/*' \
+            '*/examples/*' \
             --output-file coverage.info
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -94,12 +102,11 @@ jobs:
         run: genhtml coverage.info --output-directory coverage-html --title "LunarLog Coverage"
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.info
           fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

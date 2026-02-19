@@ -50,7 +50,7 @@ int main() {
 - [**Message Templates**](https://github.com/LunarECL/LunarLog/wiki/Message-Templates) — named & indexed placeholders, `@`/`$` operators, [format specifiers](https://github.com/LunarECL/LunarLog/wiki/Format-Specifiers)
 - [**Output Formats**](https://github.com/LunarECL/LunarLog/wiki/Structured-Output) — human-readable, JSON, [Compact JSON (CLEF)](https://github.com/LunarECL/LunarLog/wiki/Compact-JSON-Formatter), XML
 - [**Filtering**](https://github.com/LunarECL/LunarLog/wiki/Filtering) — per-sink levels, predicates, DSL rules, [compact syntax](https://github.com/LunarECL/LunarLog/wiki/Compact-Filter) (`"WARN+ ~timeout"`)
-- [**Sinks**](https://github.com/LunarECL/LunarLog/wiki/Getting-Started) — Console, ColorConsole, File, [RollingFile](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) — [named sinks & tag routing](https://github.com/LunarECL/LunarLog/wiki/Named-Sinks-and-Tag-Routing)
+- [**Sinks**](https://github.com/LunarECL/LunarLog/wiki/Getting-Started) — Console, [ColorConsole](https://github.com/LunarECL/LunarLog/wiki/Color-Console-Sink), File, [RollingFile](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) — [named sinks & tag routing](https://github.com/LunarECL/LunarLog/wiki/Named-Sinks-and-Tag-Routing)
 - [**Pipe Transforms**](https://github.com/LunarECL/LunarLog/wiki/Pipe-Transforms) — 18 built-in: `upper`, `trim`, `comma`, `bytes`, `duration`, `truncate`, chainable
 - [**Enrichers**](https://github.com/LunarECL/LunarLog/wiki/Enrichers) — auto-attach ThreadId, ProcessId, MachineName, environment, custom lambdas
 - [**Exception Attachment**](https://github.com/LunarECL/LunarLog/wiki/Exception-Attachment) — `logger.error(ex, "msg")` with nested exception unwinding
@@ -71,7 +71,7 @@ wget https://raw.githubusercontent.com/LunarECL/LunarLog/master/single_include/l
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(LunarLog GIT_REPOSITORY https://github.com/LunarECL/LunarLog.git GIT_TAG v1.23.0)
+FetchContent_Declare(LunarLog GIT_REPOSITORY https://github.com/LunarECL/LunarLog.git GIT_TAG v1.24.0)
 FetchContent_MakeAvailable(LunarLog)
 target_link_libraries(YourTarget PRIVATE LunarLog)
 ```
@@ -94,7 +94,7 @@ Once in the official registry: `vcpkg install lunarlog`
 **Conan** *(pending ConanCenter acceptance)*:
 
 ```bash
-conan install --requires="lunarlog/1.23.0"
+conan install --requires="lunarlog/1.24.0"
 ```
 
 Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/wiki/Getting-Started)

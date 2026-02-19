@@ -252,6 +252,11 @@ namespace detail {
             }
         }
 
+        // Note: concurrent flush() callers share a single m_flushDone flag.
+        // If two threads call flush() simultaneously, the later caller's completion
+        // may wake the earlier waiter. Both callers' data is guaranteed written;
+        // only the return timing is coupled. This is acceptable for a logging sink.
+
         /// Flush: wait for the consumer to finish processing all queued entries.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;

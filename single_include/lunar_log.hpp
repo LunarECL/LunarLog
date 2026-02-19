@@ -3739,6 +3739,11 @@ namespace detail {
             }
         }
 
+        // Note: concurrent flush() callers share a single m_flushDone flag.
+        // If two threads call flush() simultaneously, the later caller's completion
+        // may wake the earlier waiter. Both callers' data is guaranteed written;
+        // only the return timing is coupled. This is acceptable for a logging sink.
+
         /// Flush: wait for the consumer to finish processing all queued entries.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
@@ -4000,10 +4005,9 @@ namespace minta {
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
         ///
-        /// @note writeBatch() may be called concurrently from the timer thread
-        ///       and from write() (when batchSize is reached). Implementors must
-        ///       ensure writeBatch() is thread-safe, or use external synchronization.
-        ///       Both call paths hold no mutex when invoking writeBatch().
+        /// @warning Thread-safety: writeBatch() may be called concurrently from the
+        ///          timer thread and the write() batch-flush path. Implementations
+        ///          must be thread-safe or ensure external synchronization.
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
             (void)batch;
         }
@@ -4521,6 +4525,7 @@ namespace detail {
             // DNS resolution may block for 30+ seconds (system resolver timeout),
             // causing total elapsed time to exceed timeoutMs by the DNS duration.
             // The CLOCK_MONOTONIC deadline still bounds all subsequent socket operations.
+            // Future: consider getaddrinfo_a (glibc) or a dedicated resolver thread.
             int gaiResult = getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res);
             if (gaiResult != 0 || !res) {
                 if (res) freeaddrinfo(res);
@@ -4645,7 +4650,7 @@ namespace detail {
                 while (responseBuf.size() < 4096) {
                     if (remainingMs() <= 0) break;
                     ssize_t n;
-                    do { n = ::recv(sockfd, buf, sizeof(buf) - 1, MSG_NOSIGNAL_COMPAT); }
+                    do { n = ::recv(sockfd, buf, sizeof(buf) - 1, 0); }
                     while (n < 0 && errno == EINTR);
                     if (n <= 0) break;
                     responseBuf.append(buf, static_cast<size_t>(n));
@@ -4667,7 +4672,7 @@ namespace detail {
                 char drain[1024];
                 ssize_t n;
                 do {
-                    do { n = ::recv(sockfd, drain, sizeof(drain), MSG_NOSIGNAL_COMPAT); }
+                    do { n = ::recv(sockfd, drain, sizeof(drain), 0); }
                     while (n < 0 && errno == EINTR);
                 } while (n > 0 && remainingMs() > 0);
             }
@@ -4712,6 +4717,24 @@ namespace detail {
                 argv.push_back(const_cast<char*>(args[i].c_str()));
             }
             argv.push_back(nullptr);
+
+            // Absolute deadline: caps total elapsed time (pipe write + child wait)
+            // to prevent 2*timeoutMs blocking.
+            struct timespec deadline;
+            clock_gettime(CLOCK_MONOTONIC, &deadline);
+            deadline.tv_sec += static_cast<time_t>(timeoutMs / 1000);
+            deadline.tv_nsec += static_cast<long>((timeoutMs % 1000) * 1000000L);
+            if (deadline.tv_nsec >= 1000000000L) {
+                deadline.tv_sec += 1;
+                deadline.tv_nsec -= 1000000000L;
+            }
+            auto remainingMs = [&]() -> long {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long ms = (deadline.tv_sec - now.tv_sec) * 1000L
+                        + (deadline.tv_nsec - now.tv_nsec) / 1000000L;
+                return ms > 0 ? ms : 0;
+            };
 
             int pipefd[2];
 #if defined(__linux__) || defined(__FreeBSD__)
@@ -4771,30 +4794,11 @@ namespace detail {
                 const char* data = body.c_str();
                 size_t remaining = body.size();
 
-                // Deadline for pipe writes: if the curl child stalls reading stdin
-                // (pipe buffer full), write() blocks indefinitely. poll(POLLOUT)
-                // with a deadline prevents the parent from hanging.
-                struct timespec pipeDl;
-                clock_gettime(CLOCK_MONOTONIC, &pipeDl);
-                pipeDl.tv_sec += static_cast<time_t>(timeoutMs / 1000);
-                pipeDl.tv_nsec += static_cast<long>((timeoutMs % 1000) * 1000000L);
-                if (pipeDl.tv_nsec >= 1000000000L) {
-                    pipeDl.tv_sec += 1;
-                    pipeDl.tv_nsec -= 1000000000L;
-                }
-                auto pipeRemainingMs = [&]() -> long {
-                    struct timespec now;
-                    clock_gettime(CLOCK_MONOTONIC, &now);
-                    long ms = (pipeDl.tv_sec - now.tv_sec) * 1000L
-                            + (pipeDl.tv_nsec - now.tv_nsec) / 1000000L;
-                    return ms > 0 ? ms : 0;
-                };
-
                 struct pollfd wfd;
                 wfd.fd = pipefd[1];
                 wfd.events = POLLOUT;
                 while (remaining > 0) {
-                    long rem = pipeRemainingMs();
+                    long rem = remainingMs();
                     if (rem <= 0) { writeOk = false; break; }
                     int pr;
                     do { pr = ::poll(&wfd, 1, static_cast<int>(rem > static_cast<long>(INT_MAX) ? INT_MAX : rem)); }
@@ -4811,11 +4815,27 @@ namespace detail {
             }
 
             int status = 0;
-            pid_t w;
-            do { w = waitpid(pid, &status, 0); } while (w < 0 && errno == EINTR);
+            // WNOHANG poll loop bounded by deadline
+            while (true) {
+                pid_t w;
+                do { w = waitpid(pid, &status, WNOHANG); }
+                while (w < 0 && errno == EINTR);
+                if (w > 0) break;           // child exited
+                if (w < 0) return false;    // error
+                // w == 0: still running
+                long rem = remainingMs();
+                if (rem <= 0) {
+                    kill(pid, SIGTERM);
+                    waitpid(pid, &status, 0);  // reap
+                    return false;
+                }
+                long sleepMs = std::min(rem, 50L);
+                struct timespec ts = { sleepMs / 1000, (sleepMs % 1000) * 1000000L };
+                nanosleep(&ts, nullptr);
+            }
 
             if (!writeOk) return false;
-            return w >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
 #endif // !_WIN32
 

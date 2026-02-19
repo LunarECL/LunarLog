@@ -1,0 +1,18 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+    patch:
+      default:
+        target: auto
+
+ignore:
+  - "examples/**"
+  - "test/**"
+  - "bench/**"
+  - "tools/**"
+  - "single_include/**"
+  - "ports/**"
+  - "conan/**"

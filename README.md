@@ -3,6 +3,7 @@
 **Header-only C++11 structured logging with [message templates](https://messagetemplates.org/). Inspired by [Serilog](https://serilog.net/).**
 
 [![CI](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/LunarECL/LunarLog/branch/master/graph/badge.svg)](https://codecov.io/gh/LunarECL/LunarLog)
 [![Release](https://img.shields.io/github/v/release/LunarECL/LunarLog)](https://github.com/LunarECL/LunarLog/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![C++11](https://img.shields.io/badge/C%2B%2B-11%2F14%2F17-blue.svg)
@@ -49,7 +50,7 @@ int main() {
 - [**Message Templates**](https://github.com/LunarECL/LunarLog/wiki/Message-Templates) — named & indexed placeholders, `@`/`$` operators, [format specifiers](https://github.com/LunarECL/LunarLog/wiki/Format-Specifiers)
 - [**Output Formats**](https://github.com/LunarECL/LunarLog/wiki/Structured-Output) — human-readable, JSON, [Compact JSON (CLEF)](https://github.com/LunarECL/LunarLog/wiki/Compact-JSON-Formatter), XML
 - [**Filtering**](https://github.com/LunarECL/LunarLog/wiki/Filtering) — per-sink levels, predicates, DSL rules, [compact syntax](https://github.com/LunarECL/LunarLog/wiki/Compact-Filter) (`"WARN+ ~timeout"`)
-- [**Sinks**](https://github.com/LunarECL/LunarLog/wiki/Getting-Started) — Console, File, [RollingFile](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) — [named sinks & tag routing](https://github.com/LunarECL/LunarLog/wiki/Named-Sinks-and-Tag-Routing)
+- [**Sinks**](https://github.com/LunarECL/LunarLog/wiki/Getting-Started) — Console, ColorConsole, File, [RollingFile](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink) — [named sinks & tag routing](https://github.com/LunarECL/LunarLog/wiki/Named-Sinks-and-Tag-Routing)
 - [**Pipe Transforms**](https://github.com/LunarECL/LunarLog/wiki/Pipe-Transforms) — 18 built-in: `upper`, `trim`, `comma`, `bytes`, `duration`, `truncate`, chainable
 - [**Enrichers**](https://github.com/LunarECL/LunarLog/wiki/Enrichers) — auto-attach ThreadId, ProcessId, MachineName, environment, custom lambdas
 - [**Exception Attachment**](https://github.com/LunarECL/LunarLog/wiki/Exception-Attachment) — `logger.error(ex, "msg")` with nested exception unwinding

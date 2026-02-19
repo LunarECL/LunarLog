@@ -29,6 +29,7 @@ HEADERS = [
     "lunar_log/transport/stdout_transport.hpp",
     "lunar_log/sink/sink_interface.hpp",
     "lunar_log/sink/console_sink.hpp",
+    "lunar_log/sink/color_console_sink.hpp",
     "lunar_log/sink/file_sink.hpp",
     "lunar_log/sink/rolling_file_sink.hpp",
     "lunar_log/log_manager.hpp",

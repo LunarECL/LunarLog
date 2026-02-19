@@ -22,6 +22,7 @@
 #include "lunar_log/transport/stdout_transport.hpp"
 #include "lunar_log/sink/sink_interface.hpp"
 #include "lunar_log/sink/console_sink.hpp"
+#include "lunar_log/sink/color_console_sink.hpp"
 #include "lunar_log/sink/file_sink.hpp"
 #include "lunar_log/sink/rolling_file_sink.hpp"
 #include "lunar_log/core/sink_proxy.hpp"

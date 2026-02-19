@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <climits>
 #include <sstream>
+#include <algorithm>
+#include <cctype>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -139,6 +141,9 @@ namespace detail {
         if (schemeEnd == std::string::npos) return result;
 
         result.scheme = url.substr(0, schemeEnd);
+        // RFC 3986 §3.1: scheme is case-insensitive
+        std::transform(result.scheme.begin(), result.scheme.end(), result.scheme.begin(),
+                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
         if (result.scheme != "http" && result.scheme != "https") return result;
 
         size_t hostStart = schemeEnd + 3;
@@ -294,7 +299,7 @@ namespace detail {
             // to prevent slow-drip attacks that reset per-call timeouts.
             struct timespec deadline;
             clock_gettime(CLOCK_MONOTONIC, &deadline);
-            deadline.tv_sec += static_cast<long>(timeoutMs / 1000);
+            deadline.tv_sec += static_cast<time_t>(timeoutMs / 1000);
             deadline.tv_nsec += static_cast<long>((timeoutMs % 1000) * 1000000L);
             if (deadline.tv_nsec >= 1000000000L) {
                 deadline.tv_sec += 1;
@@ -316,6 +321,10 @@ namespace detail {
             hints.ai_socktype = SOCK_STREAM;
 
             std::string portStr = std::to_string(port);
+            // NOTE: getaddrinfo() has no portable timeout mechanism on POSIX.
+            // DNS resolution may block for 30+ seconds (system resolver timeout),
+            // causing total elapsed time to exceed timeoutMs by the DNS duration.
+            // The CLOCK_MONOTONIC deadline still bounds all subsequent socket operations.
             int gaiResult = getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res);
             if (gaiResult != 0 || !res) {
                 if (res) freeaddrinfo(res);
@@ -332,6 +341,8 @@ namespace detail {
                 int fd;
                 explicit ScopedSocket(int f) : fd(f) {}
                 ~ScopedSocket() { if (fd >= 0) { ::close(fd); } }
+                ScopedSocket(const ScopedSocket&) = delete;
+                ScopedSocket& operator=(const ScopedSocket&) = delete;
             };
             ScopedSocket guard(sockfd);
 
@@ -380,6 +391,10 @@ namespace detail {
             // Set back to blocking
             fcntl(sockfd, F_SETFL, flags);
 
+            // SO_SNDTIMEO / SO_RCVTIMEO are set once. remainingMs() guards loop
+            // entry so no new calls start after deadline, but the last in-flight
+            // call may overshoot by up to the original timeoutMs. Acceptable for
+            // a logging transport.
             {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
@@ -447,14 +462,18 @@ namespace detail {
             // Expected: "HTTP/1.1 200 OK\r\n"
             size_t spacePos = responseBuf.find(' ');
             if (spacePos == std::string::npos) return false;
-            int statusCode = std::atoi(responseBuf.c_str() + spacePos + 1);
-            bool success = (statusCode >= 200 && statusCode < 300);
+            char* endPtr = nullptr;
+            long statusCode = std::strtol(responseBuf.c_str() + spacePos + 1, &endPtr, 10);
+            bool success = (endPtr != responseBuf.c_str() + spacePos + 1 && statusCode >= 200 && statusCode < 300);
 
-            // Drain remaining response to avoid TCP RST on close.
-            // Bounded by SO_RCVTIMEO already set from deadline.
+            // Drain remaining response body to avoid TCP RST on socket close
             if (remainingMs() > 0) {
                 char drain[1024];
-                while (::recv(sockfd, drain, sizeof(drain), MSG_NOSIGNAL_COMPAT) > 0) {}
+                ssize_t n;
+                do {
+                    do { n = ::recv(sockfd, drain, sizeof(drain), MSG_NOSIGNAL_COMPAT); }
+                    while (n < 0 && errno == EINTR);
+                } while (n > 0 && remainingMs() > 0);
             }
 
             return success;
@@ -555,9 +574,39 @@ namespace detail {
                 ScopedSigpipeBlock sigGuard;
                 const char* data = body.c_str();
                 size_t remaining = body.size();
+
+                // Deadline for pipe writes: if the curl child stalls reading stdin
+                // (pipe buffer full), write() blocks indefinitely. poll(POLLOUT)
+                // with a deadline prevents the parent from hanging.
+                struct timespec pipeDl;
+                clock_gettime(CLOCK_MONOTONIC, &pipeDl);
+                pipeDl.tv_sec += static_cast<time_t>(timeoutMs / 1000);
+                pipeDl.tv_nsec += static_cast<long>((timeoutMs % 1000) * 1000000L);
+                if (pipeDl.tv_nsec >= 1000000000L) {
+                    pipeDl.tv_sec += 1;
+                    pipeDl.tv_nsec -= 1000000000L;
+                }
+                auto pipeRemainingMs = [&]() -> long {
+                    struct timespec now;
+                    clock_gettime(CLOCK_MONOTONIC, &now);
+                    long ms = (pipeDl.tv_sec - now.tv_sec) * 1000L
+                            + (pipeDl.tv_nsec - now.tv_nsec) / 1000000L;
+                    return ms > 0 ? ms : 0;
+                };
+
+                struct pollfd wfd;
+                wfd.fd = pipefd[1];
+                wfd.events = POLLOUT;
                 while (remaining > 0) {
+                    long rem = pipeRemainingMs();
+                    if (rem <= 0) { writeOk = false; break; }
+                    int pr;
+                    do { pr = ::poll(&wfd, 1, static_cast<int>(rem > static_cast<long>(INT_MAX) ? INT_MAX : rem)); }
+                    while (pr < 0 && errno == EINTR);
+                    if (pr <= 0) { writeOk = false; break; }
                     ssize_t w;
-                    do { w = ::write(pipefd[1], data, remaining); } while (w < 0 && errno == EINTR);
+                    do { w = ::write(pipefd[1], data, remaining); }
+                    while (w < 0 && errno == EINTR);
                     if (w <= 0) { writeOk = false; break; }
                     data += w;
                     remaining -= static_cast<size_t>(w);

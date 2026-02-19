@@ -3762,6 +3762,7 @@ namespace detail {
         }
 
         /// Number of entries dropped due to queue overflow.
+        /// Wraps on unsigned overflow; practically unreachable.
         size_t droppedCount() const {
             return m_droppedCount.load(std::memory_order_relaxed);
         }
@@ -3793,8 +3794,8 @@ namespace detail {
                     } catch (...) {}
                 }
 
-                m_queue.setFlushPending(false);
                 if (m_flushRequested.load(std::memory_order_acquire)) {
+                    m_queue.setFlushPending(false);
                     std::vector<LogEntry> extra;
                     m_queue.drain(extra);
                     for (size_t i = 0; i < extra.size(); ++i) {
@@ -3930,6 +3931,10 @@ namespace minta {
         }
 
         ~BatchedSink() noexcept {
+            if (m_running.load(std::memory_order_acquire)) {
+                std::fprintf(stderr, "[BatchedSink] WARNING: subclass destructor did not call "
+                                     "stopAndFlush() — buffered entries may be lost.\n");
+            }
             stopAndFlush();
         }
 
@@ -3992,6 +3997,7 @@ namespace minta {
         const BatchOptions& options() const { return m_opts; }
 
         /// Number of entries dropped due to maxQueueSize overflow.
+        /// Wraps on unsigned overflow; practically unreachable.
         size_t droppedCount() const {
             return m_droppedCount.load(std::memory_order_relaxed);
         }
@@ -4385,6 +4391,16 @@ namespace detail {
 
         if (result.host.empty()) return result;
 
+        // Defense-in-depth: reject control characters to prevent HTTP header injection
+        for (size_t i = 0; i < result.host.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(result.host[i]);
+            if (c < 0x20 || c == 0x7F) return result;
+        }
+        for (size_t i = 0; i < result.path.size(); ++i) {
+            unsigned char c = static_cast<unsigned char>(result.path[i]);
+            if (c < 0x20 || c == 0x7F) return result;
+        }
+
         result.valid = true;
         return result;
     }
@@ -4525,7 +4541,8 @@ namespace detail {
             // DNS resolution may block for 30+ seconds (system resolver timeout),
             // causing total elapsed time to exceed timeoutMs by the DNS duration.
             // The CLOCK_MONOTONIC deadline still bounds all subsequent socket operations.
-            // Future: consider getaddrinfo_a (glibc) or a dedicated resolver thread.
+            // TODO(future): consider getaddrinfo_a (glibc) or a dedicated resolver
+            //               thread for portable DNS timeout support.
             int gaiResult = getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res);
             if (gaiResult != 0 || !res) {
                 if (res) freeaddrinfo(res);
@@ -4594,8 +4611,9 @@ namespace detail {
 
             // SO_SNDTIMEO / SO_RCVTIMEO are set once. remainingMs() guards loop
             // entry so no new calls start after deadline, but the last in-flight
-            // call may overshoot by up to the original timeoutMs. Acceptable for
-            // a logging transport.
+            // call may overshoot by up to the remaining value at time of setting.
+            // Acceptable for a logging transport.
+            // TODO(future): re-set per-call via poll() for stricter deadline adherence.
             {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
@@ -4703,6 +4721,16 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                bool clean = true;
+                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                if (!clean) continue;
                 args.push_back("-H");
                 args.push_back(it->first + ": " + it->second);
             }
@@ -4826,7 +4854,17 @@ namespace detail {
                 long rem = remainingMs();
                 if (rem <= 0) {
                     kill(pid, SIGTERM);
-                    waitpid(pid, &status, 0);  // reap
+                    // Wait up to 200ms for graceful exit before SIGKILL
+                    for (int gi = 0; gi < 20; ++gi) {
+                        pid_t gw;
+                        do { gw = waitpid(pid, &status, WNOHANG); }
+                        while (gw < 0 && errno == EINTR);
+                        if (gw > 0) return false;
+                        struct timespec gts = {0, 10000000L}; // 10ms
+                        nanosleep(&gts, nullptr);
+                    }
+                    kill(pid, SIGKILL);
+                    waitpid(pid, &status, 0);  // reap — SIGKILL is unconditional
                     return false;
                 }
                 long sleepMs = std::min(rem, 50L);

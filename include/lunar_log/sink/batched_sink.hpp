@@ -78,6 +78,10 @@ namespace minta {
         }
 
         ~BatchedSink() noexcept {
+            if (m_running.load(std::memory_order_acquire)) {
+                std::fprintf(stderr, "[BatchedSink] WARNING: subclass destructor did not call "
+                                     "stopAndFlush() — buffered entries may be lost.\n");
+            }
             stopAndFlush();
         }
 
@@ -140,6 +144,7 @@ namespace minta {
         const BatchOptions& options() const { return m_opts; }
 
         /// Number of entries dropped due to maxQueueSize overflow.
+        /// Wraps on unsigned overflow; practically unreachable.
         size_t droppedCount() const {
             return m_droppedCount.load(std::memory_order_relaxed);
         }

@@ -288,4 +288,25 @@ TEST_F(HttpSinkTest, UrlParsingEdgeCases) {
     // Empty port (trailing colon)
     auto p6 = minta::detail::parseUrl("http://host:/path");
     EXPECT_FALSE(p6.valid);
+
+    // Uppercase scheme (RFC 3986 case-insensitive)
+    auto p7 = minta::detail::parseUrl("HTTP://host/path");
+    ASSERT_TRUE(p7.valid);
+    EXPECT_EQ(p7.scheme, "http");
+
+    auto p8 = minta::detail::parseUrl("HTTPS://host/path");
+    ASSERT_TRUE(p8.valid);
+    EXPECT_EQ(p8.scheme, "https");
+
+    // IPv6 literal (not supported — early return)
+    auto p9 = minta::detail::parseUrl("http://[::1]:8080/path");
+    EXPECT_FALSE(p9.valid);
+
+    // Control characters in host (CRLF injection defense)
+    auto p10 = minta::detail::parseUrl("http://evil\r\nhost/path");
+    EXPECT_FALSE(p10.valid);
+
+    // Control characters in path
+    auto p11 = minta::detail::parseUrl("http://host/path\r\ninjected");
+    EXPECT_FALSE(p11.valid);
 }

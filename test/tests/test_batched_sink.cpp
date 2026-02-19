@@ -159,17 +159,15 @@ TEST_F(BatchedSinkTest, RetryOnFailure) {
 TEST_F(BatchedSinkTest, GracefulShutdownFlushes) {
     minta::BatchOptions opts;
     opts.setBatchSize(100).setFlushIntervalMs(0); // won't trigger by size or timer
-    {
-        MockBatchedSink sink(opts);
+    MockBatchedSink sink(opts);
 
-        for (int i = 0; i < 5; ++i) {
-            auto entry = makeEntry("shutdown_" + std::to_string(i));
-            sink.write(entry);
-        }
-        // Destructor should flush remaining
+    for (int i = 0; i < 5; ++i) {
+        auto entry = makeEntry("shutdown_" + std::to_string(i));
+        sink.write(entry);
     }
-    // If we get here without deadlock, the test passes
-    SUCCEED();
+    // stopAndFlush() is what the destructor invokes; idempotent.
+    sink.stopAndFlush();
+    EXPECT_EQ(sink.totalEntries(), 5u);
 }
 
 // --- Test 5: Concurrent writes ---

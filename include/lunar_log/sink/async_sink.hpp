@@ -298,8 +298,8 @@ namespace detail {
                     } catch (...) {}
                 }
 
+                m_queue.setFlushPending(false);
                 if (m_flushRequested.load(std::memory_order_acquire)) {
-                    m_queue.setFlushPending(false);
                     std::vector<LogEntry> extra;
                     m_queue.drain(extra);
                     for (size_t i = 0; i < extra.size(); ++i) {

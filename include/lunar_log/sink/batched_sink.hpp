@@ -112,6 +112,7 @@ namespace minta {
             {
                 std::lock_guard<std::mutex> lock(m_bufferMutex);
                 if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
+                    m_droppedCount.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
                 m_buffer.push_back(detail::cloneEntry(entry));
@@ -137,6 +138,11 @@ namespace minta {
 
         /// Access options (for testing).
         const BatchOptions& options() const { return m_opts; }
+
+        /// Number of entries dropped due to maxQueueSize overflow.
+        size_t droppedCount() const {
+            return m_droppedCount.load(std::memory_order_relaxed);
+        }
 
     protected:
         /// Subclasses implement this to process a batch of entries.
@@ -242,6 +248,7 @@ namespace minta {
         std::mutex m_timerMutex;
         std::condition_variable m_timerCV;
         std::atomic<bool> m_running;
+        std::atomic<size_t> m_droppedCount{0};
     };
 
 } // namespace minta

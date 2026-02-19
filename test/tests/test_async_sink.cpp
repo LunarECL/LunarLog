@@ -51,6 +51,34 @@ private:
     std::vector<std::string> m_messages;
 };
 
+// Helper: gate sink that blocks in write() until released (for drop-count testing)
+class GateSink : public minta::ISink {
+public:
+    GateSink() : m_gate(true), m_count(0) {}
+
+    void write(const minta::LogEntry&) override {
+        m_count.fetch_add(1, std::memory_order_relaxed);
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_cv.wait(lock, [this] { return !m_gate; });
+    }
+
+    void open() {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_gate = false;
+        }
+        m_cv.notify_all();
+    }
+
+    size_t writeCount() const { return m_count.load(std::memory_order_relaxed); }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_gate;
+    std::atomic<size_t> m_count;
+};
+
 // --- Test 1: Async write reaches inner sink ---
 TEST_F(AsyncSinkTest, WriteReachesInnerSink) {
     minta::LunarLog logger(minta::LogLevel::TRACE, false);
@@ -263,4 +291,74 @@ TEST_F(AsyncSinkTest, FluentBuilderWithAsyncSink) {
     TestUtils::waitForFileContent("async_test_fluent.txt");
     std::string content = TestUtils::readLogFile("async_test_fluent.txt");
     EXPECT_NE(content.find("Fluent async test"), std::string::npos);
+}
+
+// --- Test 11: DroppedCount increments on DropNewest overflow ---
+TEST_F(AsyncSinkTest, DroppedCountIncrementsOnDropNewest) {
+    minta::AsyncOptions opts;
+    opts.queueSize = 1;
+    opts.overflowPolicy = minta::OverflowPolicy::DropNewest;
+
+    minta::AsyncSink<GateSink> sink(opts);
+
+    // First write: consumer picks it up and blocks in GateSink
+    {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "first";
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    // Wait for consumer to dequeue the entry and block in GateSink::write()
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Second write fills the queue (capacity=1)
+    {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "fills_queue";
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    // These 5 writes should all be dropped (queue full, DropNewest)
+    const size_t numToDrop = 5;
+    for (size_t i = 0; i < numToDrop; ++i) {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "dropped";
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    EXPECT_EQ(sink.droppedCount(), numToDrop);
+
+    // Release gate for clean shutdown
+    sink.innerSink()->open();
+}
+
+// --- Test 12: Periodic flush via flushIntervalMs ---
+TEST_F(AsyncSinkTest, PeriodicFlushViaFlushInterval) {
+    minta::AsyncOptions opts;
+    opts.queueSize = 8192;
+    opts.flushIntervalMs = 100;
+
+    minta::AsyncSink<RecordingSink> sink(opts);
+
+    {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "periodic test";
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    // Do NOT call flush() — rely on consumer thread to deliver
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    EXPECT_GE(sink.innerSink()->count(), 1u);
+    std::vector<std::string> msgs = sink.innerSink()->messages();
+    ASSERT_FALSE(msgs.empty());
+    EXPECT_EQ(msgs[0], "periodic test");
 }

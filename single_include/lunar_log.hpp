@@ -3785,8 +3785,8 @@ namespace detail {
                     } catch (...) {}
                 }
 
+                m_queue.setFlushPending(false);
                 if (m_flushRequested.load(std::memory_order_acquire)) {
-                    m_queue.setFlushPending(false);
                     std::vector<LogEntry> extra;
                     m_queue.drain(extra);
                     for (size_t i = 0; i < extra.size(); ++i) {
@@ -3956,6 +3956,7 @@ namespace minta {
             {
                 std::lock_guard<std::mutex> lock(m_bufferMutex);
                 if (m_opts.maxQueueSize_ > 0 && m_buffer.size() >= m_opts.maxQueueSize_) {
+                    m_droppedCount.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
                 m_buffer.push_back(detail::cloneEntry(entry));
@@ -3981,6 +3982,11 @@ namespace minta {
 
         /// Access options (for testing).
         const BatchOptions& options() const { return m_opts; }
+
+        /// Number of entries dropped due to maxQueueSize overflow.
+        size_t droppedCount() const {
+            return m_droppedCount.load(std::memory_order_relaxed);
+        }
 
     protected:
         /// Subclasses implement this to process a batch of entries.
@@ -4086,6 +4092,7 @@ namespace minta {
         std::mutex m_timerMutex;
         std::condition_variable m_timerCV;
         std::atomic<bool> m_running;
+        std::atomic<size_t> m_droppedCount{0};
     };
 
 } // namespace minta
@@ -4488,7 +4495,6 @@ namespace detail {
                 int fd;
                 explicit ScopedSocket(int f) : fd(f) {}
                 ~ScopedSocket() { if (fd >= 0) { ::close(fd); } }
-                void release() { fd = -1; }
             };
             ScopedSocket guard(sockfd);
 
@@ -4583,25 +4589,32 @@ namespace detail {
                 totalSent += sent;
             }
 
-            // Read response status line
-            // Note: Single recv() may return a partial HTTP response under high load.
-            // Status line parsing below may fail if the response is split across
-            // TCP segments. This is a known limitation accepted for simplicity.
-            // For production use, consider AsyncSink<HttpSink> or a robust HTTP client.
-            char buf[1024];
-            ssize_t received;
-            do {
-                received = recv(sockfd, buf, sizeof(buf) - 1, 0);
-            } while (received < 0 && errno == EINTR);
+            // Read HTTP status line byte-by-byte until \r\n.
+            // Looping ensures correct parsing even when TCP segments
+            // split the status line across multiple recv() calls.
+            std::string responseBuf;
+            responseBuf.reserve(256);
+            {
+                char byte = 0;
+                while (responseBuf.size() < 4096) {
+                    ssize_t n;
+                    do { n = ::recv(sockfd, &byte, 1, 0); }
+                    while (n < 0 && errno == EINTR);
+                    if (n <= 0) break;
+                    responseBuf += byte;
+                    if (responseBuf.size() >= 2 &&
+                        responseBuf[responseBuf.size()-2] == '\r' &&
+                        responseBuf[responseBuf.size()-1] == '\n') break;
+                }
+            }
 
-            if (received <= 0) return false;
-            buf[received] = '\0';
+            if (responseBuf.empty()) return false;
 
             // Parse HTTP status code
-            // Expected: "HTTP/1.1 200 OK\r\n..."
-            const char* statusPtr = std::strstr(buf, " ");
-            if (!statusPtr) return false;
-            int statusCode = std::atoi(statusPtr + 1);
+            // Expected: "HTTP/1.1 200 OK\r\n"
+            size_t spacePos = responseBuf.find(' ');
+            if (spacePos == std::string::npos) return false;
+            int statusCode = std::atoi(responseBuf.c_str() + spacePos + 1);
             return (statusCode >= 200 && statusCode < 300);
         }
 

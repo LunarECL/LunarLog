@@ -189,7 +189,26 @@ void TestUtils::cleanupLogFiles() {
         "macro_srcloc_trace_ex.txt", "macro_srcloc_debug_ex.txt",
         "macro_srcloc_info_ex.txt", "macro_srcloc_warn_ex.txt",
         // Color console sink tests
-        "color_console_test.txt", "color_console_fluent.txt"
+        "color_console_test.txt", "color_console_fluent.txt",
+        // File transport tests
+        "ft_basic.log", "ft_autoflush.log", "ft_noflush.log",
+        "ft_multi.log", "ft_concurrent.log",
+        "ft_error.log", "ft_recovery.log", "ft_dedup.log",
+        // Additional rolling file tests
+        "roll_mid.log", "roll_mid.003.log", "roll_mid.005.log",
+        "roll_mid.006.log", "roll_mid.007.log", "roll_mid.abc.log",
+        "roll_disc_d.log", "roll_disc_d.2024-02-17.log",
+        "roll_disc_dd.log", "roll_disc_dd.2024-02-17.001.log",
+        "roll_disc_hh.log", "roll_disc_hh.2024-02-17.14.001.log",
+        "roll_disc_inv.log", "roll_disc_inv.abc.log",
+        "roll_disc_inv.2024-02.log", "roll_disc_inv.003.log",
+        "roll_disc_hr.log",
+        "roll_same_sec.log",
+        "roll_hhybrid.log",
+        "roll_total_cleanup.log",
+        "roll_total_cleanup.001.log", "roll_total_cleanup.002.log",
+        "roll_total_cleanup.003.log", "roll_total_cleanup.004.log",
+        "roll_total_cleanup.005.log"
     };
 
     for (const auto &filename : filesToRemove) {

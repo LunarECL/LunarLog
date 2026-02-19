@@ -510,3 +510,170 @@ TEST_F(OutputTemplateTest, SetOutputTemplateBeforeLogging) {
     EXPECT_FALSE(content.empty());
     EXPECT_TRUE(content.find("[INF]") != std::string::npos) << "Got: " << content;
 }
+
+// ---------------------------------------------------------------------------
+// Parser edge cases — unclosed braces, unmatched braces, empty content
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, ParseUnclosedBrace) {
+    auto segments = minta::detail::parseOutputTemplate("before{unclosed");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_TRUE(segments[0].isLiteral);
+    EXPECT_EQ(segments[0].literal, "before{unclosed");
+}
+
+TEST_F(OutputTemplateTest, ParseUnmatchedSingleCloseBrace) {
+    auto segments = minta::detail::parseOutputTemplate("before}after");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_TRUE(segments[0].isLiteral);
+    EXPECT_EQ(segments[0].literal, "before}after");
+}
+
+TEST_F(OutputTemplateTest, ParseEmptyBraces) {
+    auto segments = minta::detail::parseOutputTemplate("{}");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_TRUE(segments[0].isLiteral);
+    EXPECT_EQ(segments[0].literal, "");
+}
+
+TEST_F(OutputTemplateTest, ParseUnclosedBraceAfterToken) {
+    auto segments = minta::detail::parseOutputTemplate("{message}trail{broken");
+    ASSERT_EQ(segments.size(), 2u);
+    EXPECT_FALSE(segments[0].isLiteral);
+    EXPECT_EQ(segments[0].tokenType, minta::detail::OutputTokenType::Message);
+    EXPECT_TRUE(segments[1].isLiteral);
+    EXPECT_EQ(segments[1].literal, "trail{broken");
+}
+
+// ---------------------------------------------------------------------------
+// Alignment parsing edge cases
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, ParseAlignmentNonNumeric) {
+    auto segments = minta::detail::parseOutputTemplate("{level,abc}");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_EQ(segments[0].alignment, 0);
+    EXPECT_EQ(segments[0].tokenType, minta::detail::OutputTokenType::Level);
+}
+
+TEST_F(OutputTemplateTest, ParseAlignmentOverflow) {
+    auto segments = minta::detail::parseOutputTemplate("{level,999999}");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_EQ(segments[0].alignment, minta::detail::MAX_ALIGNMENT_WIDTH);
+}
+
+TEST_F(OutputTemplateTest, ParseAlignmentNegativeOverflow) {
+    auto segments = minta::detail::parseOutputTemplate("{level,-999999}");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_EQ(segments[0].alignment, -minta::detail::MAX_ALIGNMENT_WIDTH);
+}
+
+TEST_F(OutputTemplateTest, ParseAlignmentOnlyMinus) {
+    auto segments = minta::detail::parseOutputTemplate("{level,-}");
+    ASSERT_EQ(segments.size(), 1u);
+    EXPECT_EQ(segments[0].alignment, 0);
+}
+
+TEST_F(OutputTemplateTest, ParseAlignmentDirectEdgeCases) {
+    EXPECT_EQ(minta::detail::parseAlignment(""), 0);
+    EXPECT_EQ(minta::detail::parseAlignment("-"), 0);
+    EXPECT_EQ(minta::detail::parseAlignment("abc"), 0);
+    EXPECT_EQ(minta::detail::parseAlignment("12x"), 0);
+    EXPECT_EQ(minta::detail::parseAlignment("5"), 5);
+    EXPECT_EQ(minta::detail::parseAlignment("-5"), -5);
+}
+
+// ---------------------------------------------------------------------------
+// Alignment application edge cases
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, AlignmentIntMin) {
+    std::string result = minta::detail::applyAlignment("test", INT_MIN);
+    EXPECT_EQ(result.size(), static_cast<size_t>(minta::detail::MAX_ALIGNMENT_WIDTH));
+    EXPECT_EQ(result.substr(0, 4), "test");
+}
+
+TEST_F(OutputTemplateTest, AlignmentClampedLargeWidth) {
+    std::string result = minta::detail::applyAlignment("hi", 5000);
+    EXPECT_LE(result.size(), static_cast<size_t>(minta::detail::MAX_ALIGNMENT_WIDTH));
+}
+
+// ---------------------------------------------------------------------------
+// resolveTokenType — unknown tokens
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, ResolveTokenTypeUnknown) {
+    minta::detail::OutputTokenType type;
+    EXPECT_FALSE(minta::detail::resolveTokenType("bogus", type));
+    EXPECT_FALSE(minta::detail::resolveTokenType("", type));
+    EXPECT_FALSE(minta::detail::resolveTokenType("Timestamp", type));
+}
+
+// ---------------------------------------------------------------------------
+// Render edge cases
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, RenderLevelUnknownSpec) {
+    minta::detail::OutputTemplate tpl("{level:xyz}");
+    auto entry = makeTestEntry(minta::LogLevel::WARN, "msg");
+    EXPECT_EQ(tpl.render(entry), "WARN");
+}
+
+TEST_F(OutputTemplateTest, RenderWithOverrideMessage) {
+    minta::detail::OutputTemplate tpl("{message}");
+    auto entry = makeTestEntry(minta::LogLevel::INFO, "original");
+    EXPECT_EQ(tpl.render(entry, "overridden"), "overridden");
+}
+
+TEST_F(OutputTemplateTest, RenderSourceFileOnly) {
+    minta::detail::OutputTemplate tpl("{source}");
+    auto entry = makeTestEntry(minta::LogLevel::INFO, "msg", "", "main.cpp", 42, "");
+    EXPECT_EQ(tpl.render(entry), "main.cpp:42");
+}
+
+TEST_F(OutputTemplateTest, RenderExceptionWithContent) {
+    minta::detail::OutputTemplate tpl("{exception}");
+    auto entry = makeTestEntry(minta::LogLevel::ERROR, "Failed");
+    entry.exception = minta::detail::make_unique<minta::detail::ExceptionInfo>();
+    entry.exception->type = "std::runtime_error";
+    entry.exception->message = "Connection refused";
+    std::string result = tpl.render(entry);
+    EXPECT_EQ(result, "std::runtime_error: Connection refused");
+}
+
+TEST_F(OutputTemplateTest, RenderExceptionWithChain) {
+    minta::detail::OutputTemplate tpl("{exception}");
+    auto entry = makeTestEntry(minta::LogLevel::ERROR, "Failed");
+    entry.exception = minta::detail::make_unique<minta::detail::ExceptionInfo>();
+    entry.exception->type = "std::runtime_error";
+    entry.exception->message = "Connection refused";
+    entry.exception->chain = "std::system_error: Network unreachable\nstd::bad_alloc: out of memory";
+    std::string result = tpl.render(entry);
+    EXPECT_TRUE(result.find("std::runtime_error: Connection refused") != std::string::npos);
+    EXPECT_TRUE(result.find("--- std::system_error: Network unreachable") != std::string::npos);
+    EXPECT_TRUE(result.find("--- std::bad_alloc: out of memory") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// convertTimestampFormat — individual token coverage
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, ConvertTimestampFormatIndividualTokens) {
+    EXPECT_EQ(minta::detail::convertTimestampFormat("MM"), "%m");
+    EXPECT_EQ(minta::detail::convertTimestampFormat("dd"), "%d");
+    EXPECT_EQ(minta::detail::convertTimestampFormat("HH"), "%H");
+    EXPECT_EQ(minta::detail::convertTimestampFormat("mm"), "%M");
+    EXPECT_EQ(minta::detail::convertTimestampFormat("ss"), "%S");
+    EXPECT_EQ(minta::detail::convertTimestampFormat("fff"), std::string(1, '\x01'));
+    EXPECT_EQ(minta::detail::convertTimestampFormat("x"), "x");
+}
+
+// ---------------------------------------------------------------------------
+// OutputTemplate class accessors
+// ---------------------------------------------------------------------------
+
+TEST_F(OutputTemplateTest, TemplateStringAccessor) {
+    minta::detail::OutputTemplate tpl("{level} {message}");
+    EXPECT_EQ(tpl.templateString(), "{level} {message}");
+    EXPECT_FALSE(tpl.empty());
+}

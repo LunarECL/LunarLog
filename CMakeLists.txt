@@ -139,6 +139,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_source_location_macros.cpp
             test/tests/test_no_macros.cpp
             test/tests/test_color_console_sink.cpp
+            test/tests/test_file_transport.cpp
             test/tests/utils/test_utils.cpp
     )
 

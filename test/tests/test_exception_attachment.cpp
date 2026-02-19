@@ -976,6 +976,21 @@ TEST_F(ExceptionAttachmentTest, NullWhatExceptionOnlyPath) {
 // Chain prefix consistency between OutputTemplate and HumanReadableFormatter
 // ---------------------------------------------------------------------------
 
+TEST_F(ExceptionAttachmentTest, NonStdExceptionNestedAsUnknown) {
+    try {
+        try {
+            throw 42;
+        } catch (...) {
+            std::throw_with_nested(std::runtime_error("outer wraps non-std"));
+        }
+    } catch (const std::exception& ex) {
+        auto info = minta::detail::extractExceptionInfo(ex);
+        EXPECT_TRUE(info.type.find("runtime_error") != std::string::npos);
+        EXPECT_EQ(info.message, "outer wraps non-std");
+        EXPECT_TRUE(info.chain.find("unknown exception") != std::string::npos);
+    }
+}
+
 TEST_F(ExceptionAttachmentTest, OutputTemplateChainPrefixMatchesDefault) {
     minta::LunarLog logger(minta::LogLevel::ERROR, false);
     logger.addSink<minta::FileSink>("ex_chain_tpl.txt");

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "lunar_log.hpp"
+#include "lunar_log/transport/file_transport.hpp"
 #include "utils/test_utils.hpp"
+#include <stdexcept>
 
 class EdgeCaseTest : public ::testing::Test {
 protected:
@@ -118,4 +120,24 @@ TEST_F(EdgeCaseTest, ConstructorWithoutDefaultConsoleSink) {
     TestUtils::waitForFileContent("test_log.txt");
     std::string logContent = TestUtils::readLogFile("test_log.txt");
     EXPECT_TRUE(logContent.find("no console sink") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// FileTransport direct construction tests (coverage for file_transport.hpp)
+// ---------------------------------------------------------------------------
+
+TEST_F(EdgeCaseTest, FileTransportInvalidPathThrows) {
+    EXPECT_THROW(
+        minta::FileTransport("/nonexistent/path/file.log"),
+        std::runtime_error
+    );
+}
+
+TEST_F(EdgeCaseTest, FileTransportValidPathWriteSucceeds) {
+    {
+        minta::FileTransport transport("test_log.txt");
+        transport.write("hello from FileTransport");
+    }
+    std::string content = TestUtils::readLogFile("test_log.txt");
+    EXPECT_TRUE(content.find("hello from FileTransport") != std::string::npos);
 }

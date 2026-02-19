@@ -52,3 +52,8 @@ TEST_F(LogLevelsTest, ChangeLogLevel) {
     EXPECT_TRUE(logContent.find("This should now be logged") != std::string::npos);
     EXPECT_TRUE(logContent.find("This should still not be logged") == std::string::npos);
 }
+
+TEST_F(LogLevelsTest, GetLevelStringUnknown) {
+    auto invalid = static_cast<minta::LogLevel>(99);
+    EXPECT_STREQ(minta::getLevelString(invalid), "UNKNOWN");
+}

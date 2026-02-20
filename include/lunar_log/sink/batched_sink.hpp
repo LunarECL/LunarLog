@@ -79,10 +79,13 @@ namespace minta {
 
         ~BatchedSink() noexcept {
             if (m_running.load(std::memory_order_acquire)) {
-                std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
-                                     "stopAndFlush() before ~BatchedSink(). "
-                                     "Buffered entries will be silently discarded. "
-                                     "Add stopAndFlush() to your subclass destructor.\n");
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (!m_buffer.empty()) {
+                    std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
+                                         "stopAndFlush() before ~BatchedSink(). "
+                                         "Buffered entries will be silently discarded. "
+                                         "Add stopAndFlush() to your subclass destructor.\n");
+                }
             }
             stopAndFlush();
         }

@@ -251,10 +251,11 @@ namespace detail {
         /// Flush: wait for the consumer to finish processing all queued entries
         /// and propagate flush to the inner sink.
         ///
-        /// @note Thread-safe. Concurrent callers share a single completion flag;
-        ///       all callers' data is guaranteed enqueued and written, but the
-        ///       later caller's return may precede its own inner-sink flush.
-        ///       For single-threaded flush usage, full flush ordering is guaranteed.
+        /// @note Thread-safe. Concurrent flush() callers share a single completion
+        ///       signal. All data enqueued BEFORE requestFlush() is guaranteed
+        ///       written and flushed to the inner sink. Data enqueued concurrently
+        ///       by a second caller may be written but inner-sink flush is
+        ///       best-effort. For single-caller flush, full ordering is guaranteed.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
@@ -302,6 +303,9 @@ namespace detail {
                 // m_flushRequested check will re-arm both the flag and the CV notify,
                 // so the next waitForData() returns immediately — no flush is lost.
                 m_queue.setFlushPending(false);
+                // Safe: a concurrent requestFlush() will re-arm flushPending
+                // atomically; worst case is one extra consumer iteration with
+                // an empty drain — no data loss.
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);

@@ -3738,10 +3738,11 @@ namespace detail {
         /// Flush: wait for the consumer to finish processing all queued entries
         /// and propagate flush to the inner sink.
         ///
-        /// @note Thread-safe. Concurrent callers share a single completion flag;
-        ///       all callers' data is guaranteed enqueued and written, but the
-        ///       later caller's return may precede its own inner-sink flush.
-        ///       For single-threaded flush usage, full flush ordering is guaranteed.
+        /// @note Thread-safe. Concurrent flush() callers share a single completion
+        ///       signal. All data enqueued BEFORE requestFlush() is guaranteed
+        ///       written and flushed to the inner sink. Data enqueued concurrently
+        ///       by a second caller may be written but inner-sink flush is
+        ///       best-effort. For single-caller flush, full ordering is guaranteed.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
@@ -3789,6 +3790,9 @@ namespace detail {
                 // m_flushRequested check will re-arm both the flag and the CV notify,
                 // so the next waitForData() returns immediately — no flush is lost.
                 m_queue.setFlushPending(false);
+                // Safe: a concurrent requestFlush() will re-arm flushPending
+                // atomically; worst case is one extra consumer iteration with
+                // an empty drain — no data loss.
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -3932,10 +3936,13 @@ namespace minta {
 
         ~BatchedSink() noexcept {
             if (m_running.load(std::memory_order_acquire)) {
-                std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
-                                     "stopAndFlush() before ~BatchedSink(). "
-                                     "Buffered entries will be silently discarded. "
-                                     "Add stopAndFlush() to your subclass destructor.\n");
+                std::lock_guard<std::mutex> lock(m_bufferMutex);
+                if (!m_buffer.empty()) {
+                    std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
+                                         "stopAndFlush() before ~BatchedSink(). "
+                                         "Buffered entries will be silently discarded. "
+                                         "Add stopAndFlush() to your subclass destructor.\n");
+                }
             }
             stopAndFlush();
         }
@@ -4650,6 +4657,16 @@ namespace detail {
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                bool clean = true;
+                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                if (!clean) continue;
                 request += it->first + ": " + it->second + "\r\n";
             }
             request += "\r\n";
@@ -4831,6 +4848,8 @@ namespace detail {
                 ~ScopedSigpipeBlock() {
                     pthread_sigmask(SIG_SETMASK, &m_old, nullptr);
                 }
+                ScopedSigpipeBlock(const ScopedSigpipeBlock&) = delete;
+                ScopedSigpipeBlock& operator=(const ScopedSigpipeBlock&) = delete;
             };
 
             bool writeOk = true;

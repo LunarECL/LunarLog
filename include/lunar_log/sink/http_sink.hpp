@@ -438,6 +438,16 @@ namespace detail {
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                bool clean = true;
+                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                if (!clean) continue;
                 request += it->first + ": " + it->second + "\r\n";
             }
             request += "\r\n";
@@ -619,6 +629,8 @@ namespace detail {
                 ~ScopedSigpipeBlock() {
                     pthread_sigmask(SIG_SETMASK, &m_old, nullptr);
                 }
+                ScopedSigpipeBlock(const ScopedSigpipeBlock&) = delete;
+                ScopedSigpipeBlock& operator=(const ScopedSigpipeBlock&) = delete;
             };
 
             bool writeOk = true;

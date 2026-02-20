@@ -4637,6 +4637,18 @@ namespace detail {
             if (body.empty()) return;
 
             std::map<std::string, std::string> allHeaders = m_opts.headers;
+            // Remove any user-supplied Content-Type (case-insensitive) to
+            // prevent duplicate headers when user casing differs from the
+            // canonical key.  The library always controls Content-Type via
+            // setContentType(); user setHeader("Content-Type", ...) is ignored.
+            for (std::map<std::string, std::string>::iterator it = allHeaders.begin();
+                 it != allHeaders.end(); ) {
+                if (detail::headerNameEqualsLower(it->first, "content-type")) {
+                    it = allHeaders.erase(it);
+                } else {
+                    ++it;
+                }
+            }
             allHeaders["Content-Type"] = m_opts.contentType;
             if (allHeaders.find("User-Agent") == allHeaders.end()) {
                 allHeaders["User-Agent"] = "LunarLog/1.0";
@@ -4668,8 +4680,8 @@ namespace detail {
             std::string result;
             result.reserve(batch.size() * 256);
             for (size_t i = 0; i < batch.size(); ++i) {
-                if (i > 0) result += '\n';
                 result += m_formatter->format(*batch[i]);
+                result += '\n';
             }
             return result;
         }
@@ -5184,6 +5196,8 @@ namespace detail {
                     static_cast<DWORD>(wHeader.size()),
                     WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
             }
+
+            if (body.size() > 0x7FFFFFFFU) return false;
 
             BOOL sendOk = WinHttpSendRequest(hRequest,
                 WINHTTP_NO_ADDITIONAL_HEADERS, 0,

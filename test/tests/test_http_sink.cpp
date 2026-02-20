@@ -321,4 +321,12 @@ TEST_F(HttpSinkTest, UrlParsingEdgeCases) {
     // Control characters in path
     auto p11 = minta::detail::parseUrl("http://host/path\r\ninjected");
     EXPECT_FALSE(p11.valid);
+
+    // Space in host (malformed request line defense)
+    auto p12 = minta::detail::parseUrl("http://evil host/path");
+    EXPECT_FALSE(p12.valid);
+
+    // Space in path
+    auto p13 = minta::detail::parseUrl("http://host/my path");
+    EXPECT_FALSE(p13.valid);
 }

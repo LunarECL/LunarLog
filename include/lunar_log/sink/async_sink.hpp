@@ -299,13 +299,11 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                // A concurrent requestFlush() between setFlushPending(false) and the
-                // m_flushRequested check will re-arm both the flag and the CV notify,
-                // so the next waitForData() returns immediately — no flush is lost.
+                // Safe without queue mutex: requestFlush() re-arms flushPending
+                // atomically under lock and notifies, so a concurrent flush()
+                // between this clear and the m_flushRequested check below will
+                // cause one extra consumer iteration (empty drain) — no data loss.
                 m_queue.setFlushPending(false);
-                // Safe: a concurrent requestFlush() will re-arm flushPending
-                // atomically; worst case is one extra consumer iteration with
-                // an empty drain — no data loss.
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);

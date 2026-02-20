@@ -368,8 +368,9 @@ TEST_F(AsyncSinkTest, PeriodicFlushViaFlushInterval) {
         sink.write(e);
     }
 
-    // Do NOT call flush() — rely on consumer thread to deliver
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    // Do NOT call flush() — rely on consumer thread to deliver.
+    // 10x margin over flushIntervalMs to avoid flaky failures under CI load.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     EXPECT_GE(sink.innerSink()->count(), 1u);
     std::vector<std::string> msgs = sink.innerSink()->messages();

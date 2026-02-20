@@ -163,6 +163,9 @@ namespace minta {
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
         ///
+        /// @warning Subclass MUST call stopAndFlush() from its destructor.
+        ///          Failing to do so will discard buffered entries without
+        ///          delivering them to writeBatch().
         /// @warning Thread-safety: writeBatch() is serialized by m_writeMutex,
         ///          so implementations need not be thread-safe. However, long-running
         ///          writeBatch calls will block other flush paths.

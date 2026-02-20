@@ -50,6 +50,15 @@ namespace minta {
             : m_ident(ident)
             , m_opts(opts)
         {
+            // openlog() is process-global: only one ident/facility/logopt is
+            // active at a time.  Warn if a second instance is created.
+            static std::atomic<int> instanceCount(0);
+            if (instanceCount.fetch_add(1, std::memory_order_relaxed) > 0) {
+                std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
+                                     "instances detected. openlog() is process-global; "
+                                     "the last-created instance's ident will be used "
+                                     "for all syslog output.\n");
+            }
             // openlog() requires a pointer that remains valid until closelog().
             // m_ident is a std::string member, so c_str() is stable.
             openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);

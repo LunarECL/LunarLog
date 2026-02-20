@@ -3786,13 +3786,11 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                // A concurrent requestFlush() between setFlushPending(false) and the
-                // m_flushRequested check will re-arm both the flag and the CV notify,
-                // so the next waitForData() returns immediately — no flush is lost.
+                // Safe without queue mutex: requestFlush() re-arms flushPending
+                // atomically under lock and notifies, so a concurrent flush()
+                // between this clear and the m_flushRequested check below will
+                // cause one extra consumer iteration (empty drain) — no data loss.
                 m_queue.setFlushPending(false);
-                // Safe: a concurrent requestFlush() will re-arm flushPending
-                // atomically; worst case is one extra consumer iteration with
-                // an empty drain — no data loss.
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -4020,6 +4018,9 @@ namespace minta {
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
         ///
+        /// @warning Subclass MUST call stopAndFlush() from its destructor.
+        ///          Failing to do so will discard buffered entries without
+        ///          delivering them to writeBatch().
         /// @warning Thread-safety: writeBatch() is serialized by m_writeMutex,
         ///          so implementations need not be thread-safe. However, long-running
         ///          writeBatch calls will block other flush paths.
@@ -4173,6 +4174,15 @@ namespace minta {
             : m_ident(ident)
             , m_opts(opts)
         {
+            // openlog() is process-global: only one ident/facility/logopt is
+            // active at a time.  Warn if a second instance is created.
+            static std::atomic<int> instanceCount(0);
+            if (instanceCount.fetch_add(1, std::memory_order_relaxed) > 0) {
+                std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
+                                     "instances detected. openlog() is process-global; "
+                                     "the last-created instance's ident will be used "
+                                     "for all syslog output.\n");
+            }
             // openlog() requires a pointer that remains valid until closelog().
             // m_ident is a std::string member, so c_str() is stable.
             openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);
@@ -4407,14 +4417,15 @@ namespace detail {
 
         if (result.host.empty()) return result;
 
-        // Defense-in-depth: reject control characters to prevent HTTP header injection
+        // Defense-in-depth: reject control characters and spaces to prevent
+        // HTTP header injection and malformed request lines (RFC 3986 §2.1).
         for (size_t i = 0; i < result.host.size(); ++i) {
             unsigned char c = static_cast<unsigned char>(result.host[i]);
-            if (c < 0x20 || c == 0x7F) return result;
+            if (c <= 0x20 || c == 0x7F) return result;
         }
         for (size_t i = 0; i < result.path.size(); ++i) {
             unsigned char c = static_cast<unsigned char>(result.path[i]);
-            if (c < 0x20 || c == 0x7F) return result;
+            if (c <= 0x20 || c == 0x7F) return result;
         }
 
         result.valid = true;
@@ -4561,15 +4572,77 @@ namespace detail {
             //               thread for portable DNS timeout support.
             int gaiResult = getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res);
             if (gaiResult != 0 || !res) {
-                if (res) freeaddrinfo(res);
                 return false;
             }
 
-            int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-            if (sockfd < 0) {
-                freeaddrinfo(res);
-                return false;
+            struct AddrInfoGuard {
+                struct addrinfo* p;
+                explicit AddrInfoGuard(struct addrinfo* a) : p(a) {}
+                ~AddrInfoGuard() { if (p) freeaddrinfo(p); }
+                AddrInfoGuard(const AddrInfoGuard&) = delete;
+                AddrInfoGuard& operator=(const AddrInfoGuard&) = delete;
+            } addrGuard(res);
+
+            int sockfd = -1;
+            for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
+                if (remainingMs() <= 0) return false;
+
+                int fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+                if (fd < 0) continue;
+
+                // Set non-blocking for connect timeout
+                int flags = fcntl(fd, F_GETFL, 0);
+                if (flags < 0) {
+                    ::close(fd);
+                    continue;
+                }
+                if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                    ::close(fd);
+                    continue;
+                }
+
+                int connectResult = connect(fd, rp->ai_addr, rp->ai_addrlen);
+                if (connectResult < 0) {
+                    if (errno != EINPROGRESS) {
+                        ::close(fd);
+                        continue;
+                    }
+                    // Wait for connection with timeout
+                    struct pollfd pfd;
+                    pfd.fd = fd;
+                    pfd.events = POLLOUT;
+                    pfd.revents = 0;
+
+                    int sel;
+                    do {
+                        long rm = remainingMs();
+                        if (rm <= 0) { sel = 0; break; }
+                        sel = poll(&pfd, 1, static_cast<int>(rm > static_cast<long>(INT_MAX) ? INT_MAX : rm));
+                    } while (sel < 0 && errno == EINTR);
+                    if (sel <= 0) {
+                        ::close(fd);
+                        continue;
+                    }
+
+                    int so_error = 0;
+                    socklen_t len = sizeof(so_error);
+                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0 || so_error != 0) {
+                        ::close(fd);
+                        continue;
+                    }
+                }
+
+                // Set back to blocking
+                if (fcntl(fd, F_SETFL, flags) < 0) {
+                    ::close(fd);
+                    continue;
+                }
+
+                sockfd = fd;
+                break;
             }
+
+            if (sockfd < 0) return false;
 
             struct ScopedSocket {
                 int fd;
@@ -4589,60 +4662,14 @@ namespace detail {
             }
 #endif
 
-            // Set non-blocking for connect timeout
-            int flags = fcntl(sockfd, F_GETFL, 0);
-            if (flags < 0) return false;
-            if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) return false;
-
-            int connectResult = connect(sockfd, res->ai_addr, res->ai_addrlen);
-            freeaddrinfo(res);
-
-            if (connectResult < 0) {
-                if (errno != EINPROGRESS) {
-                    return false;
-                }
-                // Wait for connection with timeout
-                struct pollfd pfd;
-                pfd.fd = sockfd;
-                pfd.events = POLLOUT;
-                pfd.revents = 0;
-
-                int sel;
-                do {
-                    long rm = remainingMs();
-                    if (rm <= 0) { sel = 0; break; }
-                    sel = poll(&pfd, 1, static_cast<int>(rm > static_cast<long>(INT_MAX) ? INT_MAX : rm));
-                } while (sel < 0 && errno == EINTR);
-                if (sel <= 0) {
-                    return false;
-                }
-
-                int so_error = 0;
-                socklen_t len = sizeof(so_error);
-                getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &so_error, &len);
-                if (so_error != 0) {
-                    return false;
-                }
-            }
-
-            // Set back to blocking
-            if (fcntl(sockfd, F_SETFL, flags) < 0) return false;
-
-            // SO_SNDTIMEO / SO_RCVTIMEO are set once. remainingMs() guards loop
-            // entry so no new calls start after deadline, but the last in-flight
-            // call may overshoot by up to the remaining value at time of setting.
-            // Acceptable for a logging transport.
-            // TODO(future): re-set SO_SNDTIMEO/SO_RCVTIMEO before each send/recv
-            //               using remainingMs() for strict per-call deadline adherence.
-            {
+            auto setSocketTimeout = [&](int socketFd, int optname) -> bool {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
                 struct timeval tv;
                 tv.tv_sec = static_cast<long>(rm / 1000);
                 tv.tv_usec = static_cast<long>((rm % 1000) * 1000);
-                setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-            }
+                return setsockopt(socketFd, SOL_SOCKET, optname, &tv, sizeof(tv)) == 0;
+            };
 
             // Build HTTP request
             std::string request;
@@ -4677,7 +4704,7 @@ namespace detail {
             ssize_t requestLen = static_cast<ssize_t>(request.size());
             const char* ptr = request.c_str();
             while (totalSent < requestLen) {
-                if (remainingMs() <= 0) return false;
+                if (!setSocketTimeout(sockfd, SO_SNDTIMEO)) return false;
                 size_t remaining = static_cast<size_t>(requestLen - totalSent);
                 ssize_t sent;
                 do {
@@ -4696,7 +4723,7 @@ namespace detail {
             {
                 char buf[256];
                 while (responseBuf.size() < 4096) {
-                    if (remainingMs() <= 0) break;
+                    if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) break;
                     ssize_t n;
                     do { n = ::recv(sockfd, buf, sizeof(buf) - 1, 0); }
                     while (n < 0 && errno == EINTR);
@@ -4720,6 +4747,7 @@ namespace detail {
                 char drain[1024];
                 ssize_t n;
                 do {
+                    if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) break;
                     do { n = ::recv(sockfd, drain, sizeof(drain), 0); }
                     while (n < 0 && errno == EINTR);
                 } while (n > 0 && remainingMs() > 0);
@@ -4732,6 +4760,10 @@ namespace detail {
         // argv elements go directly to curl with no shell interpretation.
         // Requires C++11 or later (SSO guaranteed, no COW string implementations).
         // argv strings are valid in child process after fork() due to value semantics.
+        // NOTE: execvp searches PATH for 'curl'. In environments where an
+        // attacker controls PATH entries, this could resolve to a malicious
+        // binary (CWE-426). Acceptable for a logging transport; harden by
+        // ensuring PATH is trusted in production deployments.
         bool httpPostCurl(const std::string& url, const std::string& body,
                          const std::map<std::string, std::string>& headers,
                          size_t timeoutMs) {

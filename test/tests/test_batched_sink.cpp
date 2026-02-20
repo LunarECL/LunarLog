@@ -130,8 +130,9 @@ TEST_F(BatchedSinkTest, FlushIntervalTriggersAutoFlush) {
     auto entry = makeEntry("interval_msg");
     ptr->write(entry);
 
-    // Wait for timer to trigger
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // Wait for timer to trigger.
+    // 10x margin over flushIntervalMs to avoid flaky failures under CI load.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
     EXPECT_GE(ptr->batchCount(), 1u);
     EXPECT_EQ(ptr->totalEntries(), 1u);

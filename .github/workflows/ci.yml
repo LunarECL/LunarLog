@@ -145,6 +145,7 @@ jobs:
             --enable=warning,performance,portability \
             --suppress=missingIncludeSystem \
             --suppress=useStlAlgorithm \
+            --suppress=toomanyconfigs \
             --std=c++11 \
             --error-exitcode=1 \
             -I include \

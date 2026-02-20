@@ -59,6 +59,13 @@ namespace minta {
     /// Subclasses must implement writeBatch() and may optionally override
     /// onFlush() and onBatchError().
     ///
+    /// @warning **Latency impact on producers.** When a write() call fills
+    ///          the batch, doFlush() runs on the **caller's** thread with
+    ///          retries. With defaults (maxRetries=3, retryDelayMs=100ms)
+    ///          a failing writeBatch blocks the producer for ~400ms+.
+    ///          For latency-sensitive producers, wrap in AsyncSink:
+    ///          `logger.addSink<AsyncSink<HttpSink>>(opts, httpOpts);`
+    ///
     /// @note Batch delivery order across flush triggers is not guaranteed.
     ///       A timer-triggered flush and a size-triggered flush may race,
     ///       causing a later batch to be delivered before an earlier one.
@@ -152,8 +159,8 @@ namespace minta {
         /// Access options (for testing).
         const BatchOptions& options() const { return m_opts; }
 
-        /// Number of entries dropped due to maxQueueSize overflow.
-        /// Wraps on unsigned overflow; practically unreachable.
+        /// Number of entries dropped due to maxQueueSize overflow or
+        /// vtable-revert discard (subclass forgot stopAndFlush).
         size_t droppedCount() const {
             return m_droppedCount.load(std::memory_order_relaxed);
         }
@@ -174,7 +181,7 @@ namespace minta {
         ///          so implementations need not be thread-safe. However, long-running
         ///          writeBatch calls will block other flush paths.
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
-            (void)batch;
+            m_droppedCount.fetch_add(batch.size(), std::memory_order_relaxed);
         }
 
         /// Called after a successful flush. Override for post-flush logic.

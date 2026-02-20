@@ -223,19 +223,27 @@ namespace detail {
         return result;
     }
 
-    /// Returns true if both strings contain only safe HTTP header characters
-    /// (no control characters or DEL).  Rejects chars <= 0x20 and 0x7F to
-    /// prevent CRLF header injection (CWE-113).
+    /// Returns true if both strings contain only safe HTTP header characters.
+    /// Name: rejects chars <= 0x20 (including space) and 0x7F per RFC 7230 token rule.
+    /// Value: rejects chars < 0x20 (space allowed) and 0x7F to prevent CRLF injection (CWE-113).
     inline bool isCleanHeaderPair(const std::string& name, const std::string& value) {
         for (size_t i = 0; i < name.size(); ++i) {
             unsigned char ch = static_cast<unsigned char>(name[i]);
-            if (ch < 0x20 || ch == 0x7F) return false;
+            if (ch <= 0x20 || ch == 0x7F) return false;
         }
         for (size_t i = 0; i < value.size(); ++i) {
             unsigned char ch = static_cast<unsigned char>(value[i]);
             if (ch < 0x20 || ch == 0x7F) return false;
         }
         return true;
+    }
+
+    /// Returns true if @p name is a reserved HTTP header that the sink
+    /// emits itself (Host, Content-Length, Connection).  User-supplied
+    /// headers with these names are silently skipped to prevent duplicate
+    /// headers that could cause request smuggling (CWE-444).
+    inline bool isReservedHeaderName(const std::string& name) {
+        return name == "Host" || name == "Content-Length" || name == "Connection";
     }
 
 } // namespace detail
@@ -487,9 +495,11 @@ namespace detail {
             }
             request += "Host: " + hostHeader + "\r\n";
             request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+            // One-shot connection; persistent keep-alive is a future optimization.
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                if (detail::isReservedHeaderName(it->first)) continue;
                 if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 request += it->first + ": " + it->second + "\r\n";
             }
@@ -513,31 +523,42 @@ namespace detail {
                 totalSent += sent;
             }
 
-            // Read HTTP status line in bulk (up to 256 B per recv) to reduce
-            // syscall overhead.  Accumulate until \r\n for TCP segmentation.
-            std::string responseBuf;
-            responseBuf.reserve(256);
-            {
+            // Read response, handling 1xx informational responses (e.g. 100 Continue).
+            // Accumulate until we find a status line, skip past 1xx + blank line, repeat.
+            auto readUntilCRLF = [&](std::string& dest) -> bool {
                 char buf[256];
-                while (responseBuf.size() < 4096) {
-                    if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) break;
+                while (dest.size() < 4096) {
+                    if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) return false;
                     ssize_t n;
                     do { n = ::recv(sockfd, buf, sizeof(buf) - 1, 0); }
                     while (n < 0 && errno == EINTR);
-                    if (n <= 0) break;
-                    responseBuf.append(buf, static_cast<size_t>(n));
-                    if (responseBuf.find("\r\n") != std::string::npos) break;
+                    if (n <= 0) return false;
+                    dest.append(buf, static_cast<size_t>(n));
+                    if (dest.find("\r\n") != std::string::npos) return true;
+                }
+                return !dest.empty();
+            };
+
+            long statusCode = 0;
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                std::string responseBuf;
+                responseBuf.reserve(256);
+                if (!readUntilCRLF(responseBuf)) return false;
+
+                size_t spacePos = responseBuf.find(' ');
+                if (spacePos == std::string::npos) return false;
+                char* endPtr = nullptr;
+                statusCode = std::strtol(responseBuf.c_str() + spacePos + 1, &endPtr, 10);
+                if (endPtr == responseBuf.c_str() + spacePos + 1) return false;
+
+                if (statusCode < 100 || statusCode > 199) break;
+
+                // 1xx: read through the blank line (\r\n\r\n) that terminates the interim response
+                while (responseBuf.find("\r\n\r\n") == std::string::npos) {
+                    if (!readUntilCRLF(responseBuf)) break;
                 }
             }
-
-            if (responseBuf.empty()) return false;
-
-            // Expected: "HTTP/1.1 200 OK\r\n"
-            size_t spacePos = responseBuf.find(' ');
-            if (spacePos == std::string::npos) return false;
-            char* endPtr = nullptr;
-            long statusCode = std::strtol(responseBuf.c_str() + spacePos + 1, &endPtr, 10);
-            bool success = (endPtr != responseBuf.c_str() + spacePos + 1 && statusCode >= 200 && statusCode < 300);
+            bool success = (statusCode >= 200 && statusCode < 300);
 
             // Drain remaining response body to avoid TCP RST on socket close
             if (remainingMs() > 0) {
@@ -575,6 +596,7 @@ namespace detail {
             if (!m_opts.verifySsl) {
                 args.push_back("--insecure");
             }
+            // curl --max-time has 1-second granularity; rounds up.
             args.push_back("--max-time");
             {
                 size_t maxTimeSec = (timeoutMs + 999) / 1000;
@@ -584,6 +606,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                if (detail::isReservedHeaderName(it->first)) continue;
                 if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 args.push_back("-H");
                 args.push_back(it->first + ": " + it->second);
@@ -803,6 +826,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                if (detail::isReservedHeaderName(it->first)) continue;
                 if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 std::string headerLine = it->first + ": " + it->second;
                 std::wstring wHeader = utf8ToWide(headerLine);

@@ -145,16 +145,9 @@ namespace detail {
             return m_queue.empty();
         }
 
-        /// Set the flush-pending flag. When true, waitForData() predicates
-        /// are satisfied even if the queue is empty, unblocking the consumer
-        /// so it can process a flush request.
-        void setFlushPending(bool v) {
-            m_flushPending.store(v, std::memory_order_release);
-        }
-
         /// Atomically set the flush-pending flag and wake all waiters.
-        /// Must be used instead of separate setFlushPending(true) + wake()
-        /// to avoid lost-wakeup between flag set and notify.
+        /// Must be called under the mutex to avoid lost-wakeup between
+        /// flag set and condition variable notify.
         void requestFlush() {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -227,10 +220,10 @@ namespace detail {
             m_running.store(false, std::memory_order_release);
             m_queue.stop();
 
-            // Unblock any pending flush()
+            // Unblock any pending flush() callers
             {
                 std::lock_guard<std::mutex> lock(m_flushMutex);
-                m_flushDone = true;
+                m_completedGeneration = m_flushGeneration;
             }
             m_flushCV.notify_all();
 
@@ -264,24 +257,25 @@ namespace detail {
         /// Flush: wait for the consumer to finish processing all queued entries
         /// and propagate flush to the inner sink.
         ///
-        /// @note Thread-safe. Concurrent flush() callers share a single completion
-        ///       signal. All data enqueued BEFORE requestFlush() is guaranteed
-        ///       written and flushed to the inner sink. Data enqueued concurrently
-        ///       by a second caller may be written but inner-sink flush is
-        ///       best-effort. For single-caller flush, full ordering is guaranteed.
+        /// @note Thread-safe. Each concurrent flush() caller waits for its own
+        ///       generation to complete, so one caller cannot delay another.
+        ///       All data enqueued BEFORE the flush() call is guaranteed
+        ///       written and flushed to the inner sink.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
+            uint64_t target;
             {
                 std::lock_guard<std::mutex> lock(m_flushMutex);
+                target = ++m_flushGeneration;
                 m_flushRequested.store(true, std::memory_order_release);
-                m_flushDone = false;
             }
             m_queue.requestFlush();
 
             std::unique_lock<std::mutex> lock(m_flushMutex);
-            m_flushCV.wait(lock, [this] {
-                return m_flushDone || !m_running.load(std::memory_order_acquire);
+            m_flushCV.wait(lock, [&] {
+                return m_completedGeneration >= target
+                    || !m_running.load(std::memory_order_acquire);
             });
         }
 
@@ -314,7 +308,7 @@ namespace detail {
                     m_queue.waitForData();
                 }
 
-                m_queue.drain(batch);
+                try { m_queue.drain(batch); } catch (...) { continue; }
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -324,7 +318,7 @@ namespace detail {
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
                     std::vector<LogEntry> extra;
-                    m_queue.drain(extra);
+                    try { m_queue.drain(extra); } catch (...) {}
                     for (size_t i = 0; i < extra.size(); ++i) {
                         try {
                             m_innerSink->write(extra[i]);
@@ -340,7 +334,7 @@ namespace detail {
                     {
                         std::lock_guard<std::mutex> lock(m_flushMutex);
                         m_flushRequested.store(false, std::memory_order_release);
-                        m_flushDone = true;
+                        m_completedGeneration = m_flushGeneration;
                     }
                     m_flushCV.notify_all();
                     dirty = false;
@@ -371,7 +365,7 @@ namespace detail {
             // Unblock any pending flush on shutdown
             {
                 std::lock_guard<std::mutex> lock(m_flushMutex);
-                m_flushDone = true;
+                m_completedGeneration = m_flushGeneration;
             }
             m_flushCV.notify_all();
         }
@@ -386,7 +380,8 @@ namespace detail {
         std::atomic<bool> m_flushRequested{false};
         std::mutex m_flushMutex;
         std::condition_variable m_flushCV;
-        bool m_flushDone{false};
+        uint64_t m_flushGeneration{0};
+        uint64_t m_completedGeneration{0};
     };
 
 } // namespace minta

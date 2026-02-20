@@ -125,4 +125,34 @@ TEST_F(SyslogSinkTest, IntegrationWithLunarLog) {
     EXPECT_NE(content.find("Syslog integration test"), std::string::npos);
 }
 
+// --- Test 8: Multiple instances refcount — closelog only on last destroy ---
+TEST_F(SyslogSinkTest, MultipleInstancesRefcount) {
+    {
+        minta::SyslogSink sink1("lunarlog-test-ref1");
+        {
+            minta::SyslogSink sink2("lunarlog-test-ref2");
+
+            minta::LogEntry entry;
+            entry.level = minta::LogLevel::INFO;
+            entry.message = "While both alive";
+            entry.timestamp = std::chrono::system_clock::now();
+            EXPECT_NO_THROW(sink1.write(entry));
+            EXPECT_NO_THROW(sink2.write(entry));
+        }
+        // sink2 destroyed — syslog should still work via sink1
+        minta::LogEntry entry;
+        entry.level = minta::LogLevel::INFO;
+        entry.message = "After sink2 destroyed";
+        entry.timestamp = std::chrono::system_clock::now();
+        EXPECT_NO_THROW(sink1.write(entry));
+    }
+    // Both destroyed — closelog called. Creating a new one should work.
+    minta::SyslogSink sink3("lunarlog-test-ref3");
+    minta::LogEntry entry;
+    entry.level = minta::LogLevel::INFO;
+    entry.message = "Fresh instance after full cleanup";
+    entry.timestamp = std::chrono::system_clock::now();
+    EXPECT_NO_THROW(sink3.write(entry));
+}
+
 #endif // !_WIN32

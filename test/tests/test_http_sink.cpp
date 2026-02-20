@@ -455,3 +455,212 @@ TEST_F(HttpSinkTest, UrlParsingEdgeCases) {
     auto p13 = minta::detail::parseUrl("http://host/my path");
     EXPECT_FALSE(p13.valid);
 }
+
+#ifndef _WIN32
+// --- Test 13: Non-2xx HTTP response treated as failure ---
+TEST_F(HttpSinkTest, Non2xxResponseIsFailure) {
+    int serverFd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(serverFd, 0);
+
+    int opt = 1;
+    setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_port = 0;
+
+    ASSERT_EQ(bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)), 0);
+
+    socklen_t addrLen = sizeof(addr);
+    getsockname(serverFd, (struct sockaddr*)&addr, &addrLen);
+    int port = ntohs(addr.sin_port);
+
+    listen(serverFd, 1);
+
+    std::atomic<bool> serverReady(false);
+    std::mutex serverMutex;
+    std::condition_variable serverCV;
+
+    std::thread serverThread([&] {
+        {
+            std::lock_guard<std::mutex> lock(serverMutex);
+            serverReady.store(true);
+        }
+        serverCV.notify_all();
+
+        struct sockaddr_in clientAddr;
+        socklen_t clientLen = sizeof(clientAddr);
+        int clientFd = accept(serverFd, (struct sockaddr*)&clientAddr, &clientLen);
+        if (clientFd < 0) return;
+
+        char buf[4096];
+        std::string accumulated;
+        while (true) {
+            ssize_t n = recv(clientFd, buf, sizeof(buf) - 1, 0);
+            if (n <= 0) break;
+            accumulated.append(buf, static_cast<size_t>(n));
+            if (accumulated.find("\r\n\r\n") != std::string::npos) break;
+        }
+
+        const char* response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+        send(clientFd, response, std::strlen(response), 0);
+        close(clientFd);
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(serverMutex);
+        serverCV.wait(lock, [&] { return serverReady.load(); });
+    }
+
+    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/logs";
+    minta::HttpSinkOptions opts(url);
+    opts.setBatchSize(1).setFlushIntervalMs(0).setMaxRetries(0);
+
+    {
+        minta::HttpSink sink(opts);
+
+        minta::LogEntry entry;
+        entry.level = minta::LogLevel::INFO;
+        entry.message = "Should see 500";
+        entry.templateStr = "Should see 500";
+        entry.timestamp = std::chrono::system_clock::now();
+
+        // write triggers immediate flush (batchSize=1), writeBatch throws,
+        // onBatchError prints to stderr, but write() itself does not throw.
+        EXPECT_NO_THROW(sink.write(entry));
+    }
+
+    serverThread.join();
+    close(serverFd);
+}
+
+// --- Test 14: Reserved headers are not duplicated ---
+TEST_F(HttpSinkTest, ReservedHeadersNotDuplicated) {
+    int serverFd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(serverFd, 0);
+
+    int opt = 1;
+    setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_port = 0;
+
+    ASSERT_EQ(bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)), 0);
+
+    socklen_t addrLen = sizeof(addr);
+    getsockname(serverFd, (struct sockaddr*)&addr, &addrLen);
+    int port = ntohs(addr.sin_port);
+
+    listen(serverFd, 1);
+
+    std::atomic<bool> serverReady(false);
+    std::mutex serverMutex;
+    std::condition_variable serverCV;
+    std::string receivedRequest;
+
+    std::thread serverThread([&] {
+        {
+            std::lock_guard<std::mutex> lock(serverMutex);
+            serverReady.store(true);
+        }
+        serverCV.notify_all();
+
+        struct sockaddr_in clientAddr;
+        socklen_t clientLen = sizeof(clientAddr);
+        int clientFd = accept(serverFd, (struct sockaddr*)&clientAddr, &clientLen);
+        if (clientFd < 0) return;
+
+        char buf[4096];
+        std::string accumulated;
+        while (true) {
+            ssize_t n = recv(clientFd, buf, sizeof(buf) - 1, 0);
+            if (n <= 0) break;
+            accumulated.append(buf, static_cast<size_t>(n));
+            std::string::size_type headerEnd = accumulated.find("\r\n\r\n");
+            if (headerEnd == std::string::npos) continue;
+            std::string::size_type clPos = accumulated.find("Content-Length: ");
+            if (clPos == std::string::npos) break;
+            std::string::size_type clStart = clPos + 16;
+            std::string::size_type clEnd = accumulated.find("\r\n", clStart);
+            if (clEnd == std::string::npos) break;
+            std::string clStr = accumulated.substr(clStart, clEnd - clStart);
+            std::size_t contentLength = static_cast<std::size_t>(std::atoi(clStr.c_str()));
+            std::size_t bodyStart = headerEnd + 4;
+            std::size_t bodyReceived = accumulated.size() - bodyStart;
+            while (bodyReceived < contentLength) {
+                ssize_t m = recv(clientFd, buf, sizeof(buf) - 1, 0);
+                if (m <= 0) break;
+                accumulated.append(buf, static_cast<size_t>(m));
+                bodyReceived += static_cast<std::size_t>(m);
+            }
+            break;
+        }
+        receivedRequest = accumulated;
+
+        const char* response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        send(clientFd, response, std::strlen(response), 0);
+        close(clientFd);
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(serverMutex);
+        serverCV.wait(lock, [&] { return serverReady.load(); });
+    }
+
+    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/logs";
+    minta::HttpSinkOptions opts(url);
+    opts.setBatchSize(1).setFlushIntervalMs(0).setMaxRetries(0);
+    opts.setHeader("Host", "evil.example.com");
+    opts.setHeader("Content-Length", "99999");
+    opts.setHeader("Connection", "keep-alive");
+
+    {
+        minta::HttpSink sink(opts);
+
+        minta::LogEntry entry;
+        entry.level = minta::LogLevel::INFO;
+        entry.message = "Reserved header test";
+        entry.templateStr = "Reserved header test";
+        entry.timestamp = std::chrono::system_clock::now();
+
+        sink.write(entry);
+    }
+
+    serverThread.join();
+    close(serverFd);
+
+    // Extract headers section (before \r\n\r\n)
+    std::string::size_type headerEnd = receivedRequest.find("\r\n\r\n");
+    ASSERT_NE(headerEnd, std::string::npos);
+    std::string headers = receivedRequest.substr(0, headerEnd);
+
+    // Count occurrences of each reserved header
+    size_t hostCount = 0, clCount = 0, connCount = 0;
+    std::string::size_type pos = 0;
+    while ((pos = headers.find("Host:", pos)) != std::string::npos) { ++hostCount; pos += 5; }
+    pos = 0;
+    while ((pos = headers.find("Content-Length:", pos)) != std::string::npos) { ++clCount; pos += 15; }
+    pos = 0;
+    while ((pos = headers.find("Connection:", pos)) != std::string::npos) { ++connCount; pos += 11; }
+
+    EXPECT_EQ(hostCount, 1u);
+    EXPECT_EQ(clCount, 1u);
+    EXPECT_EQ(connCount, 1u);
+
+    // Verify the user-supplied values were NOT used
+    EXPECT_EQ(headers.find("evil.example.com"), std::string::npos);
+    EXPECT_EQ(headers.find("99999"), std::string::npos);
+    EXPECT_EQ(headers.find("keep-alive"), std::string::npos);
+}
+#endif // !_WIN32
+
+// --- Test 15: isCleanHeaderPair rejects space in header name ---
+TEST_F(HttpSinkTest, SpaceInHeaderNameRejected) {
+    EXPECT_FALSE(minta::detail::isCleanHeaderPair("X Bad Name", "value"));
+    EXPECT_TRUE(minta::detail::isCleanHeaderPair("X-Good-Name", "value with spaces"));
+}

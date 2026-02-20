@@ -3633,16 +3633,9 @@ namespace detail {
             return m_queue.empty();
         }
 
-        /// Set the flush-pending flag. When true, waitForData() predicates
-        /// are satisfied even if the queue is empty, unblocking the consumer
-        /// so it can process a flush request.
-        void setFlushPending(bool v) {
-            m_flushPending.store(v, std::memory_order_release);
-        }
-
         /// Atomically set the flush-pending flag and wake all waiters.
-        /// Must be used instead of separate setFlushPending(true) + wake()
-        /// to avoid lost-wakeup between flag set and notify.
+        /// Must be called under the mutex to avoid lost-wakeup between
+        /// flag set and condition variable notify.
         void requestFlush() {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -3715,10 +3708,10 @@ namespace detail {
             m_running.store(false, std::memory_order_release);
             m_queue.stop();
 
-            // Unblock any pending flush()
+            // Unblock any pending flush() callers
             {
                 std::lock_guard<std::mutex> lock(m_flushMutex);
-                m_flushDone = true;
+                m_completedGeneration = m_flushGeneration;
             }
             m_flushCV.notify_all();
 
@@ -3752,24 +3745,25 @@ namespace detail {
         /// Flush: wait for the consumer to finish processing all queued entries
         /// and propagate flush to the inner sink.
         ///
-        /// @note Thread-safe. Concurrent flush() callers share a single completion
-        ///       signal. All data enqueued BEFORE requestFlush() is guaranteed
-        ///       written and flushed to the inner sink. Data enqueued concurrently
-        ///       by a second caller may be written but inner-sink flush is
-        ///       best-effort. For single-caller flush, full ordering is guaranteed.
+        /// @note Thread-safe. Each concurrent flush() caller waits for its own
+        ///       generation to complete, so one caller cannot delay another.
+        ///       All data enqueued BEFORE the flush() call is guaranteed
+        ///       written and flushed to the inner sink.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
+            uint64_t target;
             {
                 std::lock_guard<std::mutex> lock(m_flushMutex);
+                target = ++m_flushGeneration;
                 m_flushRequested.store(true, std::memory_order_release);
-                m_flushDone = false;
             }
             m_queue.requestFlush();
 
             std::unique_lock<std::mutex> lock(m_flushMutex);
-            m_flushCV.wait(lock, [this] {
-                return m_flushDone || !m_running.load(std::memory_order_acquire);
+            m_flushCV.wait(lock, [&] {
+                return m_completedGeneration >= target
+                    || !m_running.load(std::memory_order_acquire);
             });
         }
 
@@ -3802,7 +3796,7 @@ namespace detail {
                     m_queue.waitForData();
                 }
 
-                m_queue.drain(batch);
+                try { m_queue.drain(batch); } catch (...) { continue; }
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -3812,7 +3806,7 @@ namespace detail {
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
                     std::vector<LogEntry> extra;
-                    m_queue.drain(extra);
+                    try { m_queue.drain(extra); } catch (...) {}
                     for (size_t i = 0; i < extra.size(); ++i) {
                         try {
                             m_innerSink->write(extra[i]);
@@ -3828,7 +3822,7 @@ namespace detail {
                     {
                         std::lock_guard<std::mutex> lock(m_flushMutex);
                         m_flushRequested.store(false, std::memory_order_release);
-                        m_flushDone = true;
+                        m_completedGeneration = m_flushGeneration;
                     }
                     m_flushCV.notify_all();
                     dirty = false;
@@ -3859,7 +3853,7 @@ namespace detail {
             // Unblock any pending flush on shutdown
             {
                 std::lock_guard<std::mutex> lock(m_flushMutex);
-                m_flushDone = true;
+                m_completedGeneration = m_flushGeneration;
             }
             m_flushCV.notify_all();
         }
@@ -3874,7 +3868,8 @@ namespace detail {
         std::atomic<bool> m_flushRequested{false};
         std::mutex m_flushMutex;
         std::condition_variable m_flushCV;
-        bool m_flushDone{false};
+        uint64_t m_flushGeneration{0};
+        uint64_t m_completedGeneration{0};
     };
 
 } // namespace minta
@@ -3937,6 +3932,13 @@ namespace minta {
     ///
     /// Subclasses must implement writeBatch() and may optionally override
     /// onFlush() and onBatchError().
+    ///
+    /// @warning **Latency impact on producers.** When a write() call fills
+    ///          the batch, doFlush() runs on the **caller's** thread with
+    ///          retries. With defaults (maxRetries=3, retryDelayMs=100ms)
+    ///          a failing writeBatch blocks the producer for ~400ms+.
+    ///          For latency-sensitive producers, wrap in AsyncSink:
+    ///          `logger.addSink<AsyncSink<HttpSink>>(opts, httpOpts);`
     ///
     /// @note Batch delivery order across flush triggers is not guaranteed.
     ///       A timer-triggered flush and a size-triggered flush may race,
@@ -4031,8 +4033,8 @@ namespace minta {
         /// Access options (for testing).
         const BatchOptions& options() const { return m_opts; }
 
-        /// Number of entries dropped due to maxQueueSize overflow.
-        /// Wraps on unsigned overflow; practically unreachable.
+        /// Number of entries dropped due to maxQueueSize overflow or
+        /// vtable-revert discard (subclass forgot stopAndFlush).
         size_t droppedCount() const {
             return m_droppedCount.load(std::memory_order_relaxed);
         }
@@ -4053,7 +4055,7 @@ namespace minta {
         ///          so implementations need not be thread-safe. However, long-running
         ///          writeBatch calls will block other flush paths.
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
-            (void)batch;
+            m_droppedCount.fetch_add(batch.size(), std::memory_order_relaxed);
         }
 
         /// Called after a successful flush. Override for post-flush logic.
@@ -4510,19 +4512,27 @@ namespace detail {
         return result;
     }
 
-    /// Returns true if both strings contain only safe HTTP header characters
-    /// (no control characters or DEL).  Rejects chars <= 0x20 and 0x7F to
-    /// prevent CRLF header injection (CWE-113).
+    /// Returns true if both strings contain only safe HTTP header characters.
+    /// Name: rejects chars <= 0x20 (including space) and 0x7F per RFC 7230 token rule.
+    /// Value: rejects chars < 0x20 (space allowed) and 0x7F to prevent CRLF injection (CWE-113).
     inline bool isCleanHeaderPair(const std::string& name, const std::string& value) {
         for (size_t i = 0; i < name.size(); ++i) {
             unsigned char ch = static_cast<unsigned char>(name[i]);
-            if (ch < 0x20 || ch == 0x7F) return false;
+            if (ch <= 0x20 || ch == 0x7F) return false;
         }
         for (size_t i = 0; i < value.size(); ++i) {
             unsigned char ch = static_cast<unsigned char>(value[i]);
             if (ch < 0x20 || ch == 0x7F) return false;
         }
         return true;
+    }
+
+    /// Returns true if @p name is a reserved HTTP header that the sink
+    /// emits itself (Host, Content-Length, Connection).  User-supplied
+    /// headers with these names are silently skipped to prevent duplicate
+    /// headers that could cause request smuggling (CWE-444).
+    inline bool isReservedHeaderName(const std::string& name) {
+        return name == "Host" || name == "Content-Length" || name == "Connection";
     }
 
 } // namespace detail
@@ -4774,9 +4784,11 @@ namespace detail {
             }
             request += "Host: " + hostHeader + "\r\n";
             request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+            // One-shot connection; persistent keep-alive is a future optimization.
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                if (detail::isReservedHeaderName(it->first)) continue;
                 if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 request += it->first + ": " + it->second + "\r\n";
             }
@@ -4800,31 +4812,42 @@ namespace detail {
                 totalSent += sent;
             }
 
-            // Read HTTP status line in bulk (up to 256 B per recv) to reduce
-            // syscall overhead.  Accumulate until \r\n for TCP segmentation.
-            std::string responseBuf;
-            responseBuf.reserve(256);
-            {
+            // Read response, handling 1xx informational responses (e.g. 100 Continue).
+            // Accumulate until we find a status line, skip past 1xx + blank line, repeat.
+            auto readUntilCRLF = [&](std::string& dest) -> bool {
                 char buf[256];
-                while (responseBuf.size() < 4096) {
-                    if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) break;
+                while (dest.size() < 4096) {
+                    if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) return false;
                     ssize_t n;
                     do { n = ::recv(sockfd, buf, sizeof(buf) - 1, 0); }
                     while (n < 0 && errno == EINTR);
-                    if (n <= 0) break;
-                    responseBuf.append(buf, static_cast<size_t>(n));
-                    if (responseBuf.find("\r\n") != std::string::npos) break;
+                    if (n <= 0) return false;
+                    dest.append(buf, static_cast<size_t>(n));
+                    if (dest.find("\r\n") != std::string::npos) return true;
+                }
+                return !dest.empty();
+            };
+
+            long statusCode = 0;
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                std::string responseBuf;
+                responseBuf.reserve(256);
+                if (!readUntilCRLF(responseBuf)) return false;
+
+                size_t spacePos = responseBuf.find(' ');
+                if (spacePos == std::string::npos) return false;
+                char* endPtr = nullptr;
+                statusCode = std::strtol(responseBuf.c_str() + spacePos + 1, &endPtr, 10);
+                if (endPtr == responseBuf.c_str() + spacePos + 1) return false;
+
+                if (statusCode < 100 || statusCode > 199) break;
+
+                // 1xx: read through the blank line (\r\n\r\n) that terminates the interim response
+                while (responseBuf.find("\r\n\r\n") == std::string::npos) {
+                    if (!readUntilCRLF(responseBuf)) break;
                 }
             }
-
-            if (responseBuf.empty()) return false;
-
-            // Expected: "HTTP/1.1 200 OK\r\n"
-            size_t spacePos = responseBuf.find(' ');
-            if (spacePos == std::string::npos) return false;
-            char* endPtr = nullptr;
-            long statusCode = std::strtol(responseBuf.c_str() + spacePos + 1, &endPtr, 10);
-            bool success = (endPtr != responseBuf.c_str() + spacePos + 1 && statusCode >= 200 && statusCode < 300);
+            bool success = (statusCode >= 200 && statusCode < 300);
 
             // Drain remaining response body to avoid TCP RST on socket close
             if (remainingMs() > 0) {
@@ -4862,6 +4885,7 @@ namespace detail {
             if (!m_opts.verifySsl) {
                 args.push_back("--insecure");
             }
+            // curl --max-time has 1-second granularity; rounds up.
             args.push_back("--max-time");
             {
                 size_t maxTimeSec = (timeoutMs + 999) / 1000;
@@ -4871,6 +4895,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                if (detail::isReservedHeaderName(it->first)) continue;
                 if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 args.push_back("-H");
                 args.push_back(it->first + ": " + it->second);
@@ -5090,6 +5115,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                if (detail::isReservedHeaderName(it->first)) continue;
                 if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 std::string headerLine = it->first + ": " + it->second;
                 std::wstring wHeader = utf8ToWide(headerLine);

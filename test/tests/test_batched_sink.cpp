@@ -314,3 +314,21 @@ TEST_F(BatchedSinkTest, DroppedCountOnOverflow) {
 
     EXPECT_EQ(sink.droppedCount(), 5u);
 }
+
+// --- Test 13: maxRetries exhausted — data lost, errors reported ---
+TEST_F(BatchedSinkTest, MaxRetriesExhaustedDataLost) {
+    minta::BatchOptions opts;
+    opts.setBatchSize(1).setFlushIntervalMs(0).setMaxRetries(2).setRetryDelayMs(10);
+    MockBatchedSink sink(opts);
+
+    // Fail all attempts (initial + 2 retries = 3 total)
+    sink.setThrowCount(3);
+
+    auto entry = makeEntry("will_be_lost");
+    sink.write(entry);
+
+    EXPECT_EQ(sink.batchCount(), 0u);
+    auto errors = sink.errors();
+    EXPECT_EQ(errors.size(), 3u);
+    EXPECT_EQ(sink.flushCallCount(), 0u);
+}

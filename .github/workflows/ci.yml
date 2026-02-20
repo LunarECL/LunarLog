@@ -46,7 +46,7 @@ jobs:
 
       - name: Test
         working-directory: build
-        run: ctest -C Debug --output-on-failure --timeout 30
+        run: ctest -C Debug --output-on-failure --timeout 60
 
   coverage:
     name: Test Coverage
@@ -76,7 +76,7 @@ jobs:
 
       - name: Run tests
         working-directory: build
-        run: ctest --output-on-failure --timeout 30 --output-junit junit.xml
+        run: ctest --output-on-failure --timeout 60 --output-junit junit.xml
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}

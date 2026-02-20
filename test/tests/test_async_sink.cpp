@@ -561,7 +561,7 @@ TEST_F(AsyncSinkTest, MultipleFlushesFromDifferentThreads) {
     std::vector<std::thread> threads;
 
     for (int t = 0; t < kThreads; ++t) {
-        threads.emplace_back([&sink, t] {
+        threads.emplace_back([&sink, t, kWritesPerThread] {
             for (int i = 0; i < kWritesPerThread; ++i) {
                 minta::LogEntry e;
                 e.level = minta::LogLevel::INFO;

@@ -412,10 +412,10 @@ TEST_F(AsyncSinkTest, ConcurrentFlushNoSpin) {
     EXPECT_EQ(sink.droppedCount(), 0u);
 }
 
-// --- Test 14: Write after shutdown is silently dropped ---
+// --- Test 14: Clean shutdown delivers buffered entries ---
 // Verifies that entries written and flushed before shutdown are delivered,
 // and that destruction completes cleanly (consumer thread joins without hang).
-TEST_F(AsyncSinkTest, WriteAfterShutdownDropped) {
+TEST_F(AsyncSinkTest, CleanShutdownDeliversBuffered) {
     auto sink = minta::detail::make_unique<minta::AsyncSink<RecordingSink>>();
     auto* inner = sink->innerSink();
 

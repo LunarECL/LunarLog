@@ -4276,10 +4276,10 @@ namespace minta {
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            if (ident.size() >= kMaxIdentLen) {
+            if (ident.size() > kMaxIdentLen) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: ident \"%s\" "
                                      "truncated to %zu characters\n",
-                             ident.c_str(), kMaxIdentLen - 1);
+                             ident.c_str(), kMaxIdentLen);
             }
             std::strncpy(globalIdent(), ident.c_str(), kMaxIdentLen);
             globalIdent()[kMaxIdentLen] = '\0';

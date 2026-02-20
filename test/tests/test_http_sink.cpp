@@ -497,11 +497,35 @@ TEST_F(HttpSinkTest, Non2xxResponseIsFailure) {
 
         char buf[4096];
         std::string accumulated;
+        // Read full request (headers + body) before responding
+        size_t contentLength = 0;
+        bool headersComplete = false;
         while (true) {
             ssize_t n = recv(clientFd, buf, sizeof(buf) - 1, 0);
             if (n <= 0) break;
             accumulated.append(buf, static_cast<size_t>(n));
-            if (accumulated.find("\r\n\r\n") != std::string::npos) break;
+            if (!headersComplete) {
+                auto headerEnd = accumulated.find("\r\n\r\n");
+                if (headerEnd != std::string::npos) {
+                    headersComplete = true;
+                    // Parse Content-Length
+                    auto clPos = accumulated.find("Content-Length: ");
+                    if (clPos == std::string::npos)
+                        clPos = accumulated.find("content-length: ");
+                    if (clPos != std::string::npos) {
+                        contentLength = static_cast<size_t>(
+                            std::atoi(accumulated.c_str() + clPos + 16));
+                    }
+                    size_t bodyStart = headerEnd + 4;
+                    size_t bodyReceived = accumulated.size() - bodyStart;
+                    if (bodyReceived >= contentLength) break;
+                }
+            } else {
+                auto headerEnd = accumulated.find("\r\n\r\n");
+                size_t bodyStart = headerEnd + 4;
+                size_t bodyReceived = accumulated.size() - bodyStart;
+                if (bodyReceived >= contentLength) break;
+            }
         }
 
         const char* response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";

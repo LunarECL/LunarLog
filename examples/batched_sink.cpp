@@ -23,6 +23,10 @@ public:
         setFormatter(minta::detail::make_unique<minta::HumanReadableFormatter>());
     }
 
+    ~BatchedConsoleSink() noexcept override {
+        stopAndFlush();
+    }
+
 protected:
     void writeBatch(const std::vector<const minta::LogEntry*>& batch) override {
         std::lock_guard<std::mutex> lock(m_printMutex);

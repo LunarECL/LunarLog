@@ -62,3 +62,5 @@ enricher_*.txt
 ex_*.txt
 *.bench.json
 bench_results.json
+macro_srcloc_ex_sideeffect.txt
+macro_srcloc_generic_ex.txt

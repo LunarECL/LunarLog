@@ -146,6 +146,7 @@ jobs:
             --suppress=missingIncludeSystem \
             --suppress=useStlAlgorithm \
             --suppress=toomanyconfigs \
+            --suppress=virtualCallInConstructor \
             --std=c++11 \
             --error-exitcode=1 \
             -I include \

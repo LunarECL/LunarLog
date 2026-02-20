@@ -62,6 +62,7 @@ namespace detail {
                         break;
                     case OverflowPolicy::DropOldest:
                         m_queue.pop_front();
+                        ++m_evictedCount;
                         break;
                     case OverflowPolicy::DropNewest:
                         return false;
@@ -164,6 +165,16 @@ namespace detail {
         size_t m_capacity;
         bool m_stopped;
         std::atomic<bool> m_flushPending;
+        size_t m_evictedCount{0};
+
+    public:
+        /// Return and reset the number of DropOldest evictions since last call.
+        size_t takeEvictedCount() {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            size_t c = m_evictedCount;
+            m_evictedCount = 0;
+            return c;
+        }
     };
 
 } // namespace detail
@@ -251,6 +262,11 @@ namespace detail {
             LogEntry copy = detail::cloneEntry(entry);
             if (!m_queue.push(std::move(copy), m_opts.overflowPolicy)) {
                 m_droppedCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            // Count entries evicted by DropOldest policy
+            size_t evicted = m_queue.takeEvictedCount();
+            if (evicted > 0) {
+                m_droppedCount.fetch_add(evicted, std::memory_order_relaxed);
             }
         }
 

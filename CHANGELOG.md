@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `AsyncSink` (#74) — bounded-queue async sink decorator with overflow policies (`Block`, `DropOldest`, `DropNewest`) and flush synchronization
+- `BatchedSink` (#75) — reusable batching base sink with timer flush, retry hooks, and configurable `BatchOptions`
+- `SyslogSink` (#76) — POSIX syslog sink with facility/logopt configuration and level mapping
+- `HttpSink` (#77) — batched HTTP/HTTPS sink with `HttpSinkOptions`, custom headers, retries, and Compact JSON payload delivery
+
 ## [v1.24.0] — 2026-02-19
 
 ### Added

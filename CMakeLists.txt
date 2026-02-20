@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(LunarLog VERSION 1.24.0 LANGUAGES CXX)
+project(LunarLog VERSION 1.25.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -42,6 +42,10 @@ if(LUNARLOG_BUILD_EXAMPLES)
             FluentBuilder
             SourceLocationMacros
             ColorConsole
+            AsyncSink
+            BatchedSink
+            SyslogSink
+            HttpSink
     )
 
     set(EXAMPLE_SOURCES
@@ -66,6 +70,10 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/fluent_builder.cpp
             examples/source_location_macros.cpp
             examples/color_console.cpp
+            examples/async_sink.cpp
+            examples/batched_sink.cpp
+            examples/syslog_sink.cpp
+            examples/http_sink.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -140,6 +148,10 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_no_macros.cpp
             test/tests/test_color_console_sink.cpp
             test/tests/test_file_transport.cpp
+            test/tests/test_async_sink.cpp
+            test/tests/test_batched_sink.cpp
+            test/tests/test_syslog_sink.cpp
+            test/tests/test_http_sink.cpp
             test/tests/utils/test_utils.cpp
     )
 
@@ -168,7 +180,9 @@ if(LUNARLOG_BUILD_TESTS)
     endif()
 
     include(GoogleTest)
-    gtest_discover_tests(TestLunarLog)
+    gtest_discover_tests(TestLunarLog
+        PROPERTIES TIMEOUT 120
+    )
 endif()
 
 option(LUNARLOG_BUILD_BENCHMARKS "Build benchmark suite" OFF)

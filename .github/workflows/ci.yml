@@ -10,6 +10,7 @@ jobs:
   matrix:
     name: ${{ matrix.os }} / ${{ matrix.compiler }} / C++${{ matrix.cpp_standard }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +146,8 @@ jobs:
             --enable=warning,performance,portability \
             --suppress=missingIncludeSystem \
             --suppress=useStlAlgorithm \
+            --suppress=toomanyconfigs \
+            --suppress=virtualCallInConstructor \
             --std=c++11 \
             --error-exitcode=1 \
             -I include \

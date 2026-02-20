@@ -4,6 +4,7 @@
 #include "sink/sink_interface.hpp"
 #include <vector>
 #include <memory>
+#include <utility>
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -162,6 +163,14 @@ namespace minta {
         void setSinkLocale(size_t index, const std::string& locale) {
             requireValidIndex(index);
             m_sinks[index]->setLocale(locale);
+        }
+
+        void flushSinks() {
+            for (auto& sink : m_sinks) {
+                try {
+                    sink->flush();
+                } catch (...) {}
+            }
         }
 
     private:

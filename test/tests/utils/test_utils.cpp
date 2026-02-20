@@ -208,7 +208,14 @@ void TestUtils::cleanupLogFiles() {
         "roll_total_cleanup.log",
         "roll_total_cleanup.001.log", "roll_total_cleanup.002.log",
         "roll_total_cleanup.003.log", "roll_total_cleanup.004.log",
-        "roll_total_cleanup.005.log"
+        "roll_total_cleanup.005.log",
+        // Async sink tests
+        "async_test_write.txt", "async_test_shutdown.txt",
+        "async_test_flush.txt", "async_test_sync.txt",
+        "async_test_async.txt", "async_test_order.txt",
+        "async_test_fluent.txt",
+        // Syslog sink tests
+        "syslog_integration_test.txt"
     };
 
     for (const auto &filename : filesToRemove) {

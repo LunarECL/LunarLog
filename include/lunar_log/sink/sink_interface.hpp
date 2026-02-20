@@ -25,6 +25,7 @@ namespace minta {
         virtual ~ISink() = default;
 
         virtual void write(const LogEntry &entry) = 0;
+        virtual void flush() {}
 
         // --- Named sink support ---
         void setSinkName(const std::string& name) { m_sinkName = name; }

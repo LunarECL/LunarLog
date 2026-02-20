@@ -10,6 +10,7 @@ jobs:
   matrix:
     name: ${{ matrix.os }} / ${{ matrix.compiler }} / C++${{ matrix.cpp_standard }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +46,7 @@ jobs:
 
       - name: Test
         working-directory: build
-        run: ctest -C Debug --output-on-failure
+        run: ctest -C Debug --output-on-failure --timeout 30
 
   coverage:
     name: Test Coverage
@@ -75,7 +76,7 @@ jobs:
 
       - name: Run tests
         working-directory: build
-        run: ctest --output-on-failure --output-junit junit.xml
+        run: ctest --output-on-failure --timeout 30 --output-junit junit.xml
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}

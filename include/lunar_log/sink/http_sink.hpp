@@ -223,6 +223,21 @@ namespace detail {
         return result;
     }
 
+    /// Returns true if both strings contain only safe HTTP header characters
+    /// (no control characters or DEL).  Rejects chars <= 0x20 and 0x7F to
+    /// prevent CRLF header injection (CWE-113).
+    inline bool isCleanHeaderPair(const std::string& name, const std::string& value) {
+        for (size_t i = 0; i < name.size(); ++i) {
+            unsigned char ch = static_cast<unsigned char>(name[i]);
+            if (ch < 0x20 || ch == 0x7F) return false;
+        }
+        for (size_t i = 0; i < value.size(); ++i) {
+            unsigned char ch = static_cast<unsigned char>(value[i]);
+            if (ch < 0x20 || ch == 0x7F) return false;
+        }
+        return true;
+    }
+
 } // namespace detail
 
     /// HTTP/HTTPS sink that sends log batches as HTTP POST requests.
@@ -457,8 +472,8 @@ namespace detail {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
                 struct timeval tv;
-                tv.tv_sec = static_cast<long>(rm / 1000);
-                tv.tv_usec = static_cast<long>((rm % 1000) * 1000);
+                tv.tv_sec = static_cast<decltype(tv.tv_sec)>(rm / 1000);
+                tv.tv_usec = static_cast<decltype(tv.tv_usec)>((rm % 1000) * 1000);
                 return setsockopt(socketFd, SOL_SOCKET, optname, &tv, sizeof(tv)) == 0;
             };
 
@@ -475,16 +490,7 @@ namespace detail {
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                bool clean = true;
-                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                if (!clean) continue;
+                if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 request += it->first + ": " + it->second + "\r\n";
             }
             request += "\r\n";
@@ -578,16 +584,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                bool clean = true;
-                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                if (!clean) continue;
+                if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 args.push_back("-H");
                 args.push_back(it->first + ": " + it->second);
             }
@@ -806,16 +803,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                bool clean = true;
-                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                if (!clean) continue;
+                if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 std::string headerLine = it->first + ": " + it->second;
                 std::wstring wHeader = utf8ToWide(headerLine);
                 WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),

@@ -75,8 +75,17 @@ namespace detail {
 
         /// Drain all available entries into the output vector.
         /// Returns number of entries drained.
+        ///
+        /// Also clears the flush-pending flag under the mutex.  This is
+        /// critical for liveness: requestFlush() sets flushPending=true
+        /// under this same mutex, so clearing it here creates a
+        /// happens-before chain that makes the producer's earlier
+        /// m_flushRequested store visible to the consumer after drain().
+        /// Without this, flush() can hang on weakly-ordered architectures
+        /// when flushIntervalMs==0 and no further writes arrive.
         size_t drain(std::vector<LogEntry>& out) {
             std::lock_guard<std::mutex> lock(m_mutex);
+            m_flushPending.store(false, std::memory_order_relaxed);
             size_t count = m_queue.size();
             out.reserve(out.size() + count);
             for (size_t i = 0; i < count; ++i) {
@@ -306,7 +315,6 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);

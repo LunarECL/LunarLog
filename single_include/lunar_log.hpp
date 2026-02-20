@@ -3563,8 +3563,17 @@ namespace detail {
 
         /// Drain all available entries into the output vector.
         /// Returns number of entries drained.
+        ///
+        /// Also clears the flush-pending flag under the mutex.  This is
+        /// critical for liveness: requestFlush() sets flushPending=true
+        /// under this same mutex, so clearing it here creates a
+        /// happens-before chain that makes the producer's earlier
+        /// m_flushRequested store visible to the consumer after drain().
+        /// Without this, flush() can hang on weakly-ordered architectures
+        /// when flushIntervalMs==0 and no further writes arrive.
         size_t drain(std::vector<LogEntry>& out) {
             std::lock_guard<std::mutex> lock(m_mutex);
+            m_flushPending.store(false, std::memory_order_relaxed);
             size_t count = m_queue.size();
             out.reserve(out.size() + count);
             for (size_t i = 0; i < count; ++i) {
@@ -3794,7 +3803,6 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -3930,6 +3938,11 @@ namespace minta {
     /// Subclasses must implement writeBatch() and may optionally override
     /// onFlush() and onBatchError().
     ///
+    /// @note Batch delivery order across flush triggers is not guaranteed.
+    ///       A timer-triggered flush and a size-triggered flush may race,
+    ///       causing a later batch to be delivered before an earlier one.
+    ///       Each individual batch preserves internal entry order.
+    ///
     /// @code
     ///   class MyHttpSink : public BatchedSink {
     ///   public:
@@ -3952,13 +3965,10 @@ namespace minta {
 
         ~BatchedSink() noexcept {
             if (m_running.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> lock(m_bufferMutex);
-                if (!m_buffer.empty()) {
-                    std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
-                                         "stopAndFlush() before ~BatchedSink(). "
-                                         "Buffered entries will be silently discarded. "
-                                         "Add stopAndFlush() to your subclass destructor.\n");
-                }
+                std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
+                                     "stopAndFlush() before ~BatchedSink(). "
+                                     "Buffered entries may be silently discarded. "
+                                     "Add stopAndFlush() to your subclass destructor.\n");
             }
             stopAndFlush();
         }
@@ -4110,6 +4120,7 @@ namespace minta {
                 } catch (const std::exception& e) {
                     try { onBatchError(e, attempt); } catch (...) {}
                     if (attempt < m_opts.maxRetries_) {
+                        if (!m_running.load(std::memory_order_acquire)) break;
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(m_opts.retryDelayMs_));
                     }
@@ -4153,7 +4164,9 @@ namespace minta {
 
 #include <syslog.h>
 #include <string>
+#include <mutex>
 #include <atomic>
+#include <cstring>
 #include <cstdio>
 
 namespace minta {
@@ -4193,15 +4206,31 @@ namespace minta {
             return count;
         }
 
+        /// Process-global ident buffer.  Most syslog implementations (glibc,
+        /// BSD libc) store the pointer passed to openlog() *without copying*
+        /// the string.  A per-instance std::string would create a dangling
+        /// pointer when instances are destroyed in non-LIFO order.  This
+        /// fixed buffer ensures the pointer remains valid for the lifetime
+        /// of the process.
+        static const size_t kMaxIdentLen = 255;
+        static char* globalIdent() {
+            static char buf[kMaxIdentLen + 1] = {0};
+            return buf;
+        }
+        static std::mutex& identMutex() {
+            static std::mutex m;
+            return m;
+        }
+
     public:
         /// @param ident  The syslog identity string (typically the program name).
-        ///               Stored internally — the pointer passed to openlog() remains
-        ///               valid for the lifetime of this sink.
+        ///               Copied into a process-global buffer.  The pointer passed
+        ///               to openlog() points to this static buffer, ensuring it
+        ///               remains valid regardless of instance destruction order.
         /// @param opts   Syslog configuration options.
         explicit SyslogSink(const std::string& ident,
                             SyslogOptions opts = SyslogOptions())
-            : m_ident(ident)
-            , m_opts(opts)
+            : m_opts(opts)
         {
             if (instanceRefCount().fetch_add(1, std::memory_order_acq_rel) > 0) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
@@ -4209,11 +4238,15 @@ namespace minta {
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);
+            std::lock_guard<std::mutex> lock(identMutex());
+            std::strncpy(globalIdent(), ident.c_str(), kMaxIdentLen);
+            globalIdent()[kMaxIdentLen] = '\0';
+            openlog(globalIdent(), m_opts.logopt_, m_opts.facility_);
         }
 
         ~SyslogSink() noexcept {
             if (instanceRefCount().fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::lock_guard<std::mutex> lock(identMutex());
                 closelog();
             }
         }
@@ -4247,7 +4280,6 @@ namespace minta {
         }
 
     private:
-        std::string m_ident;
         SyslogOptions m_opts;
     };
 
@@ -4476,6 +4508,21 @@ namespace detail {
 
         result.valid = true;
         return result;
+    }
+
+    /// Returns true if both strings contain only safe HTTP header characters
+    /// (no control characters or DEL).  Rejects chars <= 0x20 and 0x7F to
+    /// prevent CRLF header injection (CWE-113).
+    inline bool isCleanHeaderPair(const std::string& name, const std::string& value) {
+        for (size_t i = 0; i < name.size(); ++i) {
+            unsigned char ch = static_cast<unsigned char>(name[i]);
+            if (ch < 0x20 || ch == 0x7F) return false;
+        }
+        for (size_t i = 0; i < value.size(); ++i) {
+            unsigned char ch = static_cast<unsigned char>(value[i]);
+            if (ch < 0x20 || ch == 0x7F) return false;
+        }
+        return true;
     }
 
 } // namespace detail
@@ -4712,8 +4759,8 @@ namespace detail {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
                 struct timeval tv;
-                tv.tv_sec = static_cast<long>(rm / 1000);
-                tv.tv_usec = static_cast<long>((rm % 1000) * 1000);
+                tv.tv_sec = static_cast<decltype(tv.tv_sec)>(rm / 1000);
+                tv.tv_usec = static_cast<decltype(tv.tv_usec)>((rm % 1000) * 1000);
                 return setsockopt(socketFd, SOL_SOCKET, optname, &tv, sizeof(tv)) == 0;
             };
 
@@ -4730,16 +4777,7 @@ namespace detail {
             request += "Connection: close\r\n";
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                bool clean = true;
-                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                if (!clean) continue;
+                if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 request += it->first + ": " + it->second + "\r\n";
             }
             request += "\r\n";
@@ -4833,16 +4871,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                bool clean = true;
-                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                if (!clean) continue;
+                if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 args.push_back("-H");
                 args.push_back(it->first + ": " + it->second);
             }
@@ -5061,16 +5090,7 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
-                bool clean = true;
-                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
-                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
-                    if (ch < 0x20 || ch == 0x7F) clean = false;
-                }
-                if (!clean) continue;
+                if (!detail::isCleanHeaderPair(it->first, it->second)) continue;
                 std::string headerLine = it->first + ": " + it->second;
                 std::wstring wHeader = utf8ToWide(headerLine);
                 WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),

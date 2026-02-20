@@ -7,7 +7,9 @@
 #include "../core/log_common.hpp"
 #include <syslog.h>
 #include <string>
+#include <mutex>
 #include <atomic>
+#include <cstring>
 #include <cstdio>
 
 namespace minta {
@@ -47,15 +49,31 @@ namespace minta {
             return count;
         }
 
+        /// Process-global ident buffer.  Most syslog implementations (glibc,
+        /// BSD libc) store the pointer passed to openlog() *without copying*
+        /// the string.  A per-instance std::string would create a dangling
+        /// pointer when instances are destroyed in non-LIFO order.  This
+        /// fixed buffer ensures the pointer remains valid for the lifetime
+        /// of the process.
+        static const size_t kMaxIdentLen = 255;
+        static char* globalIdent() {
+            static char buf[kMaxIdentLen + 1] = {0};
+            return buf;
+        }
+        static std::mutex& identMutex() {
+            static std::mutex m;
+            return m;
+        }
+
     public:
         /// @param ident  The syslog identity string (typically the program name).
-        ///               Stored internally — the pointer passed to openlog() remains
-        ///               valid for the lifetime of this sink.
+        ///               Copied into a process-global buffer.  The pointer passed
+        ///               to openlog() points to this static buffer, ensuring it
+        ///               remains valid regardless of instance destruction order.
         /// @param opts   Syslog configuration options.
         explicit SyslogSink(const std::string& ident,
                             SyslogOptions opts = SyslogOptions())
-            : m_ident(ident)
-            , m_opts(opts)
+            : m_opts(opts)
         {
             if (instanceRefCount().fetch_add(1, std::memory_order_acq_rel) > 0) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
@@ -63,11 +81,15 @@ namespace minta {
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);
+            std::lock_guard<std::mutex> lock(identMutex());
+            std::strncpy(globalIdent(), ident.c_str(), kMaxIdentLen);
+            globalIdent()[kMaxIdentLen] = '\0';
+            openlog(globalIdent(), m_opts.logopt_, m_opts.facility_);
         }
 
         ~SyslogSink() noexcept {
             if (instanceRefCount().fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::lock_guard<std::mutex> lock(identMutex());
                 closelog();
             }
         }
@@ -101,7 +123,6 @@ namespace minta {
         }
 
     private:
-        std::string m_ident;
         SyslogOptions m_opts;
     };
 

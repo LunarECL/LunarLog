@@ -59,6 +59,11 @@ namespace minta {
     /// Subclasses must implement writeBatch() and may optionally override
     /// onFlush() and onBatchError().
     ///
+    /// @note Batch delivery order across flush triggers is not guaranteed.
+    ///       A timer-triggered flush and a size-triggered flush may race,
+    ///       causing a later batch to be delivered before an earlier one.
+    ///       Each individual batch preserves internal entry order.
+    ///
     /// @code
     ///   class MyHttpSink : public BatchedSink {
     ///   public:
@@ -81,13 +86,10 @@ namespace minta {
 
         ~BatchedSink() noexcept {
             if (m_running.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> lock(m_bufferMutex);
-                if (!m_buffer.empty()) {
-                    std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
-                                         "stopAndFlush() before ~BatchedSink(). "
-                                         "Buffered entries will be silently discarded. "
-                                         "Add stopAndFlush() to your subclass destructor.\n");
-                }
+                std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
+                                     "stopAndFlush() before ~BatchedSink(). "
+                                     "Buffered entries may be silently discarded. "
+                                     "Add stopAndFlush() to your subclass destructor.\n");
             }
             stopAndFlush();
         }
@@ -239,6 +241,7 @@ namespace minta {
                 } catch (const std::exception& e) {
                     try { onBatchError(e, attempt); } catch (...) {}
                     if (attempt < m_opts.maxRetries_) {
+                        if (!m_running.load(std::memory_order_acquire)) break;
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(m_opts.retryDelayMs_));
                     }

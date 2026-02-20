@@ -1,26 +1,21 @@
-# Prerequisites
-*.d
+# Build
+build*/
+cmake-build-*/
 
-# Compiled Object files
-*.slo
-*.lo
+# Compiled objects
 *.o
 *.obj
+*.slo
+*.lo
 
-# Precompiled Headers
+# Precompiled headers
 *.gch
 *.pch
 
-# Compiled Dynamic libraries
+# Libraries
 *.so
 *.dylib
 *.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
 *.lai
 *.la
 *.a
@@ -31,36 +26,30 @@
 *.out
 *.app
 
-# Default ignored files
+# Fortran
+*.d
+*.mod
+*.smod
+
+# Logs and test output
+*.log
+*.txt
+!CMakeLists.txt
+*.xml
+!.codecov.yml
+
+# Benchmark output
+*.bench.json
+bench_results.json
+
+# IDE
+.idea/
 /shelf/
 /workspace.xml
-# Editor-based HTTP Client requests
 /httpRequests/
-# Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
 
-/cmake-build-*
-/build/
-
-.idea/
-build11/
-*.log
-culture_sci_double_test.txt
-test_detail.json
-test_concurrent_tpl.txt
-test_detail.xml
-build_11/
-build_11_fresh/
-cjson_*.txt
-
-# Build directories (all variants)
-build*/
-
-# Test/benchmark output files
-enricher_*.txt
-ex_*.txt
-*.bench.json
-bench_results.json
-macro_srcloc_ex_sideeffect.txt
-macro_srcloc_generic_ex.txt
+# Cache/temp
+.ruff_cache/
+.sisyphus/

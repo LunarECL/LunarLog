@@ -326,8 +326,18 @@ namespace detail {
                 }
             }
             allHeaders["Content-Type"] = m_opts.contentType;
-            if (allHeaders.find("User-Agent") == allHeaders.end()) {
-                allHeaders["User-Agent"] = "LunarLog/1.0";
+            {
+                bool hasUA = false;
+                for (std::map<std::string, std::string>::const_iterator it = allHeaders.begin();
+                     it != allHeaders.end(); ++it) {
+                    if (detail::headerNameEqualsLower(it->first, "user-agent")) {
+                        hasUA = true;
+                        break;
+                    }
+                }
+                if (!hasUA) {
+                    allHeaders["User-Agent"] = "LunarLog/1.0";
+                }
             }
 
             bool ok = httpPost(body, allHeaders, m_opts.timeoutMs);
@@ -710,6 +720,15 @@ namespace detail {
                     dup2(devnull, STDOUT_FILENO);
                     dup2(devnull, STDERR_FILENO);
                     close(devnull);
+                }
+
+                // Close inherited FDs (3+) to prevent leaking parent
+                // resources (file sinks, sockets) to the curl child.
+                {
+                    long maxfd = sysconf(_SC_OPEN_MAX);
+                    if (maxfd < 0) maxfd = 1024;
+                    for (long fd = 3; fd < maxfd; ++fd)
+                        close(static_cast<int>(fd));
                 }
 
                 execvp("curl", argv.data());

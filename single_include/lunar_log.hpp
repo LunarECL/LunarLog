@@ -4285,21 +4285,28 @@ namespace minta {
             }
         }
 
-        /// @note Thread-safety of syslog() is not guaranteed by POSIX but
-        /// is provided by all major implementations (glibc, musl, BSD libc,
-        /// macOS libsystem). No additional serialization is applied here.
+        /// @note syslog() dereferences the ident pointer passed to openlog()
+        /// on every call without copying the underlying buffer.  Serializing
+        /// against identMutex() prevents data races when a concurrent
+        /// constructor overwrites globalIdent() via strncpy, or a concurrent
+        /// destructor tears down the connection via closelog().
         void write(const LogEntry& entry) override {
             int priority = toSyslogPriority(entry.level);
 
+            // Build message outside the lock to minimize contention.
+            const std::string* msgPtr = &entry.message;
+            std::string prefixed;
             if (m_opts.includeLevel_) {
-                std::string msg = "[";
-                msg += getLevelString(entry.level);
-                msg += "] ";
-                msg += entry.message;
-                syslog(priority, "%s", msg.c_str());
-            } else {
-                syslog(priority, "%s", entry.message.c_str());
+                prefixed.reserve(entry.message.size() + 10);
+                prefixed += '[';
+                prefixed += getLevelString(entry.level);
+                prefixed += "] ";
+                prefixed += entry.message;
+                msgPtr = &prefixed;
             }
+
+            std::lock_guard<std::mutex> lock(identMutex());
+            syslog(priority, "%s", msgPtr->c_str());
         }
 
         /// Convert a LunarLog LogLevel to a syslog priority value.
@@ -4650,8 +4657,18 @@ namespace detail {
                 }
             }
             allHeaders["Content-Type"] = m_opts.contentType;
-            if (allHeaders.find("User-Agent") == allHeaders.end()) {
-                allHeaders["User-Agent"] = "LunarLog/1.0";
+            {
+                bool hasUA = false;
+                for (std::map<std::string, std::string>::const_iterator it = allHeaders.begin();
+                     it != allHeaders.end(); ++it) {
+                    if (detail::headerNameEqualsLower(it->first, "user-agent")) {
+                        hasUA = true;
+                        break;
+                    }
+                }
+                if (!hasUA) {
+                    allHeaders["User-Agent"] = "LunarLog/1.0";
+                }
             }
 
             bool ok = httpPost(body, allHeaders, m_opts.timeoutMs);
@@ -5034,6 +5051,15 @@ namespace detail {
                     dup2(devnull, STDOUT_FILENO);
                     dup2(devnull, STDERR_FILENO);
                     close(devnull);
+                }
+
+                // Close inherited FDs (3+) to prevent leaking parent
+                // resources (file sinks, sockets) to the curl child.
+                {
+                    long maxfd = sysconf(_SC_OPEN_MAX);
+                    if (maxfd < 0) maxfd = 1024;
+                    for (long fd = 3; fd < maxfd; ++fd)
+                        close(static_cast<int>(fd));
                 }
 
                 execvp("curl", argv.data());

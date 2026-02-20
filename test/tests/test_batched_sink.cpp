@@ -332,3 +332,91 @@ TEST_F(BatchedSinkTest, MaxRetriesExhaustedDataLost) {
     EXPECT_EQ(errors.size(), 3u);
     EXPECT_EQ(sink.flushCallCount(), 0u);
 }
+
+class NonStdExceptionBatchedSink : public minta::BatchedSink {
+public:
+    explicit NonStdExceptionBatchedSink(minta::BatchOptions opts)
+        : BatchedSink(opts), m_throwNonStd(false) {}
+
+    ~NonStdExceptionBatchedSink() noexcept { stopAndFlush(); }
+
+    void setThrowNonStd(bool v) { m_throwNonStd = v; }
+
+protected:
+    void writeBatch(const std::vector<const minta::LogEntry*>&) override {
+        if (m_throwNonStd) {
+            throw 42;
+        }
+    }
+
+private:
+    bool m_throwNonStd;
+};
+
+TEST_F(BatchedSinkTest, NonStdExceptionCaught) {
+    minta::BatchOptions opts;
+    opts.setBatchSize(1).setFlushIntervalMs(0).setMaxRetries(2).setRetryDelayMs(10);
+    NonStdExceptionBatchedSink sink(opts);
+
+    sink.setThrowNonStd(true);
+
+    auto entry = makeEntry("non_std_ex");
+    EXPECT_NO_THROW(sink.write(entry));
+    EXPECT_EQ(sink.droppedCount(), 0u);
+}
+
+TEST_F(BatchedSinkTest, StopAndFlushIdempotent) {
+    minta::BatchOptions opts;
+    opts.setBatchSize(100).setFlushIntervalMs(0);
+    MockBatchedSink sink(opts);
+
+    for (int i = 0; i < 3; ++i) {
+        auto entry = makeEntry("idempotent_" + std::to_string(i));
+        sink.write(entry);
+    }
+
+    sink.stopAndFlush();
+    size_t countAfterFirst = sink.totalEntries();
+    EXPECT_EQ(countAfterFirst, 3u);
+
+    sink.stopAndFlush();
+    EXPECT_EQ(sink.totalEntries(), countAfterFirst);
+}
+
+TEST_F(BatchedSinkTest, WriteAfterStopIgnored) {
+    minta::BatchOptions opts;
+    opts.setBatchSize(1).setFlushIntervalMs(0);
+    MockBatchedSink sink(opts);
+
+    sink.stopAndFlush();
+
+    auto entry = makeEntry("after_stop");
+    sink.write(entry);
+    EXPECT_EQ(sink.batchCount(), 0u);
+}
+
+TEST_F(BatchedSinkTest, MaxQueueSizeDropCountAccurate) {
+    minta::BatchOptions opts;
+    opts.setMaxQueueSize(3).setBatchSize(1000).setFlushIntervalMs(0);
+    MockBatchedSink sink(opts);
+
+    for (int i = 0; i < 10; ++i) {
+        auto entry = makeEntry("qs_" + std::to_string(i));
+        sink.write(entry);
+    }
+
+    EXPECT_EQ(sink.droppedCount(), 7u);
+
+    sink.flush();
+    EXPECT_EQ(sink.totalEntries(), 3u);
+}
+
+TEST_F(BatchedSinkTest, BatchSizeZeroClampedToOne) {
+    minta::BatchOptions opts;
+    opts.setBatchSize(0).setFlushIntervalMs(0);
+    MockBatchedSink sink(opts);
+
+    auto entry = makeEntry("clamped");
+    sink.write(entry);
+    EXPECT_EQ(sink.batchCount(), 1u);
+}

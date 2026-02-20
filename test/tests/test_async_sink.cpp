@@ -439,3 +439,142 @@ TEST_F(AsyncSinkTest, CleanShutdownDeliversBuffered) {
     // Entry written before flush() must have been delivered.
     EXPECT_EQ(countBeforeDestroy, 1u);
 }
+
+TEST_F(AsyncSinkTest, DropOldestPolicyIncreasesDroppedCount) {
+    minta::AsyncOptions opts;
+    opts.queueSize = 1;
+    opts.overflowPolicy = minta::OverflowPolicy::DropOldest;
+
+    minta::AsyncSink<GateSink> sink(opts);
+
+    {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "first";
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    sink.innerSink()->waitForEntry();
+
+    {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "fills_queue";
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    const size_t numToEvict = 5;
+    for (size_t i = 0; i < numToEvict; ++i) {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "evict_" + std::to_string(i);
+        e.timestamp = std::chrono::system_clock::now();
+        sink.write(e);
+    }
+
+    EXPECT_GE(sink.droppedCount(), numToEvict);
+
+    sink.innerSink()->open();
+}
+
+TEST_F(AsyncSinkTest, BlockPolicyUnblocksOnStop) {
+    minta::detail::BoundedQueue queue(1);
+
+    minta::LogEntry e1;
+    e1.message = "fill";
+    e1.timestamp = std::chrono::system_clock::now();
+    queue.push(std::move(e1), minta::OverflowPolicy::Block);
+
+    std::atomic<bool> returned(false);
+
+    std::thread blocker([&] {
+        minta::LogEntry e2;
+        e2.message = "blocked";
+        e2.timestamp = std::chrono::system_clock::now();
+        queue.push(std::move(e2), minta::OverflowPolicy::Block);
+        returned.store(true, std::memory_order_release);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(returned.load(std::memory_order_acquire));
+
+    queue.stop();
+
+    blocker.join();
+    EXPECT_TRUE(returned.load(std::memory_order_acquire));
+}
+
+TEST_F(AsyncSinkTest, FlushWhenNotRunningReturnsImmediately) {
+    auto sink = minta::detail::make_unique<minta::AsyncSink<RecordingSink>>();
+    sink.reset();
+
+    minta::AsyncSink<RecordingSink> sink2;
+    {
+        minta::LogEntry e;
+        e.level = minta::LogLevel::INFO;
+        e.message = "pre-destroy";
+        e.timestamp = std::chrono::system_clock::now();
+        sink2.write(e);
+    }
+    sink2.flush();
+    EXPECT_GE(sink2.innerSink()->count(), 1u);
+}
+
+TEST_F(AsyncSinkTest, BoundedQueueTakeEvictedCountResets) {
+    minta::detail::BoundedQueue queue(1);
+
+    minta::LogEntry e1;
+    e1.message = "a";
+    e1.timestamp = std::chrono::system_clock::now();
+    queue.push(std::move(e1), minta::OverflowPolicy::DropOldest);
+
+    minta::LogEntry e2;
+    e2.message = "b";
+    e2.timestamp = std::chrono::system_clock::now();
+    queue.push(std::move(e2), minta::OverflowPolicy::DropOldest);
+
+    EXPECT_EQ(queue.takeEvictedCount(), 1u);
+    EXPECT_EQ(queue.takeEvictedCount(), 0u);
+}
+
+TEST_F(AsyncSinkTest, BoundedQueueWaitForDataWithTimeout) {
+    minta::detail::BoundedQueue queue(10);
+
+    auto start = std::chrono::steady_clock::now();
+    bool result = queue.waitForData(std::chrono::milliseconds(50));
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    EXPECT_FALSE(result);
+    EXPECT_GE(elapsed, 30);
+}
+
+TEST_F(AsyncSinkTest, MultipleFlushesFromDifferentThreads) {
+    minta::AsyncOptions opts;
+    opts.queueSize = 8192;
+    minta::AsyncSink<RecordingSink> sink(opts);
+
+    const int kThreads = 8;
+    const int kWritesPerThread = 50;
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&sink, t] {
+            for (int i = 0; i < kWritesPerThread; ++i) {
+                minta::LogEntry e;
+                e.level = minta::LogLevel::INFO;
+                e.message = "mf_t" + std::to_string(t) + "_" + std::to_string(i);
+                e.timestamp = std::chrono::system_clock::now();
+                sink.write(e);
+            }
+            sink.flush();
+        });
+    }
+
+    for (auto& th : threads) th.join();
+
+    size_t total = sink.innerSink()->count() + sink.droppedCount();
+    EXPECT_EQ(total, static_cast<size_t>(kThreads * kWritesPerThread));
+}

@@ -155,4 +155,33 @@ TEST_F(SyslogSinkTest, MultipleInstancesRefcount) {
     EXPECT_NO_THROW(sink3.write(entry));
 }
 
+TEST_F(SyslogSinkTest, IdentTruncation) {
+    std::string longIdent(300, 'A');
+    EXPECT_NO_THROW({
+        minta::SyslogSink sink(longIdent);
+        minta::LogEntry entry;
+        entry.level = minta::LogLevel::INFO;
+        entry.message = "Truncation test";
+        entry.timestamp = std::chrono::system_clock::now();
+        sink.write(entry);
+    });
+}
+
+TEST_F(SyslogSinkTest, DefaultPriorityForInvalidLevel) {
+    int prio = minta::SyslogSink::toSyslogPriority(static_cast<minta::LogLevel>(99));
+    EXPECT_EQ(prio, LOG_INFO);
+}
+
+TEST_F(SyslogSinkTest, SetLogoptOption) {
+    minta::SyslogOptions opts;
+    opts.setLogopt(LOG_PID | LOG_CONS);
+    minta::SyslogSink sink("lunarlog-test-logopt", opts);
+
+    minta::LogEntry entry;
+    entry.level = minta::LogLevel::WARN;
+    entry.message = "Logopt test";
+    entry.timestamp = std::chrono::system_clock::now();
+    EXPECT_NO_THROW(sink.write(entry));
+}
+
 #endif // !_WIN32

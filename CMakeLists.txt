@@ -180,7 +180,9 @@ if(LUNARLOG_BUILD_TESTS)
     endif()
 
     include(GoogleTest)
-    gtest_discover_tests(TestLunarLog)
+    gtest_discover_tests(TestLunarLog
+        PROPERTIES TIMEOUT 120
+    )
 endif()
 
 option(LUNARLOG_BUILD_BENCHMARKS "Build benchmark suite" OFF)

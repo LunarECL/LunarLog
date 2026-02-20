@@ -39,7 +39,7 @@ namespace minta {
             , flushIntervalMs_(5000)
             , maxQueueSize_(10000)
             , maxRetries_(3)
-            , retryDelayMs_(1000) {}
+            , retryDelayMs_(100) {}
 
         BatchOptions& setBatchSize(size_t n) { batchSize_ = n; return *this; }
         BatchOptions& setFlushIntervalMs(size_t ms) { flushIntervalMs_ = ms; return *this; }
@@ -79,8 +79,10 @@ namespace minta {
 
         ~BatchedSink() noexcept {
             if (m_running.load(std::memory_order_acquire)) {
-                std::fprintf(stderr, "[BatchedSink] WARNING: subclass destructor did not call "
-                                     "stopAndFlush() — buffered entries may be lost.\n");
+                std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
+                                     "stopAndFlush() before ~BatchedSink(). "
+                                     "Buffered entries will be silently discarded. "
+                                     "Add stopAndFlush() to your subclass destructor.\n");
             }
             stopAndFlush();
         }

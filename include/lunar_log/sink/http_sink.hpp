@@ -358,6 +358,8 @@ namespace detail {
                 ~ScopedSocket() { if (fd >= 0) { ::close(fd); } }
                 ScopedSocket(const ScopedSocket&) = delete;
                 ScopedSocket& operator=(const ScopedSocket&) = delete;
+                ScopedSocket(ScopedSocket&&) = delete;
+                ScopedSocket& operator=(ScopedSocket&&) = delete;
             };
             ScopedSocket guard(sockfd);
 
@@ -676,6 +678,9 @@ namespace detail {
             }
 
             if (!writeOk) return false;
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+                return false; // curl not found in PATH
+            }
             return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
 #endif // !_WIN32

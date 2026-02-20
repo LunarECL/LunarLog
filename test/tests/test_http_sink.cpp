@@ -156,10 +156,19 @@ TEST_F(HttpSinkTest, HttpPostToLocalhostMockServer) {
     listen(serverFd, 1);
 
     std::atomic<bool> serverDone(false);
+    std::atomic<bool> serverReady(false);
+    std::mutex serverMutex;
+    std::condition_variable serverCV;
     std::string receivedBody;
 
     // Server thread
     std::thread serverThread([&] {
+        {
+            std::lock_guard<std::mutex> lock(serverMutex);
+            serverReady.store(true);
+        }
+        serverCV.notify_all();
+
         struct sockaddr_in clientAddr;
         socklen_t clientLen = sizeof(clientAddr);
         int clientFd = accept(serverFd, (struct sockaddr*)&clientAddr, &clientLen);
@@ -179,8 +188,11 @@ TEST_F(HttpSinkTest, HttpPostToLocalhostMockServer) {
         serverDone.store(true);
     });
 
-    // Give server time to start listening
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Wait for server thread to be ready
+    {
+        std::unique_lock<std::mutex> lock(serverMutex);
+        serverCV.wait(lock, [&] { return serverReady.load(); });
+    }
 
     // Create HttpSink pointing to our mock server
     std::string url = "http://127.0.0.1:" + std::to_string(port) + "/logs";

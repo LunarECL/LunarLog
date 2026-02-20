@@ -3683,8 +3683,6 @@ namespace detail {
             , m_queue(AsyncOptions().queueSize)
             , m_running(true)
             , m_opts()
-            , m_droppedCount(0)
-            , m_flushDone(false)
         {
             startConsumer();
         }
@@ -3697,8 +3695,6 @@ namespace detail {
             , m_queue(opts.queueSize)
             , m_running(true)
             , m_opts(opts)
-            , m_droppedCount(0)
-            , m_flushDone(false)
         {
             startConsumer();
         }
@@ -3739,14 +3735,13 @@ namespace detail {
             }
         }
 
-        // Note: concurrent flush() callers share a single m_flushDone flag.
-        // If two threads call flush() simultaneously, the later caller's completion
-        // may wake the earlier waiter. Both callers' data is guaranteed enqueued
-        // and will be written, but inner sink flush may not have completed for
-        // the later caller. Only the return timing is coupled. This is acceptable
-        // for a logging sink.
-
-        /// Flush: wait for the consumer to finish processing all queued entries.
+        /// Flush: wait for the consumer to finish processing all queued entries
+        /// and propagate flush to the inner sink.
+        ///
+        /// @note Thread-safe. Concurrent callers share a single completion flag;
+        ///       all callers' data is guaranteed enqueued and written, but the
+        ///       later caller's return may precede its own inner-sink flush.
+        ///       For single-threaded flush usage, full flush ordering is guaranteed.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
@@ -3790,10 +3785,9 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                // Unconditionally clear flushPending after drain to prevent
-                // consumer spin when a concurrent flush() sets the flag
-                // between our setFlushPending(false) and m_flushRequested
-                // clear. Any subsequent requestFlush() will re-set it.
+                // A concurrent requestFlush() between setFlushPending(false) and the
+                // m_flushRequested check will re-arm both the flag and the CV notify,
+                // so the next waitForData() returns immediately — no flush is lost.
                 m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
@@ -3849,12 +3843,12 @@ namespace detail {
         std::thread m_thread;
         std::atomic<bool> m_running;
         AsyncOptions m_opts;
-        std::atomic<size_t> m_droppedCount;
+        std::atomic<size_t> m_droppedCount{0};
 
         std::atomic<bool> m_flushRequested{false};
         std::mutex m_flushMutex;
         std::condition_variable m_flushCV;
-        bool m_flushDone;
+        bool m_flushDone{false};
     };
 
 } // namespace minta
@@ -3898,7 +3892,7 @@ namespace minta {
             , flushIntervalMs_(5000)
             , maxQueueSize_(10000)
             , maxRetries_(3)
-            , retryDelayMs_(1000) {}
+            , retryDelayMs_(100) {}
 
         BatchOptions& setBatchSize(size_t n) { batchSize_ = n; return *this; }
         BatchOptions& setFlushIntervalMs(size_t ms) { flushIntervalMs_ = ms; return *this; }
@@ -3938,8 +3932,10 @@ namespace minta {
 
         ~BatchedSink() noexcept {
             if (m_running.load(std::memory_order_acquire)) {
-                std::fprintf(stderr, "[BatchedSink] WARNING: subclass destructor did not call "
-                                     "stopAndFlush() — buffered entries may be lost.\n");
+                std::fprintf(stderr, "[LunarLog][BatchedSink] WARNING: subclass destructor did not call "
+                                     "stopAndFlush() before ~BatchedSink(). "
+                                     "Buffered entries will be silently discarded. "
+                                     "Add stopAndFlush() to your subclass destructor.\n");
             }
             stopAndFlush();
         }
@@ -4574,6 +4570,8 @@ namespace detail {
                 ~ScopedSocket() { if (fd >= 0) { ::close(fd); } }
                 ScopedSocket(const ScopedSocket&) = delete;
                 ScopedSocket& operator=(const ScopedSocket&) = delete;
+                ScopedSocket(ScopedSocket&&) = delete;
+                ScopedSocket& operator=(ScopedSocket&&) = delete;
             };
             ScopedSocket guard(sockfd);
 
@@ -4892,6 +4890,9 @@ namespace detail {
             }
 
             if (!writeOk) return false;
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+                return false; // curl not found in PATH
+            }
             return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
 #endif // !_WIN32

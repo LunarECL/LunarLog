@@ -54,10 +54,15 @@ private:
 // Helper: gate sink that blocks in write() until released (for drop-count testing)
 class GateSink : public minta::ISink {
 public:
-    GateSink() : m_gate(true), m_count(0) {}
+    GateSink() : m_gate(true), m_entered(false), m_count(0) {}
 
     void write(const minta::LogEntry&) override {
         m_count.fetch_add(1, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(m_enteredMutex);
+            m_entered = true;
+        }
+        m_enteredCV.notify_all();
         std::unique_lock<std::mutex> lock(m_mutex);
         m_cv.wait(lock, [this] { return !m_gate; });
     }
@@ -70,12 +75,21 @@ public:
         m_cv.notify_all();
     }
 
+    void waitForEntry(int timeoutMs = 2000) {
+        std::unique_lock<std::mutex> lock(m_enteredMutex);
+        m_enteredCV.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                             [this] { return m_entered; });
+    }
+
     size_t writeCount() const { return m_count.load(std::memory_order_relaxed); }
 
 private:
     std::mutex m_mutex;
     std::condition_variable m_cv;
     bool m_gate;
+    std::mutex m_enteredMutex;
+    std::condition_variable m_enteredCV;
+    bool m_entered;
     std::atomic<size_t> m_count;
 };
 
@@ -311,7 +325,7 @@ TEST_F(AsyncSinkTest, DroppedCountIncrementsOnDropNewest) {
     }
 
     // Wait for consumer to dequeue the entry and block in GateSink::write()
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    sink.innerSink()->waitForEntry();
 
     // Second write fills the queue (capacity=1)
     {
@@ -355,7 +369,7 @@ TEST_F(AsyncSinkTest, PeriodicFlushViaFlushInterval) {
     }
 
     // Do NOT call flush() — rely on consumer thread to deliver
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
     EXPECT_GE(sink.innerSink()->count(), 1u);
     std::vector<std::string> msgs = sink.innerSink()->messages();

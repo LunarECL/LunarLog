@@ -196,8 +196,6 @@ namespace detail {
             , m_queue(AsyncOptions().queueSize)
             , m_running(true)
             , m_opts()
-            , m_droppedCount(0)
-            , m_flushDone(false)
         {
             startConsumer();
         }
@@ -210,8 +208,6 @@ namespace detail {
             , m_queue(opts.queueSize)
             , m_running(true)
             , m_opts(opts)
-            , m_droppedCount(0)
-            , m_flushDone(false)
         {
             startConsumer();
         }
@@ -252,14 +248,13 @@ namespace detail {
             }
         }
 
-        // Note: concurrent flush() callers share a single m_flushDone flag.
-        // If two threads call flush() simultaneously, the later caller's completion
-        // may wake the earlier waiter. Both callers' data is guaranteed enqueued
-        // and will be written, but inner sink flush may not have completed for
-        // the later caller. Only the return timing is coupled. This is acceptable
-        // for a logging sink.
-
-        /// Flush: wait for the consumer to finish processing all queued entries.
+        /// Flush: wait for the consumer to finish processing all queued entries
+        /// and propagate flush to the inner sink.
+        ///
+        /// @note Thread-safe. Concurrent callers share a single completion flag;
+        ///       all callers' data is guaranteed enqueued and written, but the
+        ///       later caller's return may precede its own inner-sink flush.
+        ///       For single-threaded flush usage, full flush ordering is guaranteed.
         void flush() override {
             if (!m_running.load(std::memory_order_acquire)) return;
 
@@ -303,10 +298,9 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                // Unconditionally clear flushPending after drain to prevent
-                // consumer spin when a concurrent flush() sets the flag
-                // between our setFlushPending(false) and m_flushRequested
-                // clear. Any subsequent requestFlush() will re-set it.
+                // A concurrent requestFlush() between setFlushPending(false) and the
+                // m_flushRequested check will re-arm both the flag and the CV notify,
+                // so the next waitForData() returns immediately — no flush is lost.
                 m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
@@ -362,12 +356,12 @@ namespace detail {
         std::thread m_thread;
         std::atomic<bool> m_running;
         AsyncOptions m_opts;
-        std::atomic<size_t> m_droppedCount;
+        std::atomic<size_t> m_droppedCount{0};
 
         std::atomic<bool> m_flushRequested{false};
         std::mutex m_flushMutex;
         std::condition_variable m_flushCV;
-        bool m_flushDone;
+        bool m_flushDone{false};
     };
 
 } // namespace minta

@@ -254,8 +254,10 @@ namespace detail {
 
         // Note: concurrent flush() callers share a single m_flushDone flag.
         // If two threads call flush() simultaneously, the later caller's completion
-        // may wake the earlier waiter. Both callers' data is guaranteed written;
-        // only the return timing is coupled. This is acceptable for a logging sink.
+        // may wake the earlier waiter. Both callers' data is guaranteed enqueued
+        // and will be written, but inner sink flush may not have completed for
+        // the later caller. Only the return timing is coupled. This is acceptable
+        // for a logging sink.
 
         /// Flush: wait for the consumer to finish processing all queued entries.
         void flush() override {
@@ -301,6 +303,11 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
+                // Unconditionally clear flushPending after drain to prevent
+                // consumer spin when a concurrent flush() sets the flag
+                // between our setFlushPending(false) and m_flushRequested
+                // clear. Any subsequent requestFlush() will re-set it.
+                m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -308,7 +315,6 @@ namespace detail {
                 }
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
-                    m_queue.setFlushPending(false);
                     std::vector<LogEntry> extra;
                     m_queue.drain(extra);
                     for (size_t i = 0; i < extra.size(); ++i) {

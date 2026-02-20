@@ -362,3 +362,37 @@ TEST_F(AsyncSinkTest, PeriodicFlushViaFlushInterval) {
     ASSERT_FALSE(msgs.empty());
     EXPECT_EQ(msgs[0], "periodic test");
 }
+
+// --- Test 13: Concurrent flush does not spin (regression for flushPending leak) ---
+TEST_F(AsyncSinkTest, ConcurrentFlushNoSpin) {
+    minta::AsyncOptions opts;
+    opts.queueSize = 8192;
+    opts.overflowPolicy = minta::OverflowPolicy::DropNewest;
+
+    minta::AsyncSink<RecordingSink> sink(opts);
+
+    const int kThreads = 4;
+    const int kWritesPerThread = 100;
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&sink, t] {
+            for (int i = 0; i < kWritesPerThread; ++i) {
+                minta::LogEntry e;
+                e.level = minta::LogLevel::INFO;
+                e.message = "t" + std::to_string(t) + "_" + std::to_string(i);
+                e.timestamp = std::chrono::system_clock::now();
+                sink.write(e);
+            }
+            sink.flush();
+        });
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    size_t total = sink.innerSink()->count() + sink.droppedCount();
+    EXPECT_EQ(total, static_cast<size_t>(kThreads * kWritesPerThread));
+    EXPECT_EQ(sink.droppedCount(), 0u);
+}

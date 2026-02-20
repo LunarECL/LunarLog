@@ -49,6 +49,9 @@ namespace minta {
 
     /// Configuration options for HttpSink.
     ///
+    /// @note DNS resolution (getaddrinfo) is not bounded by timeoutMs.
+    ///       DNS may block for 30+ seconds on unresponsive resolvers.
+    ///
     /// @code
     ///   HttpSinkOptions opts("http://localhost:8080/logs");
     ///   opts.setHeader("Authorization", "Bearer token123")
@@ -367,7 +370,8 @@ namespace detail {
 
             // Set non-blocking for connect timeout
             int flags = fcntl(sockfd, F_GETFL, 0);
-            fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+            if (flags < 0) return false;
+            if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) return false;
 
             int connectResult = connect(sockfd, res->ai_addr, res->ai_addrlen);
             freeaddrinfo(res);
@@ -401,13 +405,14 @@ namespace detail {
             }
 
             // Set back to blocking
-            fcntl(sockfd, F_SETFL, flags);
+            if (fcntl(sockfd, F_SETFL, flags) < 0) return false;
 
             // SO_SNDTIMEO / SO_RCVTIMEO are set once. remainingMs() guards loop
             // entry so no new calls start after deadline, but the last in-flight
             // call may overshoot by up to the remaining value at time of setting.
             // Acceptable for a logging transport.
-            // TODO(future): re-set per-call via poll() for stricter deadline adherence.
+            // TODO(future): re-set SO_SNDTIMEO/SO_RCVTIMEO before each send/recv
+            //               using remainingMs() for strict per-call deadline adherence.
             {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
@@ -511,7 +516,11 @@ namespace detail {
                 args.push_back("--insecure");
             }
             args.push_back("--max-time");
-            args.push_back(std::to_string((timeoutMs + 999) / 1000));
+            {
+                size_t maxTimeSec = (timeoutMs + 999) / 1000;
+                if (maxTimeSec == 0) maxTimeSec = 1;
+                args.push_back(std::to_string(maxTimeSec));
+            }
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {

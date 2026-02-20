@@ -3741,8 +3741,10 @@ namespace detail {
 
         // Note: concurrent flush() callers share a single m_flushDone flag.
         // If two threads call flush() simultaneously, the later caller's completion
-        // may wake the earlier waiter. Both callers' data is guaranteed written;
-        // only the return timing is coupled. This is acceptable for a logging sink.
+        // may wake the earlier waiter. Both callers' data is guaranteed enqueued
+        // and will be written, but inner sink flush may not have completed for
+        // the later caller. Only the return timing is coupled. This is acceptable
+        // for a logging sink.
 
         /// Flush: wait for the consumer to finish processing all queued entries.
         void flush() override {
@@ -3788,6 +3790,11 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
+                // Unconditionally clear flushPending after drain to prevent
+                // consumer spin when a concurrent flush() sets the flag
+                // between our setFlushPending(false) and m_flushRequested
+                // clear. Any subsequent requestFlush() will re-set it.
+                m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
@@ -3795,7 +3802,6 @@ namespace detail {
                 }
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
-                    m_queue.setFlushPending(false);
                     std::vector<LogEntry> extra;
                     m_queue.drain(extra);
                     for (size_t i = 0; i < extra.size(); ++i) {
@@ -4011,9 +4017,9 @@ namespace minta {
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
         ///
-        /// @warning Thread-safety: writeBatch() may be called concurrently from the
-        ///          timer thread and the write() batch-flush path. Implementations
-        ///          must be thread-safe or ensure external synchronization.
+        /// @warning Thread-safety: writeBatch() is serialized by m_writeMutex,
+        ///          so implementations need not be thread-safe. However, long-running
+        ///          writeBatch calls will block other flush paths.
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
             (void)batch;
         }
@@ -4069,7 +4075,10 @@ namespace minta {
             bool success = false;
             for (size_t attempt = 0; attempt <= m_opts.maxRetries_; ++attempt) {
                 try {
-                    writeBatch(ptrs);
+                    {
+                        std::lock_guard<std::mutex> wlock(m_writeMutex);
+                        writeBatch(ptrs);
+                    }
                     success = true;
                     break;
                 } catch (const std::exception& e) {
@@ -4101,6 +4110,7 @@ namespace minta {
         BatchOptions m_opts;
         std::vector<LogEntry> m_buffer;
         std::mutex m_bufferMutex;
+        std::mutex m_writeMutex;
         std::thread m_timerThread;
         std::mutex m_timerMutex;
         std::condition_variable m_timerCV;
@@ -4254,6 +4264,9 @@ namespace minta {
 namespace minta {
 
     /// Configuration options for HttpSink.
+    ///
+    /// @note DNS resolution (getaddrinfo) is not bounded by timeoutMs.
+    ///       DNS may block for 30+ seconds on unresponsive resolvers.
     ///
     /// @code
     ///   HttpSinkOptions opts("http://localhost:8080/logs");
@@ -4573,7 +4586,8 @@ namespace detail {
 
             // Set non-blocking for connect timeout
             int flags = fcntl(sockfd, F_GETFL, 0);
-            fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+            if (flags < 0) return false;
+            if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) return false;
 
             int connectResult = connect(sockfd, res->ai_addr, res->ai_addrlen);
             freeaddrinfo(res);
@@ -4607,13 +4621,14 @@ namespace detail {
             }
 
             // Set back to blocking
-            fcntl(sockfd, F_SETFL, flags);
+            if (fcntl(sockfd, F_SETFL, flags) < 0) return false;
 
             // SO_SNDTIMEO / SO_RCVTIMEO are set once. remainingMs() guards loop
             // entry so no new calls start after deadline, but the last in-flight
             // call may overshoot by up to the remaining value at time of setting.
             // Acceptable for a logging transport.
-            // TODO(future): re-set per-call via poll() for stricter deadline adherence.
+            // TODO(future): re-set SO_SNDTIMEO/SO_RCVTIMEO before each send/recv
+            //               using remainingMs() for strict per-call deadline adherence.
             {
                 long rm = remainingMs();
                 if (rm <= 0) return false;
@@ -4717,7 +4732,11 @@ namespace detail {
                 args.push_back("--insecure");
             }
             args.push_back("--max-time");
-            args.push_back(std::to_string((timeoutMs + 999) / 1000));
+            {
+                size_t maxTimeSec = (timeoutMs + 999) / 1000;
+                if (maxTimeSec == 0) maxTimeSec = 1;
+                args.push_back(std::to_string(maxTimeSec));
+            }
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {

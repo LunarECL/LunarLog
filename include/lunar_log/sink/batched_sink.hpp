@@ -158,9 +158,9 @@ namespace minta {
         /// remaining buffered entries will be silently discarded by this
         /// empty default.
         ///
-        /// @warning Thread-safety: writeBatch() may be called concurrently from the
-        ///          timer thread and the write() batch-flush path. Implementations
-        ///          must be thread-safe or ensure external synchronization.
+        /// @warning Thread-safety: writeBatch() is serialized by m_writeMutex,
+        ///          so implementations need not be thread-safe. However, long-running
+        ///          writeBatch calls will block other flush paths.
         virtual void writeBatch(const std::vector<const LogEntry*>& batch) {
             (void)batch;
         }
@@ -216,7 +216,10 @@ namespace minta {
             bool success = false;
             for (size_t attempt = 0; attempt <= m_opts.maxRetries_; ++attempt) {
                 try {
-                    writeBatch(ptrs);
+                    {
+                        std::lock_guard<std::mutex> wlock(m_writeMutex);
+                        writeBatch(ptrs);
+                    }
                     success = true;
                     break;
                 } catch (const std::exception& e) {
@@ -248,6 +251,7 @@ namespace minta {
         BatchOptions m_opts;
         std::vector<LogEntry> m_buffer;
         std::mutex m_bufferMutex;
+        std::mutex m_writeMutex;
         std::thread m_timerThread;
         std::mutex m_timerMutex;
         std::condition_variable m_timerCV;

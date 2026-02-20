@@ -317,6 +317,19 @@ namespace detail {
                 if (!batch.empty()) dirty = true;
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
+                    // Snapshot the target generation BEFORE draining.
+                    // The m_flushMutex acquire here creates a happens-before
+                    // chain: any write() that sequenced-before a flush() that
+                    // set m_flushGeneration <= targetGen is guaranteed visible
+                    // to subsequent drain() calls (queue mutex ordering).
+                    // This prevents "generation overshoot" where the consumer
+                    // credits a generation whose data hasn't been drained yet.
+                    uint64_t targetGen;
+                    {
+                        std::lock_guard<std::mutex> lock(m_flushMutex);
+                        targetGen = m_flushGeneration;
+                    }
+
                     std::vector<LogEntry> extra;
                     try { m_queue.drain(extra); } catch (...) {}
                     for (size_t i = 0; i < extra.size(); ++i) {
@@ -333,10 +346,23 @@ namespace detail {
 
                     {
                         std::lock_guard<std::mutex> lock(m_flushMutex);
-                        m_flushRequested.store(false, std::memory_order_release);
-                        m_completedGeneration = m_flushGeneration;
+                        m_completedGeneration = targetGen;
+                        // Only clear flushRequested when fully caught up.
+                        // A concurrent flush() may have advanced the
+                        // generation while we were draining/flushing.
+                        if (m_completedGeneration >= m_flushGeneration) {
+                            m_flushRequested.store(false, std::memory_order_release);
+                        }
                     }
                     m_flushCV.notify_all();
+
+                    // If more flush generations are pending, re-set the
+                    // queue's flushPending flag so waitForData() returns
+                    // promptly on the next iteration instead of blocking.
+                    if (m_flushRequested.load(std::memory_order_acquire)) {
+                        m_queue.requestFlush();
+                    }
+
                     dirty = false;
                     lastFlush = std::chrono::steady_clock::now();
                 } else if (dirty && m_opts.flushIntervalMs > 0) {

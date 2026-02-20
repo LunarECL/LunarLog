@@ -238,12 +238,29 @@ namespace detail {
         return true;
     }
 
+    /// Case-insensitive ASCII comparison for HTTP header name matching.
+    /// @p b must be a lowercase literal; only @p a is lowered.
+    inline bool headerNameEqualsLower(const std::string& a, const char* b) {
+        size_t bLen = std::strlen(b);
+        if (a.size() != bLen) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (static_cast<char>(std::tolower(static_cast<unsigned char>(a[i]))) != b[i])
+                return false;
+        }
+        return true;
+    }
+
     /// Returns true if @p name is a reserved HTTP header that the sink
-    /// emits itself (Host, Content-Length, Connection).  User-supplied
-    /// headers with these names are silently skipped to prevent duplicate
-    /// headers that could cause request smuggling (CWE-444).
+    /// emits itself (Host, Content-Length, Connection) or that would
+    /// conflict with the transport framing (Transfer-Encoding).
+    /// Comparison is case-insensitive per RFC 7230 section 3.2.
+    /// User-supplied headers with these names are silently skipped to
+    /// prevent duplicate or conflicting headers (CWE-444).
     inline bool isReservedHeaderName(const std::string& name) {
-        return name == "Host" || name == "Content-Length" || name == "Connection";
+        return headerNameEqualsLower(name, "host")
+            || headerNameEqualsLower(name, "content-length")
+            || headerNameEqualsLower(name, "connection")
+            || headerNameEqualsLower(name, "transfer-encoding");
     }
 
 } // namespace detail
@@ -507,6 +524,7 @@ namespace detail {
             request += body;
 
             // Send
+            if (request.size() > 0x7FFFFFFFU) return false;
             ssize_t totalSent = 0;
             ssize_t requestLen = static_cast<ssize_t>(request.size());
             const char* ptr = request.c_str();
@@ -540,10 +558,14 @@ namespace detail {
             };
 
             long statusCode = 0;
+            std::string carryover;
             for (int attempt = 0; attempt < 5; ++attempt) {
-                std::string responseBuf;
-                responseBuf.reserve(256);
-                if (!readUntilCRLF(responseBuf)) return false;
+                std::string responseBuf = std::move(carryover);
+                carryover.clear();
+
+                if (responseBuf.find("\r\n") == std::string::npos) {
+                    if (!readUntilCRLF(responseBuf)) return false;
+                }
 
                 size_t spacePos = responseBuf.find(' ');
                 if (spacePos == std::string::npos) return false;
@@ -556,6 +578,10 @@ namespace detail {
                 // 1xx: read through the blank line (\r\n\r\n) that terminates the interim response
                 while (responseBuf.find("\r\n\r\n") == std::string::npos) {
                     if (!readUntilCRLF(responseBuf)) break;
+                }
+                size_t interimEnd = responseBuf.find("\r\n\r\n");
+                if (interimEnd != std::string::npos && interimEnd + 4 < responseBuf.size()) {
+                    carryover = responseBuf.substr(interimEnd + 4);
                 }
             }
             bool success = (statusCode >= 200 && statusCode < 300);

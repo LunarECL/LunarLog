@@ -3805,6 +3805,19 @@ namespace detail {
                 if (!batch.empty()) dirty = true;
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
+                    // Snapshot the target generation BEFORE draining.
+                    // The m_flushMutex acquire here creates a happens-before
+                    // chain: any write() that sequenced-before a flush() that
+                    // set m_flushGeneration <= targetGen is guaranteed visible
+                    // to subsequent drain() calls (queue mutex ordering).
+                    // This prevents "generation overshoot" where the consumer
+                    // credits a generation whose data hasn't been drained yet.
+                    uint64_t targetGen;
+                    {
+                        std::lock_guard<std::mutex> lock(m_flushMutex);
+                        targetGen = m_flushGeneration;
+                    }
+
                     std::vector<LogEntry> extra;
                     try { m_queue.drain(extra); } catch (...) {}
                     for (size_t i = 0; i < extra.size(); ++i) {
@@ -3821,10 +3834,23 @@ namespace detail {
 
                     {
                         std::lock_guard<std::mutex> lock(m_flushMutex);
-                        m_flushRequested.store(false, std::memory_order_release);
-                        m_completedGeneration = m_flushGeneration;
+                        m_completedGeneration = targetGen;
+                        // Only clear flushRequested when fully caught up.
+                        // A concurrent flush() may have advanced the
+                        // generation while we were draining/flushing.
+                        if (m_completedGeneration >= m_flushGeneration) {
+                            m_flushRequested.store(false, std::memory_order_release);
+                        }
                     }
                     m_flushCV.notify_all();
+
+                    // If more flush generations are pending, re-set the
+                    // queue's flushPending flag so waitForData() returns
+                    // promptly on the next iteration instead of blocking.
+                    if (m_flushRequested.load(std::memory_order_acquire)) {
+                        m_queue.requestFlush();
+                    }
+
                     dirty = false;
                     lastFlush = std::chrono::steady_clock::now();
                 } else if (dirty && m_opts.flushIntervalMs > 0) {
@@ -4234,25 +4260,34 @@ namespace minta {
                             SyslogOptions opts = SyslogOptions())
             : m_opts(opts)
         {
-            if (instanceRefCount().fetch_add(1, std::memory_order_acq_rel) > 0) {
+            // The refcount check and openlog() must be under the same mutex
+            // to prevent a concurrent destructor from calling closelog()
+            // between our fetch_add and openlog(), which would leave this
+            // instance with a closed syslog connection.
+            std::lock_guard<std::mutex> lock(identMutex());
+            if (instanceRefCount().fetch_add(1, std::memory_order_relaxed) > 0) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
                                      "instances detected. openlog() is process-global; "
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            std::lock_guard<std::mutex> lock(identMutex());
             std::strncpy(globalIdent(), ident.c_str(), kMaxIdentLen);
             globalIdent()[kMaxIdentLen] = '\0';
             openlog(globalIdent(), m_opts.logopt_, m_opts.facility_);
         }
 
         ~SyslogSink() noexcept {
-            if (instanceRefCount().fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                std::lock_guard<std::mutex> lock(identMutex());
+            // Must be under identMutex to serialize against concurrent
+            // constructors — prevents closelog() after a new openlog().
+            std::lock_guard<std::mutex> lock(identMutex());
+            if (instanceRefCount().fetch_sub(1, std::memory_order_relaxed) == 1) {
                 closelog();
             }
         }
 
+        /// @note Thread-safety of syslog() is not guaranteed by POSIX but
+        /// is provided by all major implementations (glibc, musl, BSD libc,
+        /// macOS libsystem). No additional serialization is applied here.
         void write(const LogEntry& entry) override {
             int priority = toSyslogPriority(entry.level);
 
@@ -4527,12 +4562,29 @@ namespace detail {
         return true;
     }
 
+    /// Case-insensitive ASCII comparison for HTTP header name matching.
+    /// @p b must be a lowercase literal; only @p a is lowered.
+    inline bool headerNameEqualsLower(const std::string& a, const char* b) {
+        size_t bLen = std::strlen(b);
+        if (a.size() != bLen) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (static_cast<char>(std::tolower(static_cast<unsigned char>(a[i]))) != b[i])
+                return false;
+        }
+        return true;
+    }
+
     /// Returns true if @p name is a reserved HTTP header that the sink
-    /// emits itself (Host, Content-Length, Connection).  User-supplied
-    /// headers with these names are silently skipped to prevent duplicate
-    /// headers that could cause request smuggling (CWE-444).
+    /// emits itself (Host, Content-Length, Connection) or that would
+    /// conflict with the transport framing (Transfer-Encoding).
+    /// Comparison is case-insensitive per RFC 7230 section 3.2.
+    /// User-supplied headers with these names are silently skipped to
+    /// prevent duplicate or conflicting headers (CWE-444).
     inline bool isReservedHeaderName(const std::string& name) {
-        return name == "Host" || name == "Content-Length" || name == "Connection";
+        return headerNameEqualsLower(name, "host")
+            || headerNameEqualsLower(name, "content-length")
+            || headerNameEqualsLower(name, "connection")
+            || headerNameEqualsLower(name, "transfer-encoding");
     }
 
 } // namespace detail
@@ -4796,6 +4848,7 @@ namespace detail {
             request += body;
 
             // Send
+            if (request.size() > 0x7FFFFFFFU) return false;
             ssize_t totalSent = 0;
             ssize_t requestLen = static_cast<ssize_t>(request.size());
             const char* ptr = request.c_str();
@@ -4829,10 +4882,14 @@ namespace detail {
             };
 
             long statusCode = 0;
+            std::string carryover;
             for (int attempt = 0; attempt < 5; ++attempt) {
-                std::string responseBuf;
-                responseBuf.reserve(256);
-                if (!readUntilCRLF(responseBuf)) return false;
+                std::string responseBuf = std::move(carryover);
+                carryover.clear();
+
+                if (responseBuf.find("\r\n") == std::string::npos) {
+                    if (!readUntilCRLF(responseBuf)) return false;
+                }
 
                 size_t spacePos = responseBuf.find(' ');
                 if (spacePos == std::string::npos) return false;
@@ -4845,6 +4902,10 @@ namespace detail {
                 // 1xx: read through the blank line (\r\n\r\n) that terminates the interim response
                 while (responseBuf.find("\r\n\r\n") == std::string::npos) {
                     if (!readUntilCRLF(responseBuf)) break;
+                }
+                size_t interimEnd = responseBuf.find("\r\n\r\n");
+                if (interimEnd != std::string::npos && interimEnd + 4 < responseBuf.size()) {
+                    carryover = responseBuf.substr(interimEnd + 4);
                 }
             }
             bool success = (statusCode >= 200 && statusCode < 300);

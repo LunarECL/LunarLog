@@ -75,25 +75,34 @@ namespace minta {
                             SyslogOptions opts = SyslogOptions())
             : m_opts(opts)
         {
-            if (instanceRefCount().fetch_add(1, std::memory_order_acq_rel) > 0) {
+            // The refcount check and openlog() must be under the same mutex
+            // to prevent a concurrent destructor from calling closelog()
+            // between our fetch_add and openlog(), which would leave this
+            // instance with a closed syslog connection.
+            std::lock_guard<std::mutex> lock(identMutex());
+            if (instanceRefCount().fetch_add(1, std::memory_order_relaxed) > 0) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
                                      "instances detected. openlog() is process-global; "
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            std::lock_guard<std::mutex> lock(identMutex());
             std::strncpy(globalIdent(), ident.c_str(), kMaxIdentLen);
             globalIdent()[kMaxIdentLen] = '\0';
             openlog(globalIdent(), m_opts.logopt_, m_opts.facility_);
         }
 
         ~SyslogSink() noexcept {
-            if (instanceRefCount().fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                std::lock_guard<std::mutex> lock(identMutex());
+            // Must be under identMutex to serialize against concurrent
+            // constructors — prevents closelog() after a new openlog().
+            std::lock_guard<std::mutex> lock(identMutex());
+            if (instanceRefCount().fetch_sub(1, std::memory_order_relaxed) == 1) {
                 closelog();
             }
         }
 
+        /// @note Thread-safety of syslog() is not guaranteed by POSIX but
+        /// is provided by all major implementations (glibc, musl, BSD libc,
+        /// macOS libsystem). No additional serialization is applied here.
         void write(const LogEntry& entry) override {
             int priority = toSyslogPriority(entry.level);
 

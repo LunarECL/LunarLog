@@ -87,6 +87,9 @@ namespace minta {
             , maxQueueSize(10000)
             , retryDelayMs(1000) {}
 
+        /// Set a custom HTTP request header.
+        /// @note Content-Type is managed by setContentType(); passing
+        ///       "Content-Type" here has no effect — use setContentType() instead.
         HttpSinkOptions& setHeader(const std::string& key, const std::string& val) {
             headers[key] = val;
             return *this;
@@ -107,6 +110,10 @@ namespace minta {
             flushIntervalMs = ms;
             return *this;
         }
+        /// Set the maximum number of retry attempts on writeBatch failure.
+        /// @warning When a producer thread triggers a size-based flush, it blocks
+        ///          for up to (maxRetries+1) * (retryDelayMs + writeBatch_duration).
+        ///          Wrap in AsyncSink<HttpSink> for latency-sensitive producers.
         HttpSinkOptions& setMaxRetries(size_t n) {
             maxRetries = n;
             return *this;
@@ -119,6 +126,10 @@ namespace minta {
             verifySsl = v;
             return *this;
         }
+        /// Set the delay between retry attempts in milliseconds.
+        /// @warning Combined with maxRetries, worst-case producer-thread blocking
+        ///          is (maxRetries+1) * (retryDelayMs + writeBatch_duration).
+        ///          Use AsyncSink<HttpSink> to avoid blocking the caller.
         HttpSinkOptions& setRetryDelayMs(size_t ms) {
             retryDelayMs = ms;
             return *this;
@@ -570,7 +581,7 @@ namespace detail {
                 while (dest.size() < 4096) {
                     if (!setSocketTimeout(sockfd, SO_RCVTIMEO)) return false;
                     ssize_t n;
-                    do { n = ::recv(sockfd, buf, sizeof(buf) - 1, 0); }
+                    do { n = ::recv(sockfd, buf, sizeof(buf), 0); }
                     while (n < 0 && errno == EINTR);
                     if (n <= 0) return false;
                     dest.append(buf, static_cast<size_t>(n));
@@ -817,10 +828,21 @@ namespace detail {
             }
 
             if (!writeOk) return false;
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-                return false; // curl not found in PATH
+            if (WIFEXITED(status)) {
+                int code = WEXITSTATUS(status);
+                if (code == 127) {
+                    std::fprintf(stderr, "[LunarLog][HttpSink] curl not found in PATH"
+                                         " (exit 127) — install curl or use POSIX path\n");
+                    return false;
+                }
+                if (code == 126) {
+                    std::fprintf(stderr, "[LunarLog][HttpSink] curl not executable"
+                                         " (exit 126) — check permissions\n");
+                    return false;
+                }
+                return code == 0;
             }
-            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            return false;
         }
 #endif // !_WIN32
 

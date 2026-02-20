@@ -43,7 +43,8 @@ namespace minta {
             , maxRetries_(3)
             , retryDelayMs_(100) {}
 
-        BatchOptions& setBatchSize(size_t n) { batchSize_ = n; return *this; }
+        /// @note A value of 0 is clamped to 1 to prevent per-entry flushing.
+        BatchOptions& setBatchSize(size_t n) { batchSize_ = (n > 0 ? n : 1); return *this; }
         BatchOptions& setFlushIntervalMs(size_t ms) { flushIntervalMs_ = ms; return *this; }
         BatchOptions& setMaxQueueSize(size_t n) { maxQueueSize_ = n; return *this; }
         BatchOptions& setMaxRetries(size_t n) { maxRetries_ = n; return *this; }
@@ -249,8 +250,12 @@ namespace minta {
                     try { onBatchError(e, attempt); } catch (...) {}
                     if (attempt < m_opts.maxRetries_) {
                         if (!m_running.load(std::memory_order_acquire)) break;
-                        std::this_thread::sleep_for(
-                            std::chrono::milliseconds(m_opts.retryDelayMs_));
+                        // Use timerCV so stopAndFlush() can interrupt the sleep.
+                        std::unique_lock<std::mutex> lock(m_timerMutex);
+                        m_timerCV.wait_for(lock,
+                            std::chrono::milliseconds(m_opts.retryDelayMs_),
+                            [this]{ return !m_running.load(std::memory_order_acquire); });
+                        if (!m_running.load(std::memory_order_acquire)) break;
                     }
                 } catch (...) {
                     break;

@@ -413,10 +413,13 @@ TEST_F(AsyncSinkTest, ConcurrentFlushNoSpin) {
 }
 
 // --- Test 14: Write after shutdown is silently dropped ---
+// Verifies that entries written and flushed before shutdown are delivered,
+// and that destruction completes cleanly (consumer thread joins without hang).
 TEST_F(AsyncSinkTest, WriteAfterShutdownDropped) {
     auto sink = minta::detail::make_unique<minta::AsyncSink<RecordingSink>>();
     auto* inner = sink->innerSink();
 
+    // Write one entry before shutdown and flush it through.
     {
         minta::LogEntry e;
         e.level = minta::LogLevel::INFO;
@@ -427,11 +430,12 @@ TEST_F(AsyncSinkTest, WriteAfterShutdownDropped) {
     sink->flush();
     EXPECT_EQ(inner->count(), 1u);
 
-    // Destroy the sink (triggers shutdown)
+    // Snapshot count before destruction (inner pointer becomes dangling after reset).
+    size_t countBeforeDestroy = inner->count();
+
+    // Destroy the sink — consumer thread must join cleanly.
     sink.reset();
 
-    // inner pointer is now dangling — we verified count before destruction.
-    // The key assertion is that destruction completes without crash even after
-    // writes + flush, which the reset() above already proved.
-    SUCCEED();
+    // Entry written before flush() must have been delivered.
+    EXPECT_EQ(countBeforeDestroy, 1u);
 }

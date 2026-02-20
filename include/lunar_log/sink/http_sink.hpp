@@ -184,7 +184,7 @@ namespace detail {
             // Strip fragment — not sent in HTTP requests
             size_t fragPos = rawPath.find('#');
             if (fragPos != std::string::npos) {
-                rawPath = rawPath.substr(0, fragPos);
+                rawPath.resize(fragPos);
             }
             // Ensure path starts with /
             if (rawPath.empty() || rawPath[0] != '/') {

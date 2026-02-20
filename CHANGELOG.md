@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.25.0] — 2026-02-21
+
 ### Added
 - `AsyncSink` (#74) — bounded-queue async sink decorator with overflow policies (`Block`, `DropOldest`, `DropNewest`) and flush synchronization
 - `BatchedSink` (#75) — reusable batching base sink with timer flush, retry hooks, and configurable `BatchOptions`

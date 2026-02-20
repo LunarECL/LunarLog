@@ -18,6 +18,9 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #ifdef ERROR
 #undef ERROR
@@ -152,15 +155,32 @@ namespace detail {
         size_t hostStart = schemeEnd + 3;
         if (hostStart >= url.size()) return result;
 
-        // Find path
-        size_t pathStart = url.find('/', hostStart);
+        // Find authority/path boundary: split on first of / ? #
+        size_t pathStart = std::string::npos;
+        for (size_t i = hostStart; i < url.size(); ++i) {
+            if (url[i] == '/' || url[i] == '?' || url[i] == '#') {
+                pathStart = i;
+                break;
+            }
+        }
         std::string hostPort;
         if (pathStart == std::string::npos) {
             hostPort = url.substr(hostStart);
             result.path = "/";
         } else {
             hostPort = url.substr(hostStart, pathStart - hostStart);
-            result.path = url.substr(pathStart);
+            std::string rawPath = url.substr(pathStart);
+            // Strip fragment — not sent in HTTP requests
+            size_t fragPos = rawPath.find('#');
+            if (fragPos != std::string::npos) {
+                rawPath = rawPath.substr(0, fragPos);
+            }
+            // Ensure path starts with /
+            if (rawPath.empty() || rawPath[0] != '/') {
+                result.path = "/" + rawPath;
+            } else {
+                result.path = rawPath;
+            }
         }
 
         // Note: IPv6 literal URLs (e.g. http://[::1]:8080/path) are not supported.
@@ -609,6 +629,10 @@ namespace detail {
             fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
             fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
 #endif
+            {
+                int wflags = fcntl(pipefd[1], F_GETFL, 0);
+                if (wflags >= 0) fcntl(pipefd[1], F_SETFL, wflags | O_NONBLOCK);
+            }
 
             pid_t pid = fork();
             if (pid < 0) {
@@ -674,7 +698,11 @@ namespace detail {
                     ssize_t w;
                     do { w = ::write(pipefd[1], data, remaining); }
                     while (w < 0 && errno == EINTR);
-                    if (w <= 0) { writeOk = false; break; }
+                    if (w < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                        writeOk = false; break;
+                    }
+                    if (w == 0) { writeOk = false; break; }
                     data += w;
                     remaining -= static_cast<size_t>(w);
                 }
@@ -778,6 +806,16 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                bool clean = true;
+                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                if (!clean) continue;
                 std::string headerLine = it->first + ": " + it->second;
                 std::wstring wHeader = utf8ToWide(headerLine);
                 WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),

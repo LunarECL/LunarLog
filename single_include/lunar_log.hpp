@@ -625,6 +625,7 @@ namespace detail {
 #include <vector>
 #include <map>
 #include <memory>
+#include <utility>
 #include <thread>
 
 namespace minta {
@@ -3497,6 +3498,8 @@ namespace minta {
 #include <vector>
 #include <deque>
 #include <memory>
+#include <utility>
+#include <chrono>
 #include <cassert>
 
 namespace minta {
@@ -3715,13 +3718,15 @@ namespace detail {
             }
 
             // Flush any remaining entries in the queue
-            std::vector<LogEntry> remaining;
-            m_queue.drain(remaining);
-            for (size_t i = 0; i < remaining.size(); ++i) {
-                try {
-                    m_innerSink->write(remaining[i]);
-                } catch (...) {}
-            }
+            try {
+                std::vector<LogEntry> remaining;
+                m_queue.drain(remaining);
+                for (size_t i = 0; i < remaining.size(); ++i) {
+                    try {
+                        m_innerSink->write(remaining[i]);
+                    } catch (...) {}
+                }
+            } catch (...) {}
             try {
                 if (m_innerSink) m_innerSink->flush();
             } catch (...) {}
@@ -3776,6 +3781,9 @@ namespace detail {
 
         void consumerLoop() {
             std::vector<LogEntry> batch;
+            bool dirty = false;
+            auto lastFlush = std::chrono::steady_clock::now();
+
             while (m_running.load(std::memory_order_acquire)) {
                 batch.clear();
 
@@ -3786,16 +3794,13 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                // Safe without queue mutex: requestFlush() re-arms flushPending
-                // atomically under lock and notifies, so a concurrent flush()
-                // between this clear and the m_flushRequested check below will
-                // cause one extra consumer iteration (empty drain) — no data loss.
                 m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
                     } catch (...) {}
                 }
+                if (!batch.empty()) dirty = true;
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
                     std::vector<LogEntry> extra;
@@ -3806,8 +3811,6 @@ namespace detail {
                         } catch (...) {}
                     }
 
-                    // Propagate flush to inner sink so buffered sinks
-                    // (e.g. BatchedSink inside HttpSink) actually deliver.
                     try {
                         if (m_innerSink) {
                             m_innerSink->flush();
@@ -3820,12 +3823,25 @@ namespace detail {
                         m_flushDone = true;
                     }
                     m_flushCV.notify_all();
+                    dirty = false;
+                    lastFlush = std::chrono::steady_clock::now();
+                } else if (dirty && m_opts.flushIntervalMs > 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - lastFlush).count();
+                    if (elapsed >= static_cast<long long>(m_opts.flushIntervalMs)) {
+                        try {
+                            if (m_innerSink) m_innerSink->flush();
+                        } catch (...) {}
+                        dirty = false;
+                        lastFlush = now;
+                    }
                 }
             }
 
             // Final drain after stop signal
             batch.clear();
-            m_queue.drain(batch);
+            try { m_queue.drain(batch); } catch (...) {}
             for (size_t i = 0; i < batch.size(); ++i) {
                 try {
                     m_innerSink->write(batch[i]);
@@ -3864,6 +3880,8 @@ namespace detail {
 #include <atomic>
 #include <vector>
 #include <memory>
+#include <utility>
+#include <chrono>
 #include <stdexcept>
 #include <cstdio>
 
@@ -3879,7 +3897,7 @@ namespace minta {
     /// @endcode
     ///
     /// @warning When a producer thread triggers a flush (by reaching batchSize),
-    ///          it blocks for up to (timeoutMs + retryDelayMs) * (maxRetries+1).
+    ///          it blocks for up to (writeBatch duration + retryDelayMs) * (maxRetries+1).
     ///          For latency-sensitive producers, wrap in AsyncSink<BatchedSink<...>>
     ///          to offload flush work to a dedicated thread.
     struct BatchOptions {
@@ -3903,7 +3921,7 @@ namespace minta {
         BatchOptions& setRetryDelayMs(size_t ms) { retryDelayMs_ = ms; return *this; }
     };
 
-    /// Abstract base class for batched sink implementations.
+    /// Base class for batched sink implementations.
     ///
     /// Buffers log entries and delivers them in batches via the protected
     /// writeBatch() method. A background timer thread ensures entries are
@@ -4029,11 +4047,15 @@ namespace minta {
         }
 
         /// Called after a successful flush. Override for post-flush logic.
+        /// @note NOT serialized by m_writeMutex. Implementations must be
+        ///       thread-safe if concurrent flushes are possible.
         virtual void onFlush() {}
 
         /// Called when writeBatch throws an exception.
         /// @param e The caught exception
         /// @param retryCount Current retry attempt (0-based)
+        /// @note NOT serialized by m_writeMutex. Implementations must be
+        ///       thread-safe if concurrent flushes are possible.
         virtual void onBatchError(const std::exception& e, size_t retryCount) {
             (void)e;
             (void)retryCount;
@@ -4086,7 +4108,7 @@ namespace minta {
                     success = true;
                     break;
                 } catch (const std::exception& e) {
-                    onBatchError(e, attempt);
+                    try { onBatchError(e, attempt); } catch (...) {}
                     if (attempt < m_opts.maxRetries_) {
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(m_opts.retryDelayMs_));
@@ -4131,6 +4153,8 @@ namespace minta {
 
 #include <syslog.h>
 #include <string>
+#include <atomic>
+#include <cstdio>
 
 namespace minta {
 
@@ -4164,6 +4188,11 @@ namespace minta {
     ///   logger.addSink<SyslogSink>("my-app", SyslogOptions().setFacility(LOG_LOCAL0));
     /// @endcode
     class SyslogSink : public ISink {
+        static std::atomic<int>& instanceRefCount() {
+            static std::atomic<int> count(0);
+            return count;
+        }
+
     public:
         /// @param ident  The syslog identity string (typically the program name).
         ///               Stored internally — the pointer passed to openlog() remains
@@ -4174,22 +4203,19 @@ namespace minta {
             : m_ident(ident)
             , m_opts(opts)
         {
-            // openlog() is process-global: only one ident/facility/logopt is
-            // active at a time.  Warn if a second instance is created.
-            static std::atomic<int> instanceCount(0);
-            if (instanceCount.fetch_add(1, std::memory_order_relaxed) > 0) {
+            if (instanceRefCount().fetch_add(1, std::memory_order_acq_rel) > 0) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
                                      "instances detected. openlog() is process-global; "
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            // openlog() requires a pointer that remains valid until closelog().
-            // m_ident is a std::string member, so c_str() is stable.
             openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);
         }
 
         ~SyslogSink() noexcept {
-            closelog();
+            if (instanceRefCount().fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                closelog();
+            }
         }
 
         void write(const LogEntry& entry) override {
@@ -4246,6 +4272,9 @@ namespace minta {
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
 #endif
 #include <windows.h>
 #ifdef ERROR
@@ -4381,15 +4410,32 @@ namespace detail {
         size_t hostStart = schemeEnd + 3;
         if (hostStart >= url.size()) return result;
 
-        // Find path
-        size_t pathStart = url.find('/', hostStart);
+        // Find authority/path boundary: split on first of / ? #
+        size_t pathStart = std::string::npos;
+        for (size_t i = hostStart; i < url.size(); ++i) {
+            if (url[i] == '/' || url[i] == '?' || url[i] == '#') {
+                pathStart = i;
+                break;
+            }
+        }
         std::string hostPort;
         if (pathStart == std::string::npos) {
             hostPort = url.substr(hostStart);
             result.path = "/";
         } else {
             hostPort = url.substr(hostStart, pathStart - hostStart);
-            result.path = url.substr(pathStart);
+            std::string rawPath = url.substr(pathStart);
+            // Strip fragment — not sent in HTTP requests
+            size_t fragPos = rawPath.find('#');
+            if (fragPos != std::string::npos) {
+                rawPath = rawPath.substr(0, fragPos);
+            }
+            // Ensure path starts with /
+            if (rawPath.empty() || rawPath[0] != '/') {
+                result.path = "/" + rawPath;
+            } else {
+                result.path = rawPath;
+            }
         }
 
         // Note: IPv6 literal URLs (e.g. http://[::1]:8080/path) are not supported.
@@ -4838,6 +4884,10 @@ namespace detail {
             fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
             fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
 #endif
+            {
+                int wflags = fcntl(pipefd[1], F_GETFL, 0);
+                if (wflags >= 0) fcntl(pipefd[1], F_SETFL, wflags | O_NONBLOCK);
+            }
 
             pid_t pid = fork();
             if (pid < 0) {
@@ -4903,7 +4953,11 @@ namespace detail {
                     ssize_t w;
                     do { w = ::write(pipefd[1], data, remaining); }
                     while (w < 0 && errno == EINTR);
-                    if (w <= 0) { writeOk = false; break; }
+                    if (w < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                        writeOk = false; break;
+                    }
+                    if (w == 0) { writeOk = false; break; }
                     data += w;
                     remaining -= static_cast<size_t>(w);
                 }
@@ -5007,6 +5061,16 @@ namespace detail {
 
             for (std::map<std::string, std::string>::const_iterator it = headers.begin();
                  it != headers.end(); ++it) {
+                bool clean = true;
+                for (size_t ci = 0; ci < it->first.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->first[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                for (size_t ci = 0; ci < it->second.size() && clean; ++ci) {
+                    unsigned char ch = static_cast<unsigned char>(it->second[ci]);
+                    if (ch < 0x20 || ch == 0x7F) clean = false;
+                }
+                if (!clean) continue;
                 std::string headerLine = it->first + ": " + it->second;
                 std::wstring wHeader = utf8ToWide(headerLine);
                 WinHttpAddRequestHeaders(hRequest, wHeader.c_str(),
@@ -5046,6 +5110,7 @@ namespace detail {
 
 #include <vector>
 #include <memory>
+#include <utility>
 #include <atomic>
 #include <functional>
 #include <mutex>

@@ -174,12 +174,36 @@ TEST_F(HttpSinkTest, HttpPostToLocalhostMockServer) {
         int clientFd = accept(serverFd, (struct sockaddr*)&clientAddr, &clientLen);
         if (clientFd < 0) { serverDone.store(true); return; }
 
+        // Loop until we have received the full HTTP headers + body
         char buf[4096];
-        ssize_t n = recv(clientFd, buf, sizeof(buf) - 1, 0);
-        if (n > 0) {
-            buf[n] = '\0';
-            receivedBody = std::string(buf, static_cast<size_t>(n));
+        std::string accumulated;
+        while (true) {
+            ssize_t n = recv(clientFd, buf, sizeof(buf) - 1, 0);
+            if (n <= 0) break;
+            accumulated.append(buf, static_cast<size_t>(n));
+            // Check if we have the end of headers
+            std::string::size_type headerEnd = accumulated.find("\r\n\r\n");
+            if (headerEnd == std::string::npos) continue;
+            // Parse Content-Length to know how many body bytes to expect
+            std::string::size_type clPos = accumulated.find("Content-Length: ");
+            if (clPos == std::string::npos) break; // no body expected
+            std::string::size_type clStart = clPos + 16;
+            std::string::size_type clEnd = accumulated.find("\r\n", clStart);
+            if (clEnd == std::string::npos) break;
+            std::string clStr = accumulated.substr(clStart, clEnd - clStart);
+            std::size_t contentLength = static_cast<std::size_t>(std::atoi(clStr.c_str()));
+            std::size_t bodyStart = headerEnd + 4;
+            std::size_t bodyReceived = accumulated.size() - bodyStart;
+            // Keep reading until we have all body bytes
+            while (bodyReceived < contentLength) {
+                ssize_t m = recv(clientFd, buf, sizeof(buf) - 1, 0);
+                if (m <= 0) break;
+                accumulated.append(buf, static_cast<size_t>(m));
+                bodyReceived += static_cast<std::size_t>(m);
+            }
+            break;
         }
+        receivedBody = accumulated;
 
         // Send HTTP 200 response
         const char* response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -219,6 +243,107 @@ TEST_F(HttpSinkTest, HttpPostToLocalhostMockServer) {
     EXPECT_FALSE(receivedBody.empty());
     EXPECT_NE(receivedBody.find("POST /logs"), std::string::npos);
     EXPECT_NE(receivedBody.find("Test log message"), std::string::npos);
+}
+
+// --- Test 9b: CRLF header injection is rejected ---
+TEST_F(HttpSinkTest, CrlfHeaderInjectionRejected) {
+    int serverFd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(serverFd, 0);
+
+    int opt = 1;
+    setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_port = 0;
+
+    ASSERT_EQ(bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)), 0);
+
+    socklen_t addrLen = sizeof(addr);
+    getsockname(serverFd, (struct sockaddr*)&addr, &addrLen);
+    int port = ntohs(addr.sin_port);
+
+    listen(serverFd, 1);
+
+    std::atomic<bool> serverDone(false);
+    std::atomic<bool> serverReady(false);
+    std::mutex serverMutex;
+    std::condition_variable serverCV;
+    std::string receivedRequest;
+
+    std::thread serverThread([&] {
+        {
+            std::lock_guard<std::mutex> lock(serverMutex);
+            serverReady.store(true);
+        }
+        serverCV.notify_all();
+
+        struct sockaddr_in clientAddr;
+        socklen_t clientLen = sizeof(clientAddr);
+        int clientFd = accept(serverFd, (struct sockaddr*)&clientAddr, &clientLen);
+        if (clientFd < 0) { serverDone.store(true); return; }
+
+        char buf[4096];
+        std::string accumulated;
+        while (true) {
+            ssize_t n = recv(clientFd, buf, sizeof(buf) - 1, 0);
+            if (n <= 0) break;
+            accumulated.append(buf, static_cast<size_t>(n));
+            std::string::size_type headerEnd = accumulated.find("\r\n\r\n");
+            if (headerEnd == std::string::npos) continue;
+            std::string::size_type clPos = accumulated.find("Content-Length: ");
+            if (clPos == std::string::npos) break;
+            std::string::size_type clStart = clPos + 16;
+            std::string::size_type clEnd = accumulated.find("\r\n", clStart);
+            if (clEnd == std::string::npos) break;
+            std::string clStr = accumulated.substr(clStart, clEnd - clStart);
+            std::size_t contentLength = static_cast<std::size_t>(std::atoi(clStr.c_str()));
+            std::size_t bodyStart = headerEnd + 4;
+            std::size_t bodyReceived = accumulated.size() - bodyStart;
+            while (bodyReceived < contentLength) {
+                ssize_t m = recv(clientFd, buf, sizeof(buf) - 1, 0);
+                if (m <= 0) break;
+                accumulated.append(buf, static_cast<size_t>(m));
+                bodyReceived += static_cast<std::size_t>(m);
+            }
+            break;
+        }
+        receivedRequest = accumulated;
+
+        const char* response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        send(clientFd, response, std::strlen(response), 0);
+        close(clientFd);
+        serverDone.store(true);
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(serverMutex);
+        serverCV.wait(lock, [&] { return serverReady.load(); });
+    }
+
+    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/logs";
+    minta::HttpSinkOptions opts(url);
+    opts.setBatchSize(1).setFlushIntervalMs(0).setMaxRetries(0);
+    opts.setHeader("X-Test\r\nX-Injected: evil", "value");
+
+    {
+        minta::HttpSink sink(opts);
+
+        minta::LogEntry entry;
+        entry.level = minta::LogLevel::INFO;
+        entry.message = "Injection test";
+        entry.templateStr = "Injection test";
+        entry.timestamp = std::chrono::system_clock::now();
+
+        sink.write(entry);
+    }
+
+    serverThread.join();
+    close(serverFd);
+
+    EXPECT_EQ(receivedRequest.find("X-Injected"), std::string::npos);
 }
 
 // Note: TOCTOU race is acceptable here; the port is intentionally unused.

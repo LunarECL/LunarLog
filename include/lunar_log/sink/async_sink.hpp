@@ -10,6 +10,8 @@
 #include <vector>
 #include <deque>
 #include <memory>
+#include <utility>
+#include <chrono>
 #include <cassert>
 
 namespace minta {
@@ -228,13 +230,15 @@ namespace detail {
             }
 
             // Flush any remaining entries in the queue
-            std::vector<LogEntry> remaining;
-            m_queue.drain(remaining);
-            for (size_t i = 0; i < remaining.size(); ++i) {
-                try {
-                    m_innerSink->write(remaining[i]);
-                } catch (...) {}
-            }
+            try {
+                std::vector<LogEntry> remaining;
+                m_queue.drain(remaining);
+                for (size_t i = 0; i < remaining.size(); ++i) {
+                    try {
+                        m_innerSink->write(remaining[i]);
+                    } catch (...) {}
+                }
+            } catch (...) {}
             try {
                 if (m_innerSink) m_innerSink->flush();
             } catch (...) {}
@@ -289,6 +293,9 @@ namespace detail {
 
         void consumerLoop() {
             std::vector<LogEntry> batch;
+            bool dirty = false;
+            auto lastFlush = std::chrono::steady_clock::now();
+
             while (m_running.load(std::memory_order_acquire)) {
                 batch.clear();
 
@@ -299,16 +306,13 @@ namespace detail {
                 }
 
                 m_queue.drain(batch);
-                // Safe without queue mutex: requestFlush() re-arms flushPending
-                // atomically under lock and notifies, so a concurrent flush()
-                // between this clear and the m_flushRequested check below will
-                // cause one extra consumer iteration (empty drain) — no data loss.
                 m_queue.setFlushPending(false);
                 for (size_t i = 0; i < batch.size(); ++i) {
                     try {
                         m_innerSink->write(batch[i]);
                     } catch (...) {}
                 }
+                if (!batch.empty()) dirty = true;
 
                 if (m_flushRequested.load(std::memory_order_acquire)) {
                     std::vector<LogEntry> extra;
@@ -319,8 +323,6 @@ namespace detail {
                         } catch (...) {}
                     }
 
-                    // Propagate flush to inner sink so buffered sinks
-                    // (e.g. BatchedSink inside HttpSink) actually deliver.
                     try {
                         if (m_innerSink) {
                             m_innerSink->flush();
@@ -333,12 +335,25 @@ namespace detail {
                         m_flushDone = true;
                     }
                     m_flushCV.notify_all();
+                    dirty = false;
+                    lastFlush = std::chrono::steady_clock::now();
+                } else if (dirty && m_opts.flushIntervalMs > 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - lastFlush).count();
+                    if (elapsed >= static_cast<long long>(m_opts.flushIntervalMs)) {
+                        try {
+                            if (m_innerSink) m_innerSink->flush();
+                        } catch (...) {}
+                        dirty = false;
+                        lastFlush = now;
+                    }
                 }
             }
 
             // Final drain after stop signal
             batch.clear();
-            m_queue.drain(batch);
+            try { m_queue.drain(batch); } catch (...) {}
             for (size_t i = 0; i < batch.size(); ++i) {
                 try {
                     m_innerSink->write(batch[i]);

@@ -7,6 +7,8 @@
 #include "../core/log_common.hpp"
 #include <syslog.h>
 #include <string>
+#include <atomic>
+#include <cstdio>
 
 namespace minta {
 
@@ -40,6 +42,11 @@ namespace minta {
     ///   logger.addSink<SyslogSink>("my-app", SyslogOptions().setFacility(LOG_LOCAL0));
     /// @endcode
     class SyslogSink : public ISink {
+        static std::atomic<int>& instanceRefCount() {
+            static std::atomic<int> count(0);
+            return count;
+        }
+
     public:
         /// @param ident  The syslog identity string (typically the program name).
         ///               Stored internally — the pointer passed to openlog() remains
@@ -50,22 +57,19 @@ namespace minta {
             : m_ident(ident)
             , m_opts(opts)
         {
-            // openlog() is process-global: only one ident/facility/logopt is
-            // active at a time.  Warn if a second instance is created.
-            static std::atomic<int> instanceCount(0);
-            if (instanceCount.fetch_add(1, std::memory_order_relaxed) > 0) {
+            if (instanceRefCount().fetch_add(1, std::memory_order_acq_rel) > 0) {
                 std::fprintf(stderr, "[LunarLog][SyslogSink] WARNING: multiple SyslogSink "
                                      "instances detected. openlog() is process-global; "
                                      "the last-created instance's ident will be used "
                                      "for all syslog output.\n");
             }
-            // openlog() requires a pointer that remains valid until closelog().
-            // m_ident is a std::string member, so c_str() is stable.
             openlog(m_ident.c_str(), m_opts.logopt_, m_opts.facility_);
         }
 
         ~SyslogSink() noexcept {
-            closelog();
+            if (instanceRefCount().fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                closelog();
+            }
         }
 
         void write(const LogEntry& entry) override {

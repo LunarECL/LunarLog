@@ -4,6 +4,7 @@
 #include "sink/sink_interface.hpp"
 #include <vector>
 #include <memory>
+#include <utility>
 #include <atomic>
 #include <functional>
 #include <mutex>

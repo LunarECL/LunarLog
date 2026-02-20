@@ -9,6 +9,8 @@
 #include <atomic>
 #include <vector>
 #include <memory>
+#include <utility>
+#include <chrono>
 #include <stdexcept>
 #include <cstdio>
 
@@ -24,7 +26,7 @@ namespace minta {
     /// @endcode
     ///
     /// @warning When a producer thread triggers a flush (by reaching batchSize),
-    ///          it blocks for up to (timeoutMs + retryDelayMs) * (maxRetries+1).
+    ///          it blocks for up to (writeBatch duration + retryDelayMs) * (maxRetries+1).
     ///          For latency-sensitive producers, wrap in AsyncSink<BatchedSink<...>>
     ///          to offload flush work to a dedicated thread.
     struct BatchOptions {
@@ -48,7 +50,7 @@ namespace minta {
         BatchOptions& setRetryDelayMs(size_t ms) { retryDelayMs_ = ms; return *this; }
     };
 
-    /// Abstract base class for batched sink implementations.
+    /// Base class for batched sink implementations.
     ///
     /// Buffers log entries and delivers them in batches via the protected
     /// writeBatch() method. A background timer thread ensures entries are
@@ -174,11 +176,15 @@ namespace minta {
         }
 
         /// Called after a successful flush. Override for post-flush logic.
+        /// @note NOT serialized by m_writeMutex. Implementations must be
+        ///       thread-safe if concurrent flushes are possible.
         virtual void onFlush() {}
 
         /// Called when writeBatch throws an exception.
         /// @param e The caught exception
         /// @param retryCount Current retry attempt (0-based)
+        /// @note NOT serialized by m_writeMutex. Implementations must be
+        ///       thread-safe if concurrent flushes are possible.
         virtual void onBatchError(const std::exception& e, size_t retryCount) {
             (void)e;
             (void)retryCount;
@@ -231,7 +237,7 @@ namespace minta {
                     success = true;
                     break;
                 } catch (const std::exception& e) {
-                    onBatchError(e, attempt);
+                    try { onBatchError(e, attempt); } catch (...) {}
                     if (attempt < m_opts.maxRetries_) {
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(m_opts.retryDelayMs_));

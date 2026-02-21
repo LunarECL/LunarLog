@@ -2601,6 +2601,11 @@ namespace minta {
     ///       concurrent writes to stdout are serialized.  StderrTransport
     ///       has its own independent mutex, so stdout and stderr writes
     ///       may interleave at the terminal level.
+    /// @warning The shared mutex is a function-local static.  Using this
+    ///          transport from a global or static object's destructor may
+    ///          cause undefined behavior if the mutex has already been
+    ///          destroyed.  Ensure all loggers using StdoutTransport are
+    ///          shut down before main() returns.
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
@@ -2620,6 +2625,11 @@ namespace minta {
     ///       concurrent writes to stderr are serialized.  StdoutTransport
     ///       has its own independent mutex, so stdout and stderr writes
     ///       may interleave at the terminal level.
+    /// @warning The shared mutex is a function-local static.  Using this
+    ///          transport from a global or static object's destructor may
+    ///          cause undefined behavior if the mutex has already been
+    ///          destroyed.  Ensure all loggers using StderrTransport are
+    ///          shut down before main() returns.
     class StderrTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
@@ -3033,6 +3043,11 @@ namespace minta {
         std::atomic<bool> m_colorEnabled;
 
         static bool detectAndEnableColorSupport(ConsoleStream stream) {
+            // Env-var checks run per-instance so that a later-constructed sink
+            // respects runtime changes to NO_COLOR / LUNAR_LOG_NO_COLOR.
+            // The VT-mode setup below (Windows only) runs once per stream via
+            // call_once because it is an idempotent OS call that is harmless
+            // if left enabled even when a subsequent sink disables color.
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
             const char* noColor = std::getenv("LUNAR_LOG_NO_COLOR");
@@ -5378,10 +5393,11 @@ namespace minta {
     ///       shared state, the user is responsible for thread safety inside
     ///       the callback.
     /// @note If the callback throws an exception, the exception is silently
-    ///       caught by the logger's internal processing thread.  The log
-    ///       entry that triggered the throw is lost, but subsequent entries
-    ///       are unaffected.  Callbacks should be noexcept or handle their
-    ///       own errors internally.
+    ///       caught by the logger's sink dispatch loop.  The log entry that
+    ///       triggered the throw is lost **for this sink only** — other sinks
+    ///       registered on the same logger still receive the entry normally.
+    ///       Subsequent entries to this sink are also unaffected.  Callbacks
+    ///       should be noexcept or handle their own errors internally.
     class CallbackSink : public ISink {
     public:
         using EntryCallback  = std::function<void(const LogEntry&)>;
@@ -7073,6 +7089,79 @@ namespace minta {
         template<typename... Args>
         static void fatal(const std::string& msg, Args&&... args) {
             requireInit()->log(LogLevel::FATAL, msg, std::forward<Args>(args)...);
+        }
+
+        // --- Dynamic-level logging ---
+
+        template<typename... Args>
+        static void log(LogLevel level, const std::string& msg, Args&&... args) {
+            requireInit()->log(level, msg, std::forward<Args>(args)...);
+        }
+
+        // --- Exception-logging overloads ---
+
+        template<typename... Args>
+        static void log(LogLevel level, const std::exception& ex,
+                        const std::string& msg, Args&&... args) {
+            requireInit()->log(level, ex, msg, std::forward<Args>(args)...);
+        }
+
+        static void log(LogLevel level, const std::exception& ex) {
+            requireInit()->log(level, ex);
+        }
+
+        template<typename... Args>
+        static void trace(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->trace(ex, msg, std::forward<Args>(args)...);
+        }
+        static void trace(const std::exception& ex) {
+            requireInit()->trace(ex);
+        }
+
+        template<typename... Args>
+        static void debug(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->debug(ex, msg, std::forward<Args>(args)...);
+        }
+        static void debug(const std::exception& ex) {
+            requireInit()->debug(ex);
+        }
+
+        template<typename... Args>
+        static void info(const std::exception& ex, const std::string& msg,
+                         Args&&... args) {
+            requireInit()->info(ex, msg, std::forward<Args>(args)...);
+        }
+        static void info(const std::exception& ex) {
+            requireInit()->info(ex);
+        }
+
+        template<typename... Args>
+        static void warn(const std::exception& ex, const std::string& msg,
+                         Args&&... args) {
+            requireInit()->warn(ex, msg, std::forward<Args>(args)...);
+        }
+        static void warn(const std::exception& ex) {
+            requireInit()->warn(ex);
+        }
+
+        template<typename... Args>
+        static void error(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->error(ex, msg, std::forward<Args>(args)...);
+        }
+        static void error(const std::exception& ex) {
+            requireInit()->error(ex);
+        }
+
+        template<typename... Args>
+        static void fatal(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->fatal(ex, msg, std::forward<Args>(args)...);
+        }
+        static void fatal(const std::exception& ex) {
+            requireInit()->fatal(ex);
         }
 
     private:

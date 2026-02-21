@@ -10,6 +10,11 @@ namespace minta {
     ///       concurrent writes to stdout are serialized.  StderrTransport
     ///       has its own independent mutex, so stdout and stderr writes
     ///       may interleave at the terminal level.
+    /// @warning The shared mutex is a function-local static.  Using this
+    ///          transport from a global or static object's destructor may
+    ///          cause undefined behavior if the mutex has already been
+    ///          destroyed.  Ensure all loggers using StdoutTransport are
+    ///          shut down before main() returns.
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
@@ -29,6 +34,11 @@ namespace minta {
     ///       concurrent writes to stderr are serialized.  StdoutTransport
     ///       has its own independent mutex, so stdout and stderr writes
     ///       may interleave at the terminal level.
+    /// @warning The shared mutex is a function-local static.  Using this
+    ///          transport from a global or static object's destructor may
+    ///          cause undefined behavior if the mutex has already been
+    ///          destroyed.  Ensure all loggers using StderrTransport are
+    ///          shut down before main() returns.
     class StderrTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {

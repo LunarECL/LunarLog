@@ -146,6 +146,79 @@ namespace minta {
             requireInit()->log(LogLevel::FATAL, msg, std::forward<Args>(args)...);
         }
 
+        // --- Dynamic-level logging ---
+
+        template<typename... Args>
+        static void log(LogLevel level, const std::string& msg, Args&&... args) {
+            requireInit()->log(level, msg, std::forward<Args>(args)...);
+        }
+
+        // --- Exception-logging overloads ---
+
+        template<typename... Args>
+        static void log(LogLevel level, const std::exception& ex,
+                        const std::string& msg, Args&&... args) {
+            requireInit()->log(level, ex, msg, std::forward<Args>(args)...);
+        }
+
+        static void log(LogLevel level, const std::exception& ex) {
+            requireInit()->log(level, ex);
+        }
+
+        template<typename... Args>
+        static void trace(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->trace(ex, msg, std::forward<Args>(args)...);
+        }
+        static void trace(const std::exception& ex) {
+            requireInit()->trace(ex);
+        }
+
+        template<typename... Args>
+        static void debug(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->debug(ex, msg, std::forward<Args>(args)...);
+        }
+        static void debug(const std::exception& ex) {
+            requireInit()->debug(ex);
+        }
+
+        template<typename... Args>
+        static void info(const std::exception& ex, const std::string& msg,
+                         Args&&... args) {
+            requireInit()->info(ex, msg, std::forward<Args>(args)...);
+        }
+        static void info(const std::exception& ex) {
+            requireInit()->info(ex);
+        }
+
+        template<typename... Args>
+        static void warn(const std::exception& ex, const std::string& msg,
+                         Args&&... args) {
+            requireInit()->warn(ex, msg, std::forward<Args>(args)...);
+        }
+        static void warn(const std::exception& ex) {
+            requireInit()->warn(ex);
+        }
+
+        template<typename... Args>
+        static void error(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->error(ex, msg, std::forward<Args>(args)...);
+        }
+        static void error(const std::exception& ex) {
+            requireInit()->error(ex);
+        }
+
+        template<typename... Args>
+        static void fatal(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->fatal(ex, msg, std::forward<Args>(args)...);
+        }
+        static void fatal(const std::exception& ex) {
+            requireInit()->fatal(ex);
+        }
+
     private:
         static std::shared_ptr<LunarLog>& storage() {
             static std::shared_ptr<LunarLog> s_logger;

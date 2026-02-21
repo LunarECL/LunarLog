@@ -20,10 +20,11 @@ namespace minta {
     ///       shared state, the user is responsible for thread safety inside
     ///       the callback.
     /// @note If the callback throws an exception, the exception is silently
-    ///       caught by the logger's internal processing thread.  The log
-    ///       entry that triggered the throw is lost, but subsequent entries
-    ///       are unaffected.  Callbacks should be noexcept or handle their
-    ///       own errors internally.
+    ///       caught by the logger's sink dispatch loop.  The log entry that
+    ///       triggered the throw is lost **for this sink only** — other sinks
+    ///       registered on the same logger still receive the entry normally.
+    ///       Subsequent entries to this sink are also unaffected.  Callbacks
+    ///       should be noexcept or handle their own errors internally.
     class CallbackSink : public ISink {
     public:
         using EntryCallback  = std::function<void(const LogEntry&)>;

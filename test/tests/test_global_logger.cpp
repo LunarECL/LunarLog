@@ -363,6 +363,7 @@ TEST_F(GlobalLoggerTest, ConcurrentLoggingWithShutdownAndReinit) {
 
     std::atomic<int> delivered(0);
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto makeLogger = [&]() {
         auto logger = minta::LunarLog::configure()
@@ -371,6 +372,7 @@ TEST_F(GlobalLoggerTest, ConcurrentLoggingWithShutdownAndReinit) {
         auto sink = minta::detail::make_unique<minta::CallbackSink>(
             minta::CallbackSink::EntryCallback([&](const minta::LogEntry&) {
                 delivered.fetch_add(1, std::memory_order_relaxed);
+                cv.notify_all();
             }));
         logger.addCustomSink(std::move(sink));
         return logger;
@@ -404,8 +406,154 @@ TEST_F(GlobalLoggerTest, ConcurrentLoggingWithShutdownAndReinit) {
 
     if (minta::Log::isInitialized()) {
         minta::Log::flush();
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait_for(lock, std::chrono::seconds(5),
+            [&]() { return delivered.load(std::memory_order_relaxed) > 0; });
     }
 
     EXPECT_GT(delivered.load(std::memory_order_relaxed), 0);
+}
+
+// --- Dynamic-level log() ---
+
+TEST_F(GlobalLoggerTest, LogWithDynamicLevel) {
+    std::vector<GCaptured> entries;
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                entries.push_back({entry.level, entry.message});
+            }
+            cv.notify_all();
+        }));
+    logger.addCustomSink(std::move(sink));
+    minta::Log::init(std::move(logger));
+
+    minta::LogLevel dynamicLevel = minta::LogLevel::WARN;
+    minta::Log::log(dynamicLevel, "Dynamic {v}", 99);
+    minta::Log::flush();
+
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return entries.size() >= 1u; }));
+    EXPECT_EQ(entries[0].level, minta::LogLevel::WARN);
+    EXPECT_TRUE(entries[0].message.find("Dynamic 99") != std::string::npos);
+}
+
+// --- Exception-logging overloads ---
+
+TEST_F(GlobalLoggerTest, ErrorWithExceptionAttachment) {
+    std::vector<GCaptured> entries;
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool hasException = false;
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                entries.push_back({entry.level, entry.message});
+                hasException = entry.hasException();
+            }
+            cv.notify_all();
+        }));
+    logger.addCustomSink(std::move(sink));
+    minta::Log::init(std::move(logger));
+
+    std::runtime_error ex("test error");
+    minta::Log::error(ex, "Something failed: {reason}", "disk full");
+    minta::Log::flush();
+
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return entries.size() >= 1u; }));
+    EXPECT_EQ(entries[0].level, minta::LogLevel::ERROR);
+    EXPECT_TRUE(entries[0].message.find("Something failed: disk full") != std::string::npos);
+    EXPECT_TRUE(hasException);
+}
+
+TEST_F(GlobalLoggerTest, ExceptionOnlyOverload) {
+    std::vector<GCaptured> entries;
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool hasException = false;
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                entries.push_back({entry.level, entry.message});
+                hasException = entry.hasException();
+            }
+            cv.notify_all();
+        }));
+    logger.addCustomSink(std::move(sink));
+    minta::Log::init(std::move(logger));
+
+    std::runtime_error ex("kaboom");
+    minta::Log::fatal(ex);
+    minta::Log::flush();
+
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return entries.size() >= 1u; }));
+    EXPECT_EQ(entries[0].level, minta::LogLevel::FATAL);
+    EXPECT_TRUE(entries[0].message.find("kaboom") != std::string::npos);
+    EXPECT_TRUE(hasException);
+}
+
+TEST_F(GlobalLoggerTest, LogDynamicLevelWithException) {
+    std::vector<GCaptured> entries;
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool hasException = false;
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                entries.push_back({entry.level, entry.message});
+                hasException = entry.hasException();
+            }
+            cv.notify_all();
+        }));
+    logger.addCustomSink(std::move(sink));
+    minta::Log::init(std::move(logger));
+
+    std::runtime_error ex("dynamic ex");
+    minta::Log::log(minta::LogLevel::DEBUG, ex, "Failed at {step}", "init");
+    minta::Log::flush();
+
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return entries.size() >= 1u; }));
+    EXPECT_EQ(entries[0].level, minta::LogLevel::DEBUG);
+    EXPECT_TRUE(entries[0].message.find("Failed at init") != std::string::npos);
+    EXPECT_TRUE(hasException);
+}
+
+TEST_F(GlobalLoggerTest, ExceptionOverloadsThrowBeforeInit) {
+    std::runtime_error ex("no logger");
+    EXPECT_THROW(minta::Log::error(ex, "msg"), std::logic_error);
+    EXPECT_THROW(minta::Log::error(ex), std::logic_error);
+    EXPECT_THROW(minta::Log::log(minta::LogLevel::ERROR, ex), std::logic_error);
+    EXPECT_THROW(minta::Log::log(minta::LogLevel::ERROR, "msg"), std::logic_error);
 }

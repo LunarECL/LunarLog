@@ -121,6 +121,11 @@ namespace minta {
         std::atomic<bool> m_colorEnabled;
 
         static bool detectAndEnableColorSupport(ConsoleStream stream) {
+            // Env-var checks run per-instance so that a later-constructed sink
+            // respects runtime changes to NO_COLOR / LUNAR_LOG_NO_COLOR.
+            // The VT-mode setup below (Windows only) runs once per stream via
+            // call_once because it is an idempotent OS call that is harmless
+            // if left enabled even when a subsequent sink disables color.
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
             const char* noColor = std::getenv("LUNAR_LOG_NO_COLOR");

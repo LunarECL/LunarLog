@@ -64,7 +64,7 @@ TEST_F(GlobalLoggerTest, BasicInfoWarnErrorAfterInit) {
     minta::Log::info("Info message {v}", 1);
     minta::Log::warn("Warn message {v}", 2);
     minta::Log::error("Error message {v}", 3);
-    minta::Log::instance().flush();
+    minta::Log::flush();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -91,7 +91,7 @@ TEST_F(GlobalLoggerTest, ShutdownThenThrows) {
 
     // Should work
     EXPECT_NO_THROW(minta::Log::info("before shutdown"));
-    minta::Log::instance().flush();
+    minta::Log::flush();
 
     minta::Log::shutdown();
     EXPECT_FALSE(minta::Log::isInitialized());
@@ -125,7 +125,7 @@ TEST_F(GlobalLoggerTest, DoubleInitReplacesInstance) {
     minta::Log::init(std::move(logger1));
 
     minta::Log::info("To first logger");
-    minta::Log::instance().flush();
+    minta::Log::flush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     auto logger2 = minta::LunarLog::configure()
@@ -140,7 +140,7 @@ TEST_F(GlobalLoggerTest, DoubleInitReplacesInstance) {
     minta::Log::init(std::move(logger2));
 
     minta::Log::info("To second logger");
-    minta::Log::instance().flush();
+    minta::Log::flush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     {
@@ -210,7 +210,7 @@ TEST_F(GlobalLoggerTest, AllLogLevelsWork) {
     minta::Log::warn("w");
     minta::Log::error("e");
     minta::Log::fatal("f");
-    minta::Log::instance().flush();
+    minta::Log::flush();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -247,7 +247,91 @@ TEST_F(GlobalLoggerTest, InstanceReturnsConfiguredLogger) {
     minta::Log::init(std::move(logger));
 
     EXPECT_NO_THROW({
-        auto& inst = minta::Log::instance();
-        EXPECT_EQ(inst.getMinLevel(), minta::LogLevel::WARN);
+        auto inst = minta::Log::instance();
+        EXPECT_EQ(inst->getMinLevel(), minta::LogLevel::WARN);
     });
+}
+
+// --- Log::configure().build() sets the global instance ---
+
+TEST_F(GlobalLoggerTest, ConfigureBuildSetsGlobalInstance) {
+    EXPECT_FALSE(minta::Log::isInitialized());
+
+    minta::Log::configure()
+        .minLevel(minta::LogLevel::DEBUG)
+        .writeTo<minta::ConsoleSink>()
+        .build();
+
+    EXPECT_TRUE(minta::Log::isInitialized());
+    EXPECT_NO_THROW(minta::Log::info("configured via build"));
+    minta::Log::flush();
+}
+
+TEST_F(GlobalLoggerTest, ConfigureBuildWithCallbackSink) {
+    std::vector<GCaptured> captured;
+    std::mutex mtx;
+
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
+            std::lock_guard<std::mutex> lock(mtx);
+            captured.push_back({entry.level, entry.message});
+        }));
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+    logger.addCustomSink(std::move(sink));
+    minta::Log::init(std::move(logger));
+
+    minta::Log::info("Via configure build {v}", 42);
+    minta::Log::flush();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    std::lock_guard<std::mutex> lock(mtx);
+    ASSERT_GE(captured.size(), 1u);
+    EXPECT_EQ(captured[0].level, minta::LogLevel::INFO);
+    EXPECT_TRUE(captured[0].message.find("Via configure build 42") != std::string::npos);
+}
+
+TEST_F(GlobalLoggerTest, ConfigureBuildWithMinLevel) {
+    minta::Log::configure()
+        .minLevel(minta::LogLevel::WARN)
+        .writeTo<minta::ConsoleSink>()
+        .build();
+
+    auto inst = minta::Log::instance();
+    EXPECT_EQ(inst->getMinLevel(), minta::LogLevel::WARN);
+}
+
+// --- Log::flush() convenience ---
+
+TEST_F(GlobalLoggerTest, FlushThrowsBeforeInit) {
+    EXPECT_THROW(minta::Log::flush(), std::logic_error);
+}
+
+TEST_F(GlobalLoggerTest, FlushWorksAfterInit) {
+    minta::Log::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .writeTo<minta::ConsoleSink>()
+        .build();
+
+    EXPECT_NO_THROW({
+        minta::Log::info("flush test");
+        minta::Log::flush();
+    });
+}
+
+// --- Instance returns shared_ptr ---
+
+TEST_F(GlobalLoggerTest, InstanceReturnsSharedPtr) {
+    minta::Log::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .writeTo<minta::ConsoleSink>()
+        .build();
+
+    auto inst = minta::Log::instance();
+    EXPECT_NE(inst, nullptr);
+    EXPECT_NO_THROW(inst->info("via shared_ptr"));
+    inst->flush();
 }

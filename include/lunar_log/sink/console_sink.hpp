@@ -12,7 +12,7 @@ namespace minta {
 
     class ConsoleSink : public BaseSink {
     public:
-        explicit ConsoleSink(ConsoleStream stream = ConsoleStream::StdErr) {
+        explicit ConsoleSink(ConsoleStream stream = ConsoleStream::StdOut) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             if (stream == ConsoleStream::StdOut) {
                 setTransport(detail::make_unique<StdoutTransport>());

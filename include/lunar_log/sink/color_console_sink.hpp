@@ -42,7 +42,7 @@ namespace minta {
     /// automatically so that ANSI escape codes render correctly.
     class ColorConsoleSink : public BaseSink {
     public:
-        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdErr)
+        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdOut)
             : m_stream(stream) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             if (stream == ConsoleStream::StdOut) {

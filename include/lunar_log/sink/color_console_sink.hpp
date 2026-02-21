@@ -77,8 +77,11 @@ namespace minta {
 
         /// Insert ANSI color codes around the [LEVEL] bracket in formatted text.
         /// Only the bracket (e.g. "[INFO]") is colorized; the message body is
-        /// left uncolored.  If a custom formatter omits the [LEVEL] bracket,
-        /// colorization silently passes through (returns text unchanged).
+        /// left uncolored.  Targets the **first** occurrence of "[LEVEL]" in
+        /// the string, which is correct for HumanReadableFormatter output.
+        /// Custom formatters that place the bracket later (or whose message
+        /// body reproduces it) may see unexpected colorization.
+        /// If no bracket is found, the text is returned unchanged.
         /// Public and static for testability.
         static std::string colorize(const std::string& text, LogLevel level) {
             const char* levelStr = getLevelString(level);

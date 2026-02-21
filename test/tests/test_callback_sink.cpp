@@ -276,3 +276,63 @@ TEST_F(CallbackSinkTest, EntryCallbackSeesArguments) {
     EXPECT_EQ(capturedArgs[1].first, "age");
     EXPECT_EQ(capturedArgs[1].second, "30");
 }
+
+TEST_F(CallbackSinkTest, ThrowingEntryCallbackDoesNotCrash) {
+    std::atomic<int> delivered(0);
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback([&](const minta::LogEntry&) {
+            int n = delivered.fetch_add(1, std::memory_order_relaxed);
+            if (n == 0) {
+                throw std::runtime_error("boom");
+            }
+        }));
+    logger.addCustomSink(std::move(sink));
+
+    logger.info("first - triggers throw");
+    logger.info("second - should still arrive");
+    logger.info("third - should still arrive");
+    logger.flush();
+
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return delivered.load(std::memory_order_relaxed) >= 3; });
+
+    EXPECT_GE(delivered.load(std::memory_order_relaxed), 2);
+}
+
+TEST_F(CallbackSinkTest, ThrowingStringCallbackDoesNotCrash) {
+    std::atomic<int> delivered(0);
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    auto logger = minta::LunarLog::configure()
+        .minLevel(minta::LogLevel::TRACE)
+        .build();
+
+    auto sink = minta::detail::make_unique<minta::CallbackSink>(
+        minta::CallbackSink::StringCallback([&](const std::string&) {
+            int n = delivered.fetch_add(1, std::memory_order_relaxed);
+            if (n == 0) {
+                throw std::runtime_error("boom");
+            }
+        }));
+    logger.addCustomSink(std::move(sink));
+
+    logger.info("first - triggers throw");
+    logger.info("second - should still arrive");
+    logger.info("third - should still arrive");
+    logger.flush();
+
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return delivered.load(std::memory_order_relaxed) >= 3; });
+
+    EXPECT_GE(delivered.load(std::memory_order_relaxed), 2);
+}

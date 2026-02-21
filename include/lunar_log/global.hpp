@@ -93,6 +93,8 @@ namespace minta {
 
         /// Flush all sinks on the global logger.
         /// Convenience method so callers do not need instance().
+        /// The shared_ptr copied by requireInit() keeps the logger alive
+        /// through the entire flush, even if shutdown() races concurrently.
         /// @throws std::logic_error if not initialized.
         static void flush() {
             requireInit()->flush();
@@ -295,6 +297,9 @@ namespace minta {
         }
 
         /// Build the LunarLog instance and set it as the global logger.
+        /// @note Should be called exactly once.  Calling build() again
+        ///       replaces the global logger (previous instance is destroyed
+        ///       when all in-flight references are released).
         void build() {
             Log::init(m_config.build());
         }

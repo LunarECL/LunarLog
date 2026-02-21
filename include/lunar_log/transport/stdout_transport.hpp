@@ -10,6 +10,7 @@ namespace minta {
     public:
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(sharedMutex());
+            // Flush each line for immediate console visibility.
             std::cout << formattedEntry << '\n' << std::flush;
         }
 
@@ -24,6 +25,7 @@ namespace minta {
     public:
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(sharedMutex());
+            // Flush each line for immediate console visibility.
             std::cerr << formattedEntry << '\n' << std::flush;
         }
 

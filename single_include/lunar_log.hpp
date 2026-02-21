@@ -2601,6 +2601,7 @@ namespace minta {
     public:
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(sharedMutex());
+            // Flush each line for immediate console visibility.
             std::cout << formattedEntry << '\n' << std::flush;
         }
 
@@ -2615,6 +2616,7 @@ namespace minta {
     public:
         void write(const std::string &formattedEntry) override {
             std::lock_guard<std::mutex> lock(sharedMutex());
+            // Flush each line for immediate console visibility.
             std::cerr << formattedEntry << '\n' << std::flush;
         }
 
@@ -2979,8 +2981,11 @@ namespace minta {
 
         /// Insert ANSI color codes around the [LEVEL] bracket in formatted text.
         /// Only the bracket (e.g. "[INFO]") is colorized; the message body is
-        /// left uncolored.  If a custom formatter omits the [LEVEL] bracket,
-        /// colorization silently passes through (returns text unchanged).
+        /// left uncolored.  Targets the **first** occurrence of "[LEVEL]" in
+        /// the string, which is correct for HumanReadableFormatter output.
+        /// Custom formatters that place the bracket later (or whose message
+        /// body reproduces it) may see unexpected colorization.
+        /// If no bracket is found, the text is returned unchanged.
         /// Public and static for testability.
         static std::string colorize(const std::string& text, LogLevel level) {
             const char* levelStr = getLevelString(level);
@@ -5366,6 +5371,11 @@ namespace minta {
     /// @note The callback is called **without** a lock. If the callback accesses
     ///       shared state, the user is responsible for thread safety inside
     ///       the callback.
+    /// @note If the callback throws an exception, the exception is silently
+    ///       caught by the logger's internal processing thread.  The log
+    ///       entry that triggered the throw is lost, but subsequent entries
+    ///       are unaffected.  Callbacks should be noexcept or handle their
+    ///       own errors internally.
     class CallbackSink : public ISink {
     public:
         using EntryCallback  = std::function<void(const LogEntry&)>;
@@ -5373,12 +5383,22 @@ namespace minta {
 
         /// Variant 1: raw LogEntry callback.
         /// The entry is passed directly; no formatting is performed.
+        ///
+        /// In C++11, wrap lambdas in the typedef to avoid overload ambiguity:
+        /// @code
+        ///   CallbackSink(EntryCallback([](const LogEntry& e) { ... }))
+        /// @endcode
         explicit CallbackSink(EntryCallback cb)
             : m_entryCallback(std::move(cb))
             , m_mode(Mode::Entry) {}
 
         /// Variant 2: formatted string callback with optional formatter.
         /// If formatter is nullptr, CompactJsonFormatter is used as default.
+        ///
+        /// In C++11, wrap lambdas in the typedef to avoid overload ambiguity:
+        /// @code
+        ///   CallbackSink(StringCallback([](const std::string& s) { ... }))
+        /// @endcode
         CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
             : m_stringCallback(std::move(cb))
             , m_mode(Mode::String) {
@@ -6996,6 +7016,8 @@ namespace minta {
 
         /// Flush all sinks on the global logger.
         /// Convenience method so callers do not need instance().
+        /// The shared_ptr copied by requireInit() keeps the logger alive
+        /// through the entire flush, even if shutdown() races concurrently.
         /// @throws std::logic_error if not initialized.
         static void flush() {
             requireInit()->flush();
@@ -7198,6 +7220,9 @@ namespace minta {
         }
 
         /// Build the LunarLog instance and set it as the global logger.
+        /// @note Should be called exactly once.  Calling build() again
+        ///       replaces the global logger (previous instance is destroyed
+        ///       when all in-flight references are released).
         void build() {
             Log::init(m_config.build());
         }

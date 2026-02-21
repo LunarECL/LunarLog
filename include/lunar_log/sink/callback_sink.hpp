@@ -19,6 +19,11 @@ namespace minta {
     /// @note The callback is called **without** a lock. If the callback accesses
     ///       shared state, the user is responsible for thread safety inside
     ///       the callback.
+    /// @note If the callback throws an exception, the exception is silently
+    ///       caught by the logger's internal processing thread.  The log
+    ///       entry that triggered the throw is lost, but subsequent entries
+    ///       are unaffected.  Callbacks should be noexcept or handle their
+    ///       own errors internally.
     class CallbackSink : public ISink {
     public:
         using EntryCallback  = std::function<void(const LogEntry&)>;
@@ -26,12 +31,22 @@ namespace minta {
 
         /// Variant 1: raw LogEntry callback.
         /// The entry is passed directly; no formatting is performed.
+        ///
+        /// In C++11, wrap lambdas in the typedef to avoid overload ambiguity:
+        /// @code
+        ///   CallbackSink(EntryCallback([](const LogEntry& e) { ... }))
+        /// @endcode
         explicit CallbackSink(EntryCallback cb)
             : m_entryCallback(std::move(cb))
             , m_mode(Mode::Entry) {}
 
         /// Variant 2: formatted string callback with optional formatter.
         /// If formatter is nullptr, CompactJsonFormatter is used as default.
+        ///
+        /// In C++11, wrap lambdas in the typedef to avoid overload ambiguity:
+        /// @code
+        ///   CallbackSink(StringCallback([](const std::string& s) { ... }))
+        /// @endcode
         CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
             : m_stringCallback(std::move(cb))
             , m_mode(Mode::String) {

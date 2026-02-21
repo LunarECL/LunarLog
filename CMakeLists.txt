@@ -152,6 +152,9 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_batched_sink.cpp
             test/tests/test_syslog_sink.cpp
             test/tests/test_http_sink.cpp
+            test/tests/test_callback_sink.cpp
+            test/tests/test_console_stream.cpp
+            test/tests/test_global_logger.cpp
             test/tests/utils/test_utils.cpp
     )
 

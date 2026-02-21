@@ -215,7 +215,9 @@ void TestUtils::cleanupLogFiles() {
         "async_test_async.txt", "async_test_order.txt",
         "async_test_fluent.txt",
         // Syslog sink tests
-        "syslog_integration_test.txt"
+        "syslog_integration_test.txt",
+        // Console stream tests
+        "_cs_stdout_cap.txt", "_cs_stderr_cap.txt"
     };
 
     for (const auto &filename : filesToRemove) {

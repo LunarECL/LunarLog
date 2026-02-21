@@ -2,6 +2,7 @@
 #define LUNAR_LOG_COLOR_CONSOLE_SINK_HPP
 
 #include "sink_interface.hpp"
+#include "console_sink.hpp"
 #include "../formatter/human_readable_formatter.hpp"
 #include "../transport/stdout_transport.hpp"
 #include <atomic>
@@ -41,9 +42,14 @@ namespace minta {
     /// automatically so that ANSI escape codes render correctly.
     class ColorConsoleSink : public BaseSink {
     public:
-        ColorConsoleSink() {
+        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdErr)
+            : m_stream(stream) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
             m_colorEnabled.store(detectColorSupport(), std::memory_order_relaxed);
         }
 
@@ -110,8 +116,9 @@ namespace minta {
 
     private:
         std::atomic<bool> m_colorEnabled;
+        ConsoleStream m_stream;
 
-        static bool detectColorSupport() {
+        bool detectColorSupport() const {
             // NO_COLOR standard (https://no-color.org/): mere presence disables color.
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
@@ -120,7 +127,9 @@ namespace minta {
             if (noColor && noColor[0] != '\0') return false;
 
 #ifdef _WIN32
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            DWORD handleType = (m_stream == ConsoleStream::StdOut)
+                ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
+            HANDLE hOut = GetStdHandle(handleType);
             if (hOut == INVALID_HANDLE_VALUE) return false;
             DWORD mode = 0;
             if (!GetConsoleMode(hOut, &mode)) return false;
@@ -131,7 +140,8 @@ namespace minta {
             }
             return true;
 #else
-            return isatty(fileno(stdout)) != 0;
+            FILE* stream = (m_stream == ConsoleStream::StdOut) ? stdout : stderr;
+            return isatty(fileno(stream)) != 0;
 #endif
         }
     };

@@ -16,6 +16,17 @@ namespace minta {
     private:
         std::mutex m_mutex;
     };
+
+    class StderrTransport : public ITransport {
+    public:
+        void write(const std::string &formattedEntry) override {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            std::cerr << formattedEntry << '\n' << std::flush;
+        }
+
+    private:
+        std::mutex m_mutex;
+    };
 } // namespace minta
 
 #endif // LUNAR_LOG_STDOUT_TRANSPORT_HPP

@@ -2607,6 +2607,17 @@ namespace minta {
     private:
         std::mutex m_mutex;
     };
+
+    class StderrTransport : public ITransport {
+    public:
+        void write(const std::string &formattedEntry) override {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            std::cerr << formattedEntry << '\n' << std::flush;
+        }
+
+    private:
+        std::mutex m_mutex;
+    };
 } // namespace minta
 
 
@@ -2870,11 +2881,19 @@ namespace minta {
 
 
 namespace minta {
+
+    /// Selects which standard stream a console sink writes to.
+    enum class ConsoleStream { StdOut, StdErr };
+
     class ConsoleSink : public BaseSink {
     public:
-        ConsoleSink() {
+        explicit ConsoleSink(ConsoleStream stream = ConsoleStream::StdErr) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
         }
     };
 } // namespace minta
@@ -2919,9 +2938,14 @@ namespace minta {
     /// automatically so that ANSI escape codes render correctly.
     class ColorConsoleSink : public BaseSink {
     public:
-        ColorConsoleSink() {
+        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdErr)
+            : m_stream(stream) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
             m_colorEnabled.store(detectColorSupport(), std::memory_order_relaxed);
         }
 
@@ -2988,8 +3012,9 @@ namespace minta {
 
     private:
         std::atomic<bool> m_colorEnabled;
+        ConsoleStream m_stream;
 
-        static bool detectColorSupport() {
+        bool detectColorSupport() const {
             // NO_COLOR standard (https://no-color.org/): mere presence disables color.
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
@@ -2998,7 +3023,9 @@ namespace minta {
             if (noColor && noColor[0] != '\0') return false;
 
 #ifdef _WIN32
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            DWORD handleType = (m_stream == ConsoleStream::StdOut)
+                ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
+            HANDLE hOut = GetStdHandle(handleType);
             if (hOut == INVALID_HANDLE_VALUE) return false;
             DWORD mode = 0;
             if (!GetConsoleMode(hOut, &mode)) return false;
@@ -3009,7 +3036,8 @@ namespace minta {
             }
             return true;
 #else
-            return isatty(fileno(stdout)) != 0;
+            FILE* stream = (m_stream == ConsoleStream::StdOut) ? stdout : stderr;
+            return isatty(fileno(stream)) != 0;
 #endif
         }
     };
@@ -5301,6 +5329,75 @@ namespace detail {
 } // namespace minta
 
 
+// --- lunar_log/sink/callback_sink.hpp ---
+
+#include <functional>
+#include <string>
+#include <memory>
+
+namespace minta {
+
+    /// Sink that invokes a user-provided callback for each log entry.
+    ///
+    /// Two variants:
+    ///   1. EntryCallback — receives the raw LogEntry for custom processing.
+    ///   2. StringCallback — receives the formatted string (CompactJsonFormatter
+    ///      by default, or a user-supplied formatter).
+    ///
+    /// @note The callback is called **without** a lock. If the callback accesses
+    ///       shared state, the user is responsible for thread safety inside
+    ///       the callback.
+    class CallbackSink : public ISink {
+    public:
+        using EntryCallback  = std::function<void(const LogEntry&)>;
+        using StringCallback = std::function<void(const std::string&)>;
+
+        /// Variant 1: raw LogEntry callback.
+        /// The entry is passed directly; no formatting is performed.
+        explicit CallbackSink(EntryCallback cb)
+            : m_entryCallback(std::move(cb))
+            , m_mode(Mode::Entry) {}
+
+        /// Variant 2: formatted string callback with optional formatter.
+        /// If formatter is nullptr, CompactJsonFormatter is used as default.
+        CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
+            : m_stringCallback(std::move(cb))
+            , m_mode(Mode::String) {
+            if (fmt) {
+                setFormatter(std::move(fmt));
+            } else {
+                setFormatter(detail::make_unique<CompactJsonFormatter>());
+            }
+        }
+
+        void write(const LogEntry& entry) override {
+            if (m_mode == Mode::Entry) {
+                if (m_entryCallback) {
+                    m_entryCallback(entry);
+                }
+            } else {
+                if (m_stringCallback) {
+                    IFormatter* fmt = formatter();
+                    if (fmt) {
+                        m_stringCallback(fmt->format(entry));
+                    }
+                }
+            }
+        }
+
+        void flush() override {} // no-op, callbacks are synchronous
+
+    private:
+        enum class Mode { Entry, String };
+
+        EntryCallback  m_entryCallback;
+        StringCallback m_stringCallback;
+        Mode           m_mode;
+    };
+
+} // namespace minta
+
+
 // --- lunar_log/log_manager.hpp ---
 
 #include <vector>
@@ -6786,6 +6883,152 @@ namespace detail {
 #define LUNAR_FATAL_EX(logger, ex, ...) LUNAR_LOG_EX((logger), ::minta::LogLevel::FATAL, (ex), __VA_ARGS__)
 
 #endif // LUNAR_LOG_NO_MACROS
+
+
+// --- lunar_log/global.hpp ---
+
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+
+namespace minta {
+
+    /// Static global logger facade.
+    ///
+    /// Provides a process-wide singleton LunarLog instance accessible from
+    /// anywhere without passing logger references.
+    ///
+    /// Usage:
+    /// @code
+    ///   minta::Log::configure()
+    ///       .minLevel(minta::LogLevel::DEBUG)
+    ///       .writeTo<minta::ConsoleSink>()
+    ///       .build();   // sets the global instance
+    ///
+    ///   minta::Log::info("Hello {name}", "name", "world");
+    ///   minta::Log::shutdown();
+    /// @endcode
+    ///
+    /// Thread safety: init/shutdown acquire a mutex. Logging methods acquire
+    /// the mutex to read the pointer (shared_ptr-style fast path via atomic
+    /// load would be possible but C++11 constrains us to mutex).
+    class Log {
+    public:
+        Log() = delete;
+
+        /// Create a LoggerConfiguration builder.  When build() is called on
+        /// the returned builder, the global instance is set automatically.
+        static LoggerConfiguration configure() {
+            return LoggerConfiguration();
+        }
+
+        /// Set the global logger from a pre-built LunarLog instance.
+        /// Replaces any existing global logger (previous instance is destroyed).
+        static void init(LunarLog logger) {
+            std::lock_guard<std::mutex> lock(mutex());
+            storage() = detail::make_unique<LunarLog>(std::move(logger));
+        }
+
+        /// Destroy the global logger instance.
+        /// After shutdown, all logging methods throw std::logic_error.
+        static void shutdown() {
+            std::lock_guard<std::mutex> lock(mutex());
+            storage().reset();
+        }
+
+        /// Returns true if a global logger has been configured and not shut down.
+        static bool isInitialized() {
+            std::lock_guard<std::mutex> lock(mutex());
+            return storage() != nullptr;
+        }
+
+        /// Access the global LunarLog instance.
+        /// @throws std::logic_error if not initialized.
+        static LunarLog& instance() {
+            std::lock_guard<std::mutex> lock(mutex());
+            auto& ptr = storage();
+            if (!ptr) {
+                throw std::logic_error(
+                    "minta::Log not initialized. Call Log::init() or "
+                    "Log::configure().build() first.");
+            }
+            return *ptr;
+        }
+
+        // --- Logging methods ---
+        // Each acquires the mutex, checks initialization, and delegates.
+
+        template<typename... Args>
+        static void trace(const std::string& msg, Args&&... args) {
+            std::lock_guard<std::mutex> lock(mutex());
+            requireInit().log(LogLevel::TRACE, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void debug(const std::string& msg, Args&&... args) {
+            std::lock_guard<std::mutex> lock(mutex());
+            requireInit().log(LogLevel::DEBUG, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void info(const std::string& msg, Args&&... args) {
+            std::lock_guard<std::mutex> lock(mutex());
+            requireInit().log(LogLevel::INFO, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void warn(const std::string& msg, Args&&... args) {
+            std::lock_guard<std::mutex> lock(mutex());
+            requireInit().log(LogLevel::WARN, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void error(const std::string& msg, Args&&... args) {
+            std::lock_guard<std::mutex> lock(mutex());
+            requireInit().log(LogLevel::ERROR, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void fatal(const std::string& msg, Args&&... args) {
+            std::lock_guard<std::mutex> lock(mutex());
+            requireInit().log(LogLevel::FATAL, msg, std::forward<Args>(args)...);
+        }
+
+    private:
+        static std::unique_ptr<LunarLog>& storage() {
+            static std::unique_ptr<LunarLog> s_logger;
+            return s_logger;
+        }
+
+        static std::mutex& mutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
+
+        static LunarLog& requireInit() {
+            auto& ptr = storage();
+            if (!ptr) {
+                throw std::logic_error(
+                    "minta::Log not initialized. Call Log::init() or "
+                    "Log::configure().build() first.");
+            }
+            return *ptr;
+        }
+    };
+
+} // namespace minta
+
+// --- Convenience macros ---
+#ifndef LUNAR_LOG_NO_GLOBAL_MACROS
+
+#define LUNAR_GTRACE(msg, ...) ::minta::Log::trace(msg, ##__VA_ARGS__)
+#define LUNAR_GDEBUG(msg, ...) ::minta::Log::debug(msg, ##__VA_ARGS__)
+#define LUNAR_GINFO(msg, ...)  ::minta::Log::info(msg, ##__VA_ARGS__)
+#define LUNAR_GWARN(msg, ...)  ::minta::Log::warn(msg, ##__VA_ARGS__)
+#define LUNAR_GERROR(msg, ...) ::minta::Log::error(msg, ##__VA_ARGS__)
+#define LUNAR_GFATAL(msg, ...) ::minta::Log::fatal(msg, ##__VA_ARGS__)
+
+#endif // LUNAR_LOG_NO_GLOBAL_MACROS
 
 
 #define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __func__

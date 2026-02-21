@@ -51,6 +51,13 @@ namespace minta {
         /// Set the global logger from a pre-built LunarLog instance.
         /// Replaces any existing global logger (previous instance is
         /// destroyed when all in-flight references are released).
+        ///
+        /// @note The logger is move-constructed into a shared_ptr.  If the
+        ///       source LunarLog already has a running processing thread
+        ///       (e.g. from LoggerConfiguration::build()), that thread is
+        ///       joined during the move-from object's destruction inside
+        ///       this call.  A new processing thread is lazily started on
+        ///       the first log call after init.
         static void init(LunarLog&& logger) {
             auto ptr = std::make_shared<LunarLog>(std::move(logger));
             {
@@ -184,6 +191,11 @@ namespace minta {
         GlobalLoggerConfiguration& operator=(GlobalLoggerConfiguration&&) = default;
 
         // --- Forwarded builder methods ---
+
+        // NOTE: The writeTo overloads below manually forward every
+        // LoggerConfiguration::writeTo variant.  When a new writeTo
+        // overload is added to LoggerConfiguration, a matching
+        // forwarding overload must be added here as well.
 
         GlobalLoggerConfiguration& minLevel(LogLevel level) {
             m_config.minLevel(level); return *this;

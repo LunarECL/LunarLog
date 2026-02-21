@@ -2955,15 +2955,14 @@ namespace minta {
     /// automatically so that ANSI escape codes render correctly.
     class ColorConsoleSink : public BaseSink {
     public:
-        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdOut)
-            : m_stream(stream) {
+        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdOut) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
             if (stream == ConsoleStream::StdOut) {
                 setTransport(detail::make_unique<StdoutTransport>());
             } else {
                 setTransport(detail::make_unique<StderrTransport>());
             }
-            m_colorEnabled.store(detectAndEnableColorSupport(), std::memory_order_relaxed);
+            m_colorEnabled.store(detectAndEnableColorSupport(stream), std::memory_order_relaxed);
         }
 
         /// Override color auto-detection.
@@ -3031,10 +3030,9 @@ namespace minta {
         }
 
     private:
-        ConsoleStream m_stream;
         std::atomic<bool> m_colorEnabled;
 
-        bool detectAndEnableColorSupport() const {
+        static bool detectAndEnableColorSupport(ConsoleStream stream) {
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
             const char* noColor = std::getenv("LUNAR_LOG_NO_COLOR");
@@ -3046,13 +3044,13 @@ namespace minta {
             static std::atomic<bool> s_stdoutVt(false);
             static std::atomic<bool> s_stderrVt(false);
 
-            std::once_flag& flag = (m_stream == ConsoleStream::StdOut)
+            std::once_flag& flag = (stream == ConsoleStream::StdOut)
                 ? s_stdoutOnce : s_stderrOnce;
-            std::atomic<bool>& result = (m_stream == ConsoleStream::StdOut)
+            std::atomic<bool>& result = (stream == ConsoleStream::StdOut)
                 ? s_stdoutVt : s_stderrVt;
 
             std::call_once(flag, [&]() {
-                DWORD handleType = (m_stream == ConsoleStream::StdOut)
+                DWORD handleType = (stream == ConsoleStream::StdOut)
                     ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
                 HANDLE hOut = GetStdHandle(handleType);
                 if (hOut == INVALID_HANDLE_VALUE) return;
@@ -3068,8 +3066,8 @@ namespace minta {
 
             return result.load(std::memory_order_relaxed);
 #else
-            FILE* stream = (m_stream == ConsoleStream::StdOut) ? stdout : stderr;
-            return isatty(fileno(stream)) != 0;
+            FILE* fp = (stream == ConsoleStream::StdOut) ? stdout : stderr;
+            return isatty(fileno(fp)) != 0;
 #endif
         }
     };
@@ -6982,6 +6980,13 @@ namespace minta {
         /// Set the global logger from a pre-built LunarLog instance.
         /// Replaces any existing global logger (previous instance is
         /// destroyed when all in-flight references are released).
+        ///
+        /// @note The logger is move-constructed into a shared_ptr.  If the
+        ///       source LunarLog already has a running processing thread
+        ///       (e.g. from LoggerConfiguration::build()), that thread is
+        ///       joined during the move-from object's destruction inside
+        ///       this call.  A new processing thread is lazily started on
+        ///       the first log call after init.
         static void init(LunarLog&& logger) {
             auto ptr = std::make_shared<LunarLog>(std::move(logger));
             {
@@ -7115,6 +7120,11 @@ namespace minta {
         GlobalLoggerConfiguration& operator=(GlobalLoggerConfiguration&&) = default;
 
         // --- Forwarded builder methods ---
+
+        // NOTE: The writeTo overloads below manually forward every
+        // LoggerConfiguration::writeTo variant.  When a new writeTo
+        // overload is added to LoggerConfiguration, a matching
+        // forwarding overload must be added here as well.
 
         GlobalLoggerConfiguration& minLevel(LogLevel level) {
             m_config.minLevel(level); return *this;

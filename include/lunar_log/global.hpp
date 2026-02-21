@@ -48,8 +48,12 @@ namespace minta {
         /// destroyed when all in-flight references are released).
         static void init(LunarLog logger) {
             auto ptr = std::make_shared<LunarLog>(std::move(logger));
-            std::lock_guard<std::mutex> lock(mutex());
-            storage() = std::move(ptr);
+            {
+                std::lock_guard<std::mutex> lock(mutex());
+                storage().swap(ptr); // ptr now holds the old logger (if any)
+            }
+            // ptr (old logger) destructs here, outside the lock, to
+            // prevent deadlocks if its destructor drains queued entries.
         }
 
         /// Clear the global logger instance.

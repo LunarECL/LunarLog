@@ -9,23 +9,29 @@ namespace minta {
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
-            std::lock_guard<std::mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(sharedMutex());
             std::cout << formattedEntry << '\n' << std::flush;
         }
 
     private:
-        std::mutex m_mutex;
+        static std::mutex& sharedMutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
     };
 
     class StderrTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
-            std::lock_guard<std::mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(sharedMutex());
             std::cerr << formattedEntry << '\n' << std::flush;
         }
 
     private:
-        std::mutex m_mutex;
+        static std::mutex& sharedMutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
     };
 } // namespace minta
 

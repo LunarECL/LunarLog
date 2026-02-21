@@ -6,6 +6,7 @@
 #include <string>
 #include <mutex>
 #include <thread>
+#include <condition_variable>
 
 class CallbackSinkTest : public ::testing::Test {
 protected:
@@ -29,6 +30,7 @@ static CapturedEntry capture(const minta::LogEntry& entry) {
 TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectFields) {
     std::vector<CapturedEntry> captured;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -36,18 +38,20 @@ TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectFields) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            captured.push_back(capture(entry));
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                captured.push_back(capture(entry));
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
     logger.info("Hello {name}", "world");
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(captured.size(), 1u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return captured.size() >= 1u; }));
 
     const auto& e = captured[0];
     EXPECT_EQ(e.level, minta::LogLevel::INFO);
@@ -58,6 +62,7 @@ TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectFields) {
 TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectLevel) {
     std::vector<minta::LogLevel> levels;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -65,8 +70,11 @@ TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectLevel) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            levels.push_back(entry.level);
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                levels.push_back(entry.level);
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
@@ -76,10 +84,9 @@ TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectLevel) {
     logger.error("error msg");
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(levels.size(), 4u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return levels.size() >= 4u; }));
     EXPECT_EQ(levels[0], minta::LogLevel::TRACE);
     EXPECT_EQ(levels[1], minta::LogLevel::DEBUG);
     EXPECT_EQ(levels[2], minta::LogLevel::WARN);
@@ -89,6 +96,7 @@ TEST_F(CallbackSinkTest, EntryCallbackReceivesCorrectLevel) {
 TEST_F(CallbackSinkTest, StringCallbackReceivesFormattedString) {
     std::vector<std::string> captured;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -96,18 +104,20 @@ TEST_F(CallbackSinkTest, StringCallbackReceivesFormattedString) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::StringCallback([&](const std::string& msg) {
-            std::lock_guard<std::mutex> lock(mtx);
-            captured.push_back(msg);
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                captured.push_back(msg);
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
     logger.info("Formatted {val}", "test");
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(captured.size(), 1u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return captured.size() >= 1u; }));
     EXPECT_TRUE(captured[0].find("@t") != std::string::npos);
     EXPECT_TRUE(captured[0].find("Formatted {val}") != std::string::npos);
 }
@@ -115,6 +125,7 @@ TEST_F(CallbackSinkTest, StringCallbackReceivesFormattedString) {
 TEST_F(CallbackSinkTest, StringCallbackWithCustomFormatter) {
     std::vector<std::string> captured;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -122,8 +133,11 @@ TEST_F(CallbackSinkTest, StringCallbackWithCustomFormatter) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::StringCallback([&](const std::string& msg) {
-            std::lock_guard<std::mutex> lock(mtx);
-            captured.push_back(msg);
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                captured.push_back(msg);
+            }
+            cv.notify_all();
         }),
         minta::detail::make_unique<minta::HumanReadableFormatter>());
     logger.addCustomSink(std::move(sink));
@@ -131,10 +145,9 @@ TEST_F(CallbackSinkTest, StringCallbackWithCustomFormatter) {
     logger.info("Human readable {val}", "test");
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(captured.size(), 1u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return captured.size() >= 1u; }));
     EXPECT_TRUE(captured[0].find("[INFO]") != std::string::npos);
     EXPECT_TRUE(captured[0].find("Human readable test") != std::string::npos);
 }
@@ -142,6 +155,7 @@ TEST_F(CallbackSinkTest, StringCallbackWithCustomFormatter) {
 TEST_F(CallbackSinkTest, MultipleWritesInvokeCallbackEachTime) {
     int callCount = 0;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -149,8 +163,11 @@ TEST_F(CallbackSinkTest, MultipleWritesInvokeCallbackEachTime) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry&) {
-            std::lock_guard<std::mutex> lock(mtx);
-            ++callCount;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                ++callCount;
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
@@ -161,9 +178,9 @@ TEST_F(CallbackSinkTest, MultipleWritesInvokeCallbackEachTime) {
     logger.error("msg 5");
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return callCount >= 5; }));
     EXPECT_EQ(callCount, 5);
 }
 
@@ -180,8 +197,6 @@ TEST_F(CallbackSinkTest, NullEntryCallbackDoesNotCrash) {
     logger.warn("Should not crash 2");
     logger.error("Should not crash 3");
     logger.flush();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 TEST_F(CallbackSinkTest, NullStringCallbackDoesNotCrash) {
@@ -197,18 +212,20 @@ TEST_F(CallbackSinkTest, NullStringCallbackDoesNotCrash) {
     logger.warn("Should not crash 2");
     logger.error("Should not crash 3");
     logger.flush();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 TEST_F(CallbackSinkTest, FluentBuilderEntryCallback) {
     std::vector<CapturedEntry> captured;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto entryCb = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            captured.push_back(capture(entry));
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                captured.push_back(capture(entry));
+            }
+            cv.notify_all();
         }));
 
     auto logger = minta::LunarLog::configure()
@@ -219,10 +236,9 @@ TEST_F(CallbackSinkTest, FluentBuilderEntryCallback) {
     logger.debug("Builder callback {x}", 42);
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(captured.size(), 1u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return captured.size() >= 1u; }));
     EXPECT_EQ(captured[0].level, minta::LogLevel::DEBUG);
     EXPECT_TRUE(captured[0].message.find("Builder callback 42") != std::string::npos);
 }
@@ -230,6 +246,8 @@ TEST_F(CallbackSinkTest, FluentBuilderEntryCallback) {
 TEST_F(CallbackSinkTest, EntryCallbackSeesArguments) {
     std::vector<std::pair<std::string, std::string>> capturedArgs;
     std::mutex mtx;
+    std::condition_variable cv;
+    int callCount = 0;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -237,17 +255,21 @@ TEST_F(CallbackSinkTest, EntryCallbackSeesArguments) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            capturedArgs = entry.arguments;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                capturedArgs = entry.arguments;
+                ++callCount;
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
     logger.info("User {name} age {age}", "alice", 30);
     logger.flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return callCount >= 1; }));
     ASSERT_EQ(capturedArgs.size(), 2u);
     EXPECT_EQ(capturedArgs[0].first, "name");
     EXPECT_EQ(capturedArgs[0].second, "alice");

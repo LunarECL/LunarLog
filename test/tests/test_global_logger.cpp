@@ -8,6 +8,8 @@
 #include <string>
 #include <mutex>
 #include <thread>
+#include <condition_variable>
+#include <atomic>
 
 class GlobalLoggerTest : public ::testing::Test {
 protected:
@@ -46,6 +48,7 @@ struct GCaptured {
 TEST_F(GlobalLoggerTest, BasicInfoWarnErrorAfterInit) {
     std::vector<GCaptured> captured;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -53,8 +56,11 @@ TEST_F(GlobalLoggerTest, BasicInfoWarnErrorAfterInit) {
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            captured.push_back({entry.level, entry.message});
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                captured.push_back({entry.level, entry.message});
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
@@ -66,10 +72,9 @@ TEST_F(GlobalLoggerTest, BasicInfoWarnErrorAfterInit) {
     minta::Log::error("Error message {v}", 3);
     minta::Log::flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(captured.size(), 3u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return captured.size() >= 3u; }));
     EXPECT_EQ(captured[0].level, minta::LogLevel::INFO);
     EXPECT_EQ(captured[1].level, minta::LogLevel::WARN);
     EXPECT_EQ(captured[2].level, minta::LogLevel::ERROR);
@@ -112,50 +117,58 @@ TEST_F(GlobalLoggerTest, DoubleInitReplacesInstance) {
     std::vector<std::string> captured1;
     std::vector<std::string> captured2;
     std::mutex mtx1, mtx2;
+    std::condition_variable cv1, cv2;
 
     auto logger1 = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
         .build();
     auto sink1 = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx1);
-            captured1.push_back(entry.message);
+            {
+                std::lock_guard<std::mutex> lock(mtx1);
+                captured1.push_back(entry.message);
+            }
+            cv1.notify_all();
         }));
     logger1.addCustomSink(std::move(sink1));
     minta::Log::init(std::move(logger1));
 
     minta::Log::info("To first logger");
     minta::Log::flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    {
+        std::unique_lock<std::mutex> lock(mtx1);
+        ASSERT_TRUE(cv1.wait_for(lock, std::chrono::seconds(5),
+            [&]() { return captured1.size() >= 1u; }));
+    }
 
     auto logger2 = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
         .build();
     auto sink2 = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx2);
-            captured2.push_back(entry.message);
+            {
+                std::lock_guard<std::mutex> lock(mtx2);
+                captured2.push_back(entry.message);
+            }
+            cv2.notify_all();
         }));
     logger2.addCustomSink(std::move(sink2));
     minta::Log::init(std::move(logger2));
 
     minta::Log::info("To second logger");
     minta::Log::flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     {
-        std::lock_guard<std::mutex> lock(mtx1);
-        EXPECT_GE(captured1.size(), 1u);
-        EXPECT_TRUE(captured1[0].find("To first logger") != std::string::npos);
-    }
-    {
-        std::lock_guard<std::mutex> lock(mtx2);
-        EXPECT_GE(captured2.size(), 1u);
+        std::unique_lock<std::mutex> lock(mtx2);
+        ASSERT_TRUE(cv2.wait_for(lock, std::chrono::seconds(5),
+            [&]() { return captured2.size() >= 1u; }));
         EXPECT_TRUE(captured2[0].find("To second logger") != std::string::npos);
     }
 
     {
         std::lock_guard<std::mutex> lock(mtx1);
+        EXPECT_TRUE(captured1[0].find("To first logger") != std::string::npos);
         for (const auto& msg : captured1) {
             EXPECT_TRUE(msg.find("To second logger") == std::string::npos);
         }
@@ -192,14 +205,18 @@ TEST_F(GlobalLoggerTest, IsInitializedLifecycle) {
 TEST_F(GlobalLoggerTest, AllLogLevelsWork) {
     std::vector<GCaptured> entries;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
         .build();
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            entries.push_back({entry.level, entry.message});
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                entries.push_back({entry.level, entry.message});
+            }
+            cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
     minta::Log::init(std::move(logger));
@@ -212,10 +229,9 @@ TEST_F(GlobalLoggerTest, AllLogLevelsWork) {
     minta::Log::fatal("f");
     minta::Log::flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(entries.size(), 6u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return entries.size() >= 6u; }));
     EXPECT_EQ(entries[0].level, minta::LogLevel::TRACE);
     EXPECT_EQ(entries[1].level, minta::LogLevel::DEBUG);
     EXPECT_EQ(entries[2].level, minta::LogLevel::INFO);
@@ -270,11 +286,15 @@ TEST_F(GlobalLoggerTest, ConfigureBuildSetsGlobalInstance) {
 TEST_F(GlobalLoggerTest, ConfigureBuildWithCallbackSink) {
     std::vector<GCaptured> captured;
     std::mutex mtx;
+    std::condition_variable cv;
 
     auto sink = minta::detail::make_unique<minta::CallbackSink>(
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry& entry) {
-            std::lock_guard<std::mutex> lock(mtx);
-            captured.push_back({entry.level, entry.message});
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                captured.push_back({entry.level, entry.message});
+            }
+            cv.notify_all();
         }));
 
     auto logger = minta::LunarLog::configure()
@@ -286,10 +306,9 @@ TEST_F(GlobalLoggerTest, ConfigureBuildWithCallbackSink) {
     minta::Log::info("Via configure build {v}", 42);
     minta::Log::flush();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    std::lock_guard<std::mutex> lock(mtx);
-    ASSERT_GE(captured.size(), 1u);
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+        [&]() { return captured.size() >= 1u; }));
     EXPECT_EQ(captured[0].level, minta::LogLevel::INFO);
     EXPECT_TRUE(captured[0].message.find("Via configure build 42") != std::string::npos);
 }
@@ -334,4 +353,59 @@ TEST_F(GlobalLoggerTest, InstanceReturnsSharedPtr) {
     EXPECT_NE(inst, nullptr);
     EXPECT_NO_THROW(inst->info("via shared_ptr"));
     inst->flush();
+}
+
+// --- Concurrent stress test ---
+
+TEST_F(GlobalLoggerTest, ConcurrentLoggingWithShutdownAndReinit) {
+    const int kNumLogThreads = 8;
+    const int kMessagesPerThread = 200;
+
+    std::atomic<int> delivered(0);
+    std::mutex mtx;
+
+    auto makeLogger = [&]() {
+        auto logger = minta::LunarLog::configure()
+            .minLevel(minta::LogLevel::TRACE)
+            .build();
+        auto sink = minta::detail::make_unique<minta::CallbackSink>(
+            minta::CallbackSink::EntryCallback([&](const minta::LogEntry&) {
+                delivered.fetch_add(1, std::memory_order_relaxed);
+            }));
+        logger.addCustomSink(std::move(sink));
+        return logger;
+    };
+
+    minta::Log::init(makeLogger());
+
+    std::atomic<bool> stop(false);
+    std::vector<std::thread> logThreads;
+
+    for (int i = 0; i < kNumLogThreads; ++i) {
+        logThreads.emplace_back([&, i]() {
+            for (int j = 0; j < kMessagesPerThread; ++j) {
+                try {
+                    minta::Log::info("thread {t} msg {m}", i, j);
+                } catch (const std::logic_error&) {
+                    // Expected during shutdown window
+                }
+            }
+        });
+    }
+
+    std::thread churnThread([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        minta::Log::shutdown();
+        minta::Log::init(makeLogger());
+    });
+
+    for (auto& t : logThreads) t.join();
+    churnThread.join();
+
+    if (minta::Log::isInitialized()) {
+        minta::Log::flush();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    EXPECT_GT(delivered.load(std::memory_order_relaxed), 0);
 }

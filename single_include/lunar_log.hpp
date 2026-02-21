@@ -2600,23 +2600,29 @@ namespace minta {
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
-            std::lock_guard<std::mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(sharedMutex());
             std::cout << formattedEntry << '\n' << std::flush;
         }
 
     private:
-        std::mutex m_mutex;
+        static std::mutex& sharedMutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
     };
 
     class StderrTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
-            std::lock_guard<std::mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(sharedMutex());
             std::cerr << formattedEntry << '\n' << std::flush;
         }
 
     private:
-        std::mutex m_mutex;
+        static std::mutex& sharedMutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
     };
 } // namespace minta
 
@@ -2904,6 +2910,7 @@ namespace minta {
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 #ifdef _WIN32
@@ -2946,7 +2953,7 @@ namespace minta {
             } else {
                 setTransport(detail::make_unique<StderrTransport>());
             }
-            m_colorEnabled.store(detectColorSupport(), std::memory_order_relaxed);
+            m_colorEnabled.store(detectAndEnableColorSupport(), std::memory_order_relaxed);
         }
 
         /// Override color auto-detection.
@@ -3011,30 +3018,42 @@ namespace minta {
         }
 
     private:
-        std::atomic<bool> m_colorEnabled;
         ConsoleStream m_stream;
+        std::atomic<bool> m_colorEnabled;
 
-        bool detectColorSupport() const {
-            // NO_COLOR standard (https://no-color.org/): mere presence disables color.
+        bool detectAndEnableColorSupport() const {
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
-            // Project-specific override: requires non-empty value.
             const char* noColor = std::getenv("LUNAR_LOG_NO_COLOR");
             if (noColor && noColor[0] != '\0') return false;
 
 #ifdef _WIN32
-            DWORD handleType = (m_stream == ConsoleStream::StdOut)
-                ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
-            HANDLE hOut = GetStdHandle(handleType);
-            if (hOut == INVALID_HANDLE_VALUE) return false;
-            DWORD mode = 0;
-            if (!GetConsoleMode(hOut, &mode)) return false;
-            if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-                if (!SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-                    return false;
+            static std::once_flag s_stdoutOnce;
+            static std::once_flag s_stderrOnce;
+            static std::atomic<bool> s_stdoutVt(false);
+            static std::atomic<bool> s_stderrVt(false);
+
+            std::once_flag& flag = (m_stream == ConsoleStream::StdOut)
+                ? s_stdoutOnce : s_stderrOnce;
+            std::atomic<bool>& result = (m_stream == ConsoleStream::StdOut)
+                ? s_stdoutVt : s_stderrVt;
+
+            std::call_once(flag, [&]() {
+                DWORD handleType = (m_stream == ConsoleStream::StdOut)
+                    ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
+                HANDLE hOut = GetStdHandle(handleType);
+                if (hOut == INVALID_HANDLE_VALUE) return;
+                DWORD mode = 0;
+                if (!GetConsoleMode(hOut, &mode)) return;
+                if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                    if (!SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                        return;
+                    }
                 }
-            }
-            return true;
+                result.store(true, std::memory_order_relaxed);
+            });
+
+            return result.load(std::memory_order_relaxed);
 #else
             FILE* stream = (m_stream == ConsoleStream::StdOut) ? stdout : stderr;
             return isatty(fileno(stream)) != 0;
@@ -6932,8 +6951,12 @@ namespace minta {
         /// destroyed when all in-flight references are released).
         static void init(LunarLog logger) {
             auto ptr = std::make_shared<LunarLog>(std::move(logger));
-            std::lock_guard<std::mutex> lock(mutex());
-            storage() = std::move(ptr);
+            {
+                std::lock_guard<std::mutex> lock(mutex());
+                storage().swap(ptr); // ptr now holds the old logger (if any)
+            }
+            // ptr (old logger) destructs here, outside the lock, to
+            // prevent deadlocks if its destructor drains queued entries.
         }
 
         /// Clear the global logger instance.

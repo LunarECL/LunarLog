@@ -6,6 +6,10 @@
 #include <mutex>
 
 namespace minta {
+    /// @note All StdoutTransport instances share a single mutex so that
+    ///       concurrent writes to stdout are serialized.  StderrTransport
+    ///       has its own independent mutex, so stdout and stderr writes
+    ///       may interleave at the terminal level.
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
@@ -21,6 +25,10 @@ namespace minta {
         }
     };
 
+    /// @note All StderrTransport instances share a single mutex so that
+    ///       concurrent writes to stderr are serialized.  StdoutTransport
+    ///       has its own independent mutex, so stdout and stderr writes
+    ///       may interleave at the terminal level.
     class StderrTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {

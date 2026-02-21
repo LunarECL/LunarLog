@@ -279,8 +279,6 @@ TEST_F(CallbackSinkTest, EntryCallbackSeesArguments) {
 
 TEST_F(CallbackSinkTest, ThrowingEntryCallbackDoesNotCrash) {
     std::atomic<int> delivered(0);
-    std::mutex mtx;
-    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -300,17 +298,11 @@ TEST_F(CallbackSinkTest, ThrowingEntryCallbackDoesNotCrash) {
     logger.info("third - should still arrive");
     logger.flush();
 
-    std::unique_lock<std::mutex> lock(mtx);
-    cv.wait_for(lock, std::chrono::seconds(5),
-        [&]() { return delivered.load(std::memory_order_relaxed) >= 3; });
-
     EXPECT_GE(delivered.load(std::memory_order_relaxed), 2);
 }
 
 TEST_F(CallbackSinkTest, ThrowingStringCallbackDoesNotCrash) {
     std::atomic<int> delivered(0);
-    std::mutex mtx;
-    std::condition_variable cv;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -329,10 +321,6 @@ TEST_F(CallbackSinkTest, ThrowingStringCallbackDoesNotCrash) {
     logger.info("second - should still arrive");
     logger.info("third - should still arrive");
     logger.flush();
-
-    std::unique_lock<std::mutex> lock(mtx);
-    cv.wait_for(lock, std::chrono::seconds(5),
-        [&]() { return delivered.load(std::memory_order_relaxed) >= 3; });
 
     EXPECT_GE(delivered.load(std::memory_order_relaxed), 2);
 }

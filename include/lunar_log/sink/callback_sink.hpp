@@ -47,7 +47,7 @@ namespace minta {
         /// @code
         ///   CallbackSink(StringCallback([](const std::string& s) { ... }))
         /// @endcode
-        CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
+        explicit CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
             : m_stringCallback(std::move(cb))
             , m_mode(Mode::String) {
             if (fmt) {

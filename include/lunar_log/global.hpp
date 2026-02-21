@@ -34,6 +34,11 @@ namespace minta {
     /// init()/shutdown() are safe to call from any thread; in-flight log
     /// calls that already obtained a shared_ptr will complete safely even
     /// if shutdown() runs concurrently.
+    ///
+    /// @warning Do not call Log methods during static destruction (e.g.,
+    ///          from global object destructors).  The internal function-local
+    ///          statics may already be destroyed, causing undefined behavior.
+    ///          Call Log::shutdown() explicitly before main() returns.
     class Log {
     public:
         Log() = delete;
@@ -46,7 +51,7 @@ namespace minta {
         /// Set the global logger from a pre-built LunarLog instance.
         /// Replaces any existing global logger (previous instance is
         /// destroyed when all in-flight references are released).
-        static void init(LunarLog logger) {
+        static void init(LunarLog&& logger) {
             auto ptr = std::make_shared<LunarLog>(std::move(logger));
             {
                 std::lock_guard<std::mutex> lock(mutex());

@@ -2597,6 +2597,10 @@ namespace minta {
 #include <mutex>
 
 namespace minta {
+    /// @note All StdoutTransport instances share a single mutex so that
+    ///       concurrent writes to stdout are serialized.  StderrTransport
+    ///       has its own independent mutex, so stdout and stderr writes
+    ///       may interleave at the terminal level.
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
@@ -2612,6 +2616,10 @@ namespace minta {
         }
     };
 
+    /// @note All StderrTransport instances share a single mutex so that
+    ///       concurrent writes to stderr are serialized.  StdoutTransport
+    ///       has its own independent mutex, so stdout and stderr writes
+    ///       may interleave at the terminal level.
     class StderrTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
@@ -5399,7 +5407,7 @@ namespace minta {
         /// @code
         ///   CallbackSink(StringCallback([](const std::string& s) { ... }))
         /// @endcode
-        CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
+        explicit CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
             : m_stringCallback(std::move(cb))
             , m_mode(Mode::String) {
             if (fmt) {
@@ -6957,6 +6965,11 @@ namespace minta {
     /// init()/shutdown() are safe to call from any thread; in-flight log
     /// calls that already obtained a shared_ptr will complete safely even
     /// if shutdown() runs concurrently.
+    ///
+    /// @warning Do not call Log methods during static destruction (e.g.,
+    ///          from global object destructors).  The internal function-local
+    ///          statics may already be destroyed, causing undefined behavior.
+    ///          Call Log::shutdown() explicitly before main() returns.
     class Log {
     public:
         Log() = delete;
@@ -6969,7 +6982,7 @@ namespace minta {
         /// Set the global logger from a pre-built LunarLog instance.
         /// Replaces any existing global logger (previous instance is
         /// destroyed when all in-flight references are released).
-        static void init(LunarLog logger) {
+        static void init(LunarLog&& logger) {
             auto ptr = std::make_shared<LunarLog>(std::move(logger));
             {
                 std::lock_guard<std::mutex> lock(mutex());

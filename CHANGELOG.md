@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.26.0] — 2026-02-22
+
 ### Added
 - `CallbackSink` (#84) — callback-based sink with `EntryCallback` / `StringCallback` variants for custom in-process handling
 - `ConsoleStream` selection for `ConsoleSink` / `ColorConsoleSink` (#85) — choose `StdOut` or `StdErr`

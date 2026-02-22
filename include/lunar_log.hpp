@@ -28,8 +28,10 @@
 #include "lunar_log/core/sink_proxy.hpp"
 #include "lunar_log/logger_configuration.hpp"
 #include "lunar_log/log_manager.hpp"
+#include "lunar_log/sink/callback_sink.hpp"
 #include "lunar_log/log_source.hpp"
 #include "lunar_log/macros.hpp"
+#include "lunar_log/global.hpp"
 
 #define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __func__
 

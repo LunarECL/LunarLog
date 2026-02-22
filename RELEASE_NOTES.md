@@ -1,3 +1,85 @@
+## What's New in v1.26.0
+
+### CallbackSink — In-Process Callback Delivery (#84)
+
+`CallbackSink` forwards each log entry to a user callback instead of writing to a file/console transport.
+
+```cpp
+// Variant 1: raw LogEntry callback
+std::vector<minta::LogEntry> captured;
+auto logger = minta::LunarLog::configure()
+    .writeTo<minta::CallbackSink>(
+        minta::CallbackSink::EntryCallback(
+            [&](const minta::LogEntry& e) { captured.push_back(e); }))
+    .build();
+
+logger.info("Order {id} created", "id", "ORD-1001");
+```
+
+```cpp
+// Variant 2: formatted string callback (CompactJsonFormatter by default)
+std::vector<std::string> lines;
+auto logger = minta::LunarLog::configure()
+    .writeTo<minta::CallbackSink>(
+        minta::CallbackSink::StringCallback(
+            [&](const std::string& s) { lines.push_back(s); }))
+    .build();
+
+logger.warn("Queue depth {depth}", "depth", 42);
+```
+
+Highlights:
+- `EntryCallback` for direct `LogEntry` access
+- `StringCallback` with optional custom formatter (`CompactJsonFormatter` default)
+- Synchronous callback execution, `flush()` no-op
+
+### ConsoleStream — stdout/stderr Selection (#85)
+
+`ConsoleSink` and `ColorConsoleSink` now accept `ConsoleStream` to route output to `stdout` or `stderr`.
+
+```cpp
+auto logger = minta::LunarLog::configure()
+    .writeTo<minta::ConsoleSink>(minta::ConsoleStream::StdOut)
+    .writeTo<minta::ColorConsoleSink>(minta::ConsoleStream::StdErr)
+    .build();
+
+logger.info("Service started on {port}", "port", 8080);   // stdout sink
+logger.error("Failed to connect to {host}", "host", "db"); // stderr sink also receives
+```
+
+Highlights:
+- `enum class ConsoleStream { StdOut, StdErr }`
+- Stream choice is constructor-level, no transport customization needed
+- Color console keeps TTY/NO_COLOR behavior per selected stream
+
+### Global Static Logger — `minta::Log` (#86)
+
+`minta::Log` provides process-wide static logging without passing logger references.
+
+```cpp
+#include <lunar_log/global.hpp>
+
+int main() {
+    minta::Log::configure()
+        .minLevel(minta::LogLevel::DEBUG)
+        .writeTo<minta::ConsoleSink>()
+        .build();
+
+    minta::Log::info("App started: {name}", "name", "billing");
+    LUNAR_GWARN("High latency: {ms}", "ms", 245);
+
+    minta::Log::flush();
+    minta::Log::shutdown();
+}
+```
+
+Highlights:
+- Static API: `configure`, `init`, `shutdown`, `instance`, `flush`, level methods, `log`
+- Exception overloads mirrored from `LunarLog`
+- Convenience global macros: `LUNAR_GTRACE` ~ `LUNAR_GFATAL`
+
+---
+
 ## What's New in v1.25.0
 
 ### AsyncSink — Non-Blocking Sink Decorator (#74)

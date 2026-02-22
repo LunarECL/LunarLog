@@ -2,11 +2,13 @@
 #define LUNAR_LOG_COLOR_CONSOLE_SINK_HPP
 
 #include "sink_interface.hpp"
+#include "console_sink.hpp"
 #include "../formatter/human_readable_formatter.hpp"
 #include "../transport/stdout_transport.hpp"
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 #ifdef _WIN32
@@ -41,10 +43,14 @@ namespace minta {
     /// automatically so that ANSI escape codes render correctly.
     class ColorConsoleSink : public BaseSink {
     public:
-        ColorConsoleSink() {
+        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdOut) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
-            m_colorEnabled.store(detectColorSupport(), std::memory_order_relaxed);
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
+            m_colorEnabled.store(detectAndEnableColorSupport(stream), std::memory_order_relaxed);
         }
 
         /// Override color auto-detection.
@@ -70,8 +76,11 @@ namespace minta {
 
         /// Insert ANSI color codes around the [LEVEL] bracket in formatted text.
         /// Only the bracket (e.g. "[INFO]") is colorized; the message body is
-        /// left uncolored.  If a custom formatter omits the [LEVEL] bracket,
-        /// colorization silently passes through (returns text unchanged).
+        /// left uncolored.  Targets the **first** occurrence of "[LEVEL]" in
+        /// the string, which is correct for HumanReadableFormatter output.
+        /// Custom formatters that place the bracket later (or whose message
+        /// body reproduces it) may see unexpected colorization.
+        /// If no bracket is found, the text is returned unchanged.
         /// Public and static for testability.
         static std::string colorize(const std::string& text, LogLevel level) {
             const char* levelStr = getLevelString(level);
@@ -111,27 +120,47 @@ namespace minta {
     private:
         std::atomic<bool> m_colorEnabled;
 
-        static bool detectColorSupport() {
-            // NO_COLOR standard (https://no-color.org/): mere presence disables color.
+        static bool detectAndEnableColorSupport(ConsoleStream stream) {
+            // Env-var checks run per-instance so that a later-constructed sink
+            // respects runtime changes to NO_COLOR / LUNAR_LOG_NO_COLOR.
+            // The VT-mode setup below (Windows only) runs once per stream via
+            // call_once because it is an idempotent OS call that is harmless
+            // if left enabled even when a subsequent sink disables color.
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
-            // Project-specific override: requires non-empty value.
             const char* noColor = std::getenv("LUNAR_LOG_NO_COLOR");
             if (noColor && noColor[0] != '\0') return false;
 
 #ifdef _WIN32
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-            if (hOut == INVALID_HANDLE_VALUE) return false;
-            DWORD mode = 0;
-            if (!GetConsoleMode(hOut, &mode)) return false;
-            if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-                if (!SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-                    return false;
+            static std::once_flag s_stdoutOnce;
+            static std::once_flag s_stderrOnce;
+            static std::atomic<bool> s_stdoutVt(false);
+            static std::atomic<bool> s_stderrVt(false);
+
+            std::once_flag& flag = (stream == ConsoleStream::StdOut)
+                ? s_stdoutOnce : s_stderrOnce;
+            std::atomic<bool>& result = (stream == ConsoleStream::StdOut)
+                ? s_stdoutVt : s_stderrVt;
+
+            std::call_once(flag, [&]() {
+                DWORD handleType = (stream == ConsoleStream::StdOut)
+                    ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
+                HANDLE hOut = GetStdHandle(handleType);
+                if (hOut == INVALID_HANDLE_VALUE) return;
+                DWORD mode = 0;
+                if (!GetConsoleMode(hOut, &mode)) return;
+                if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                    if (!SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                        return;
+                    }
                 }
-            }
-            return true;
+                result.store(true, std::memory_order_relaxed);
+            });
+
+            return result.load(std::memory_order_relaxed);
 #else
-            return isatty(fileno(stdout)) != 0;
+            FILE* fp = (stream == ConsoleStream::StdOut) ? stdout : stderr;
+            return isatty(fileno(fp)) != 0;
 #endif
         }
     };

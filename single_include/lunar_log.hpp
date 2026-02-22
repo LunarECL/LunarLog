@@ -2597,15 +2597,52 @@ namespace minta {
 #include <mutex>
 
 namespace minta {
+    /// @note All StdoutTransport instances share a single mutex so that
+    ///       concurrent writes to stdout are serialized.  StderrTransport
+    ///       has its own independent mutex, so stdout and stderr writes
+    ///       may interleave at the terminal level.
+    /// @warning The shared mutex is a function-local static.  Using this
+    ///          transport from a global or static object's destructor may
+    ///          cause undefined behavior if the mutex has already been
+    ///          destroyed.  Ensure all loggers using StdoutTransport are
+    ///          shut down before main() returns.
     class StdoutTransport : public ITransport {
     public:
         void write(const std::string &formattedEntry) override {
-            std::lock_guard<std::mutex> lock(m_mutex);
+            std::lock_guard<std::mutex> lock(sharedMutex());
+            // Flush each line for immediate console visibility.
             std::cout << formattedEntry << '\n' << std::flush;
         }
 
     private:
-        std::mutex m_mutex;
+        static std::mutex& sharedMutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
+    };
+
+    /// @note All StderrTransport instances share a single mutex so that
+    ///       concurrent writes to stderr are serialized.  StdoutTransport
+    ///       has its own independent mutex, so stdout and stderr writes
+    ///       may interleave at the terminal level.
+    /// @warning The shared mutex is a function-local static.  Using this
+    ///          transport from a global or static object's destructor may
+    ///          cause undefined behavior if the mutex has already been
+    ///          destroyed.  Ensure all loggers using StderrTransport are
+    ///          shut down before main() returns.
+    class StderrTransport : public ITransport {
+    public:
+        void write(const std::string &formattedEntry) override {
+            std::lock_guard<std::mutex> lock(sharedMutex());
+            // Flush each line for immediate console visibility.
+            std::cerr << formattedEntry << '\n' << std::flush;
+        }
+
+    private:
+        static std::mutex& sharedMutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
     };
 } // namespace minta
 
@@ -2870,11 +2907,19 @@ namespace minta {
 
 
 namespace minta {
+
+    /// Selects which standard stream a console sink writes to.
+    enum class ConsoleStream { StdOut, StdErr };
+
     class ConsoleSink : public BaseSink {
     public:
-        ConsoleSink() {
+        explicit ConsoleSink(ConsoleStream stream = ConsoleStream::StdOut) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
         }
     };
 } // namespace minta
@@ -2885,6 +2930,7 @@ namespace minta {
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 #ifdef _WIN32
@@ -2919,10 +2965,14 @@ namespace minta {
     /// automatically so that ANSI escape codes render correctly.
     class ColorConsoleSink : public BaseSink {
     public:
-        ColorConsoleSink() {
+        explicit ColorConsoleSink(ConsoleStream stream = ConsoleStream::StdOut) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
-            m_colorEnabled.store(detectColorSupport(), std::memory_order_relaxed);
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
+            m_colorEnabled.store(detectAndEnableColorSupport(stream), std::memory_order_relaxed);
         }
 
         /// Override color auto-detection.
@@ -2948,8 +2998,11 @@ namespace minta {
 
         /// Insert ANSI color codes around the [LEVEL] bracket in formatted text.
         /// Only the bracket (e.g. "[INFO]") is colorized; the message body is
-        /// left uncolored.  If a custom formatter omits the [LEVEL] bracket,
-        /// colorization silently passes through (returns text unchanged).
+        /// left uncolored.  Targets the **first** occurrence of "[LEVEL]" in
+        /// the string, which is correct for HumanReadableFormatter output.
+        /// Custom formatters that place the bracket later (or whose message
+        /// body reproduces it) may see unexpected colorization.
+        /// If no bracket is found, the text is returned unchanged.
         /// Public and static for testability.
         static std::string colorize(const std::string& text, LogLevel level) {
             const char* levelStr = getLevelString(level);
@@ -2989,27 +3042,47 @@ namespace minta {
     private:
         std::atomic<bool> m_colorEnabled;
 
-        static bool detectColorSupport() {
-            // NO_COLOR standard (https://no-color.org/): mere presence disables color.
+        static bool detectAndEnableColorSupport(ConsoleStream stream) {
+            // Env-var checks run per-instance so that a later-constructed sink
+            // respects runtime changes to NO_COLOR / LUNAR_LOG_NO_COLOR.
+            // The VT-mode setup below (Windows only) runs once per stream via
+            // call_once because it is an idempotent OS call that is harmless
+            // if left enabled even when a subsequent sink disables color.
             if (std::getenv("NO_COLOR") != nullptr) return false;
 
-            // Project-specific override: requires non-empty value.
             const char* noColor = std::getenv("LUNAR_LOG_NO_COLOR");
             if (noColor && noColor[0] != '\0') return false;
 
 #ifdef _WIN32
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-            if (hOut == INVALID_HANDLE_VALUE) return false;
-            DWORD mode = 0;
-            if (!GetConsoleMode(hOut, &mode)) return false;
-            if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-                if (!SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-                    return false;
+            static std::once_flag s_stdoutOnce;
+            static std::once_flag s_stderrOnce;
+            static std::atomic<bool> s_stdoutVt(false);
+            static std::atomic<bool> s_stderrVt(false);
+
+            std::once_flag& flag = (stream == ConsoleStream::StdOut)
+                ? s_stdoutOnce : s_stderrOnce;
+            std::atomic<bool>& result = (stream == ConsoleStream::StdOut)
+                ? s_stdoutVt : s_stderrVt;
+
+            std::call_once(flag, [&]() {
+                DWORD handleType = (stream == ConsoleStream::StdOut)
+                    ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
+                HANDLE hOut = GetStdHandle(handleType);
+                if (hOut == INVALID_HANDLE_VALUE) return;
+                DWORD mode = 0;
+                if (!GetConsoleMode(hOut, &mode)) return;
+                if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                    if (!SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                        return;
+                    }
                 }
-            }
-            return true;
+                result.store(true, std::memory_order_relaxed);
+            });
+
+            return result.load(std::memory_order_relaxed);
 #else
-            return isatty(fileno(stdout)) != 0;
+            FILE* fp = (stream == ConsoleStream::StdOut) ? stdout : stderr;
+            return isatty(fileno(fp)) != 0;
 #endif
         }
     };
@@ -5301,6 +5374,91 @@ namespace detail {
 } // namespace minta
 
 
+// --- lunar_log/sink/callback_sink.hpp ---
+
+#include <functional>
+#include <string>
+#include <memory>
+
+namespace minta {
+
+    /// Sink that invokes a user-provided callback for each log entry.
+    ///
+    /// Two variants:
+    ///   1. EntryCallback — receives the raw LogEntry for custom processing.
+    ///   2. StringCallback — receives the formatted string (CompactJsonFormatter
+    ///      by default, or a user-supplied formatter).
+    ///
+    /// @note The callback is called **without** a lock. If the callback accesses
+    ///       shared state, the user is responsible for thread safety inside
+    ///       the callback.
+    /// @note If the callback throws an exception, the exception is silently
+    ///       caught by the logger's sink dispatch loop.  The log entry that
+    ///       triggered the throw is lost **for this sink only** — other sinks
+    ///       registered on the same logger still receive the entry normally.
+    ///       Subsequent entries to this sink are also unaffected.  Callbacks
+    ///       should be noexcept or handle their own errors internally.
+    class CallbackSink : public ISink {
+    public:
+        using EntryCallback  = std::function<void(const LogEntry&)>;
+        using StringCallback = std::function<void(const std::string&)>;
+
+        /// Variant 1: raw LogEntry callback.
+        /// The entry is passed directly; no formatting is performed.
+        ///
+        /// In C++11, wrap lambdas in the typedef to avoid overload ambiguity:
+        /// @code
+        ///   CallbackSink(EntryCallback([](const LogEntry& e) { ... }))
+        /// @endcode
+        explicit CallbackSink(EntryCallback cb)
+            : m_entryCallback(std::move(cb))
+            , m_mode(Mode::Entry) {}
+
+        /// Variant 2: formatted string callback with optional formatter.
+        /// If formatter is nullptr, CompactJsonFormatter is used as default.
+        ///
+        /// In C++11, wrap lambdas in the typedef to avoid overload ambiguity:
+        /// @code
+        ///   CallbackSink(StringCallback([](const std::string& s) { ... }))
+        /// @endcode
+        explicit CallbackSink(StringCallback cb, std::unique_ptr<IFormatter> fmt = nullptr)
+            : m_stringCallback(std::move(cb))
+            , m_mode(Mode::String) {
+            if (fmt) {
+                setFormatter(std::move(fmt));
+            } else {
+                setFormatter(detail::make_unique<CompactJsonFormatter>());
+            }
+        }
+
+        void write(const LogEntry& entry) override {
+            if (m_mode == Mode::Entry) {
+                if (m_entryCallback) {
+                    m_entryCallback(entry);
+                }
+            } else {
+                if (m_stringCallback) {
+                    IFormatter* fmt = formatter();
+                    if (fmt) {
+                        m_stringCallback(fmt->format(entry));
+                    }
+                }
+            }
+        }
+
+        void flush() override {} // no-op, callbacks are synchronous
+
+    private:
+        enum class Mode { Entry, String };
+
+        EntryCallback  m_entryCallback;
+        StringCallback m_stringCallback;
+        Mode           m_mode;
+    };
+
+} // namespace minta
+
+
 // --- lunar_log/log_manager.hpp ---
 
 #include <vector>
@@ -5489,6 +5647,287 @@ namespace minta {
         // LunarLog and is passed into log() by reference.  A future cleanup
         // could bundle these into a GlobalFilterConfig struct owned here.
     };
+} // namespace minta
+
+
+// --- lunar_log/logger_configuration.hpp ---
+
+// This header is included internally by log_source.hpp AFTER the LunarLog
+// class definition.  It must not be included directly — use lunar_log.hpp.
+
+
+#include <string>
+#include <vector>
+#include <chrono>
+#include <functional>
+#include <stdexcept>
+#include <type_traits>
+#include <memory>
+
+namespace minta {
+
+    class LunarLog;
+
+    /// Fluent builder for constructing a fully-configured LunarLog instance.
+    ///
+    /// Usage:
+    /// @code
+    ///   auto log = LunarLog::configure()
+    ///       .minLevel(LogLevel::DEBUG)
+    ///       .writeTo<ConsoleSink>()
+    ///       .writeTo<FileSink, JsonFormatter>("json-out", "app.jsonl")
+    ///       .enrich(Enrichers::threadId())
+    ///       .build();
+    /// @endcode
+    ///
+    /// Each configuration call stores settings eagerly.  build() creates a
+    /// LunarLog instance, applies all settings, adds all sinks, and starts
+    /// the background processing thread.
+    class LoggerConfiguration {
+    public:
+        LoggerConfiguration()
+            : m_minLevel(LogLevel::INFO)
+            , m_captureSourceLocation(false)
+            , m_rateLimitMaxLogs(1000)
+            , m_rateLimitWindowMs(1000)
+            , m_templateCacheSize(128)
+            , m_built(false) {}
+
+        LoggerConfiguration(const LoggerConfiguration&) = delete;
+        LoggerConfiguration& operator=(const LoggerConfiguration&) = delete;
+        LoggerConfiguration(LoggerConfiguration&&) = default;
+        LoggerConfiguration& operator=(LoggerConfiguration&&) = default;
+
+        // ------------------------------------------------------------------
+        //  Global configuration
+        // ------------------------------------------------------------------
+
+        LoggerConfiguration& minLevel(LogLevel level) {
+            m_minLevel = level;
+            return *this;
+        }
+
+        LoggerConfiguration& captureSourceLocation(bool enable) {
+            m_captureSourceLocation = enable;
+            return *this;
+        }
+
+        /// Maps to LunarLog::setRateLimit() in the imperative API.
+        LoggerConfiguration& rateLimit(size_t maxLogs,
+                                       std::chrono::milliseconds window) {
+            m_rateLimitMaxLogs  = maxLogs;
+            m_rateLimitWindowMs = static_cast<long long>(window.count());
+            return *this;
+        }
+
+        LoggerConfiguration& templateCacheSize(size_t size) {
+            m_templateCacheSize = size;
+            return *this;
+        }
+
+        LoggerConfiguration& locale(const std::string& loc) {
+            m_locale = loc;
+            return *this;
+        }
+
+        LoggerConfiguration& enrich(EnricherFn fn) {
+            m_enrichers.push_back(std::move(fn));
+            return *this;
+        }
+
+        /// Add compact filter rules (space-separated, AND-combined).
+        LoggerConfiguration& filter(const std::string& compact) {
+            m_filterCompact.push_back(compact);
+            return *this;
+        }
+
+        /// Add a DSL filter rule.
+        LoggerConfiguration& filterRule(const std::string& dsl) {
+            m_filterRules.push_back(dsl);
+            return *this;
+        }
+
+        // ------------------------------------------------------------------
+        //  writeTo — unnamed sink (auto-named "sink_0", "sink_1", ...)
+        // ------------------------------------------------------------------
+
+        /// Add an unnamed sink.  SFINAE: only viable when SinkType is
+        /// constructible from Args.
+        template<typename SinkType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value,
+            LoggerConfiguration&
+        >::type
+        writeTo(Args&&... args) {
+            SinkRegistration reg;
+            reg.hasName = false;
+            reg.sink = detail::make_unique<SinkType>(
+                std::forward<Args>(args)...);
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        /// Add an unnamed sink with a custom formatter.
+        template<typename SinkType, typename FormatterType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value,
+            LoggerConfiguration&
+        >::type
+        writeTo(Args&&... args) {
+            SinkRegistration reg;
+            reg.hasName = false;
+            reg.sink = detail::make_unique<SinkType>(
+                std::forward<Args>(args)...);
+            reg.sink->setFormatter(detail::make_unique<FormatterType>());
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        // ------------------------------------------------------------------
+        //  writeTo — named sink (user-provided name)
+        // ------------------------------------------------------------------
+
+        /// Add a named sink.
+        ///
+        /// SFINAE: disabled when SinkType is constructible from
+        /// (const std::string&, Args...) — i.e. when the entire argument
+        /// list (name included) could also be valid constructor arguments.
+        /// In that case only the unnamed overload participates, preventing
+        /// the sink name from being silently consumed as a ctor arg.
+        template<typename SinkType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value &&
+            !std::is_constructible<SinkType, const std::string&, Args...>::value,
+            LoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, Args&&... args) {
+            SinkRegistration reg;
+            reg.name    = name;
+            reg.hasName = true;
+            reg.sink = detail::make_unique<SinkType>(
+                std::forward<Args>(args)...);
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        /// Add a named sink with a custom formatter.
+        /// Same SFINAE guard as the non-formatter named overload above.
+        template<typename SinkType, typename FormatterType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value &&
+            !std::is_constructible<SinkType, const std::string&, Args...>::value,
+            LoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, Args&&... args) {
+            SinkRegistration reg;
+            reg.name    = name;
+            reg.hasName = true;
+            reg.sink = detail::make_unique<SinkType>(
+                std::forward<Args>(args)...);
+            reg.sink->setFormatter(detail::make_unique<FormatterType>());
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        // ------------------------------------------------------------------
+        //  writeTo — named sink + configuration lambda
+        // ------------------------------------------------------------------
+
+        /// Add a named sink with a post-create configuration callback.
+        /// The callback receives a SinkProxy& for fluent sink configuration.
+        /// SFINAE: ConfigFn must not be string-convertible (disambiguate from
+        /// the name + ctor-args overload).
+        template<typename SinkType, typename ConfigFn, typename... CtorArgs>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value &&
+            std::is_constructible<SinkType, CtorArgs...>::value,
+            LoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, ConfigFn&& configure,
+                CtorArgs&&... args) {
+            SinkRegistration reg;
+            reg.name    = name;
+            reg.hasName = true;
+            reg.sink = detail::make_unique<SinkType>(
+                std::forward<CtorArgs>(args)...);
+            SinkProxy proxy(reg.sink.get());
+            configure(proxy);
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        /// Add a named sink with a custom formatter and configuration callback.
+        template<typename SinkType, typename FormatterType,
+                 typename ConfigFn, typename... CtorArgs>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value &&
+            std::is_constructible<SinkType, CtorArgs...>::value,
+            LoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, ConfigFn&& configure,
+                CtorArgs&&... args) {
+            SinkRegistration reg;
+            reg.name    = name;
+            reg.hasName = true;
+            reg.sink = detail::make_unique<SinkType>(
+                std::forward<CtorArgs>(args)...);
+            reg.sink->setFormatter(detail::make_unique<FormatterType>());
+            SinkProxy proxy(reg.sink.get());
+            configure(proxy);
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        // ------------------------------------------------------------------
+        //  build()
+        // ------------------------------------------------------------------
+
+        /// Construct the configured LunarLog instance.
+        ///
+        /// If no writeTo() calls were made, the returned logger has no sinks
+        /// and silently discards all messages (a "silent logger").  A warning
+        /// is emitted to stderr in this case.
+        ///
+        /// @throws std::logic_error if called more than once.
+        LunarLog build();   // defined in log_source.hpp (needs full LunarLog)
+
+    private:
+        struct SinkRegistration {
+            std::string name;
+            bool hasName;
+            std::unique_ptr<ISink> sink;
+
+            SinkRegistration() : hasName(false) {}
+            SinkRegistration(SinkRegistration&&) = default;
+            SinkRegistration& operator=(SinkRegistration&&) = default;
+            SinkRegistration(const SinkRegistration&) = delete;
+            SinkRegistration& operator=(const SinkRegistration&) = delete;
+        };
+
+        LogLevel    m_minLevel;
+        bool        m_captureSourceLocation;
+        size_t      m_rateLimitMaxLogs;
+        long long   m_rateLimitWindowMs;
+        size_t      m_templateCacheSize;
+        std::string m_locale;
+        std::vector<EnricherFn>       m_enrichers;
+        std::vector<std::string>      m_filterCompact;
+        std::vector<std::string>      m_filterRules;
+        std::vector<SinkRegistration> m_sinks;
+        bool m_built;
+    };
+
 } // namespace minta
 
 
@@ -6786,6 +7225,425 @@ namespace detail {
 #define LUNAR_FATAL_EX(logger, ex, ...) LUNAR_LOG_EX((logger), ::minta::LogLevel::FATAL, (ex), __VA_ARGS__)
 
 #endif // LUNAR_LOG_NO_MACROS
+
+
+// --- lunar_log/global.hpp ---
+
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+
+namespace minta {
+
+    // Forward declaration — defined after Log class.
+    class GlobalLoggerConfiguration;
+
+    /// Static global logger facade.
+    ///
+    /// Provides a process-wide singleton LunarLog instance accessible from
+    /// anywhere without passing logger references.
+    ///
+    /// Usage:
+    /// @code
+    ///   minta::Log::configure()
+    ///       .minLevel(minta::LogLevel::DEBUG)
+    ///       .writeTo<minta::ConsoleSink>()
+    ///       .build();   // sets the global instance
+    ///
+    ///   minta::Log::info("Hello {name}", "name", "world");
+    ///   minta::Log::shutdown();
+    /// @endcode
+    ///
+    /// Thread safety: all methods acquire a mutex only to copy a shared_ptr
+    /// to the underlying LunarLog instance.  The actual log() call runs
+    /// outside the mutex, so concurrent producers are not serialized.
+    /// init()/shutdown() are safe to call from any thread; in-flight log
+    /// calls that already obtained a shared_ptr will complete safely even
+    /// if shutdown() runs concurrently.
+    ///
+    /// @warning Do not call Log methods during static destruction (e.g.,
+    ///          from global object destructors).  The internal function-local
+    ///          statics may already be destroyed, causing undefined behavior.
+    ///          Call Log::shutdown() explicitly before main() returns.
+    class Log {
+    public:
+        Log() = delete;
+
+        /// Create a builder whose build() automatically sets the global
+        /// logger instance.  Returns a GlobalLoggerConfiguration that
+        /// forwards all LoggerConfiguration methods.
+        static GlobalLoggerConfiguration configure();
+
+        /// Set the global logger from a pre-built LunarLog instance.
+        /// Replaces any existing global logger (previous instance is
+        /// destroyed when all in-flight references are released).
+        ///
+        /// @note The logger is move-constructed into a shared_ptr.  If the
+        ///       source LunarLog already has a running processing thread
+        ///       (e.g. from LoggerConfiguration::build()), that thread is
+        ///       joined during the move-from object's destruction inside
+        ///       this call.  A new processing thread is lazily started on
+        ///       the first log call after init.
+        static void init(LunarLog&& logger) {
+            auto ptr = std::make_shared<LunarLog>(std::move(logger));
+            {
+                std::lock_guard<std::mutex> lock(mutex());
+                storage().swap(ptr); // ptr now holds the old logger (if any)
+            }
+            // ptr (old logger) destructs here, outside the lock, to
+            // prevent deadlocks if its destructor drains queued entries.
+        }
+
+        /// Clear the global logger instance.
+        /// After shutdown, all logging methods throw std::logic_error.
+        /// The underlying LunarLog is destroyed outside the lock to
+        /// prevent deadlocks if its destructor drains queued entries.
+        static void shutdown() {
+            std::shared_ptr<LunarLog> old;
+            {
+                std::lock_guard<std::mutex> lock(mutex());
+                old = std::move(storage());
+            }
+            // old destructs here, outside the lock.
+        }
+
+        /// Returns true if a global logger has been configured and not shut down.
+        static bool isInitialized() {
+            std::lock_guard<std::mutex> lock(mutex());
+            return storage() != nullptr;
+        }
+
+        /// Access the global LunarLog instance via shared_ptr.
+        /// The returned shared_ptr keeps the logger alive even if
+        /// shutdown() is called concurrently; the caller can safely
+        /// use the logger through the returned handle.
+        /// @throws std::logic_error if not initialized.
+        static std::shared_ptr<LunarLog> instance() {
+            std::lock_guard<std::mutex> lock(mutex());
+            auto ptr = storage();
+            if (!ptr) {
+                throw std::logic_error(
+                    "minta::Log not initialized. Call Log::init() or "
+                    "Log::configure().build() first.");
+            }
+            return ptr;
+        }
+
+        /// Flush all sinks on the global logger.
+        /// Convenience method so callers do not need instance().
+        /// The shared_ptr copied by requireInit() keeps the logger alive
+        /// through the entire flush, even if shutdown() races concurrently.
+        /// @throws std::logic_error if not initialized.
+        static void flush() {
+            requireInit()->flush();
+        }
+
+        // --- Logging methods ---
+        // Each copies the shared_ptr under the lock, then calls log()
+        // outside the lock so concurrent producers are not serialized.
+
+        template<typename... Args>
+        static void trace(const std::string& msg, Args&&... args) {
+            requireInit()->log(LogLevel::TRACE, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void debug(const std::string& msg, Args&&... args) {
+            requireInit()->log(LogLevel::DEBUG, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void info(const std::string& msg, Args&&... args) {
+            requireInit()->log(LogLevel::INFO, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void warn(const std::string& msg, Args&&... args) {
+            requireInit()->log(LogLevel::WARN, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void error(const std::string& msg, Args&&... args) {
+            requireInit()->log(LogLevel::ERROR, msg, std::forward<Args>(args)...);
+        }
+
+        template<typename... Args>
+        static void fatal(const std::string& msg, Args&&... args) {
+            requireInit()->log(LogLevel::FATAL, msg, std::forward<Args>(args)...);
+        }
+
+        // --- Dynamic-level logging ---
+
+        template<typename... Args>
+        static void log(LogLevel level, const std::string& msg, Args&&... args) {
+            requireInit()->log(level, msg, std::forward<Args>(args)...);
+        }
+
+        // --- Exception-logging overloads ---
+
+        template<typename... Args>
+        static void log(LogLevel level, const std::exception& ex,
+                        const std::string& msg, Args&&... args) {
+            requireInit()->log(level, ex, msg, std::forward<Args>(args)...);
+        }
+
+        static void log(LogLevel level, const std::exception& ex) {
+            requireInit()->log(level, ex);
+        }
+
+        template<typename... Args>
+        static void trace(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->trace(ex, msg, std::forward<Args>(args)...);
+        }
+        static void trace(const std::exception& ex) {
+            requireInit()->trace(ex);
+        }
+
+        template<typename... Args>
+        static void debug(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->debug(ex, msg, std::forward<Args>(args)...);
+        }
+        static void debug(const std::exception& ex) {
+            requireInit()->debug(ex);
+        }
+
+        template<typename... Args>
+        static void info(const std::exception& ex, const std::string& msg,
+                         Args&&... args) {
+            requireInit()->info(ex, msg, std::forward<Args>(args)...);
+        }
+        static void info(const std::exception& ex) {
+            requireInit()->info(ex);
+        }
+
+        template<typename... Args>
+        static void warn(const std::exception& ex, const std::string& msg,
+                         Args&&... args) {
+            requireInit()->warn(ex, msg, std::forward<Args>(args)...);
+        }
+        static void warn(const std::exception& ex) {
+            requireInit()->warn(ex);
+        }
+
+        template<typename... Args>
+        static void error(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->error(ex, msg, std::forward<Args>(args)...);
+        }
+        static void error(const std::exception& ex) {
+            requireInit()->error(ex);
+        }
+
+        template<typename... Args>
+        static void fatal(const std::exception& ex, const std::string& msg,
+                          Args&&... args) {
+            requireInit()->fatal(ex, msg, std::forward<Args>(args)...);
+        }
+        static void fatal(const std::exception& ex) {
+            requireInit()->fatal(ex);
+        }
+
+    private:
+        static std::shared_ptr<LunarLog>& storage() {
+            static std::shared_ptr<LunarLog> s_logger;
+            return s_logger;
+        }
+
+        static std::mutex& mutex() {
+            static std::mutex s_mutex;
+            return s_mutex;
+        }
+
+        /// Lock, copy shared_ptr, unlock, check non-null.
+        /// Returns a live shared_ptr — the logger stays alive for the
+        /// duration of the caller's use even if shutdown() intervenes.
+        static std::shared_ptr<LunarLog> requireInit() {
+            std::shared_ptr<LunarLog> ptr;
+            {
+                std::lock_guard<std::mutex> lock(mutex());
+                ptr = storage();
+            }
+            if (!ptr) {
+                throw std::logic_error(
+                    "minta::Log not initialized. Call Log::init() or "
+                    "Log::configure().build() first.");
+            }
+            return ptr;
+        }
+    };
+
+    // -----------------------------------------------------------------
+    //  GlobalLoggerConfiguration
+    // -----------------------------------------------------------------
+
+    /// Builder wrapper returned by Log::configure().
+    /// Forwards all LoggerConfiguration methods and automatically calls
+    /// Log::init() when build() is invoked.
+    class GlobalLoggerConfiguration {
+    public:
+        GlobalLoggerConfiguration() = default;
+        GlobalLoggerConfiguration(const GlobalLoggerConfiguration&) = delete;
+        GlobalLoggerConfiguration& operator=(const GlobalLoggerConfiguration&) = delete;
+        GlobalLoggerConfiguration(GlobalLoggerConfiguration&&) = default;
+        GlobalLoggerConfiguration& operator=(GlobalLoggerConfiguration&&) = default;
+
+        // --- Forwarded builder methods ---
+
+        // NOTE: The writeTo overloads below manually forward every
+        // LoggerConfiguration::writeTo variant.  When a new writeTo
+        // overload is added to LoggerConfiguration, a matching
+        // forwarding overload must be added here as well.
+
+        GlobalLoggerConfiguration& minLevel(LogLevel level) {
+            m_config.minLevel(level); return *this;
+        }
+        GlobalLoggerConfiguration& captureSourceLocation(bool enable) {
+            m_config.captureSourceLocation(enable); return *this;
+        }
+        GlobalLoggerConfiguration& rateLimit(size_t maxLogs,
+                                             std::chrono::milliseconds window) {
+            m_config.rateLimit(maxLogs, window); return *this;
+        }
+        GlobalLoggerConfiguration& templateCacheSize(size_t size) {
+            m_config.templateCacheSize(size); return *this;
+        }
+        GlobalLoggerConfiguration& locale(const std::string& loc) {
+            m_config.locale(loc); return *this;
+        }
+        GlobalLoggerConfiguration& enrich(EnricherFn fn) {
+            m_config.enrich(std::move(fn)); return *this;
+        }
+        GlobalLoggerConfiguration& filter(const std::string& compact) {
+            m_config.filter(compact); return *this;
+        }
+        GlobalLoggerConfiguration& filterRule(const std::string& dsl) {
+            m_config.filterRule(dsl); return *this;
+        }
+
+        // --- writeTo: unnamed sink, no formatter ---
+        template<typename SinkType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        writeTo(Args&&... args) {
+            m_config.writeTo<SinkType>(std::forward<Args>(args)...);
+            return *this;
+        }
+
+        // --- writeTo: unnamed sink, with formatter ---
+        template<typename SinkType, typename FormatterType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        writeTo(Args&&... args) {
+            m_config.writeTo<SinkType, FormatterType>(
+                std::forward<Args>(args)...);
+            return *this;
+        }
+
+        // --- writeTo: named sink, no formatter ---
+        template<typename SinkType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_constructible<SinkType, Args...>::value &&
+            !std::is_constructible<SinkType, const std::string&, Args...>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, Args&&... args) {
+            m_config.writeTo<SinkType>(name, std::forward<Args>(args)...);
+            return *this;
+        }
+
+        // --- writeTo: named sink, with formatter ---
+        template<typename SinkType, typename FormatterType, typename... Args>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            std::is_constructible<SinkType, Args...>::value &&
+            !std::is_constructible<SinkType, const std::string&, Args...>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, Args&&... args) {
+            m_config.writeTo<SinkType, FormatterType>(
+                name, std::forward<Args>(args)...);
+            return *this;
+        }
+
+        // --- writeTo: named sink + config lambda ---
+        template<typename SinkType, typename ConfigFn, typename... CtorArgs>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value &&
+            std::is_constructible<SinkType, CtorArgs...>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, ConfigFn&& configure,
+                CtorArgs&&... args) {
+            m_config.writeTo<SinkType>(
+                name, std::forward<ConfigFn>(configure),
+                std::forward<CtorArgs>(args)...);
+            return *this;
+        }
+
+        // --- writeTo: named sink + formatter + config lambda ---
+        template<typename SinkType, typename FormatterType,
+                 typename ConfigFn, typename... CtorArgs>
+        typename std::enable_if<
+            std::is_base_of<ISink, SinkType>::value &&
+            std::is_base_of<IFormatter, FormatterType>::value &&
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value &&
+            std::is_constructible<SinkType, CtorArgs...>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        writeTo(const std::string& name, ConfigFn&& configure,
+                CtorArgs&&... args) {
+            m_config.writeTo<SinkType, FormatterType>(
+                name, std::forward<ConfigFn>(configure),
+                std::forward<CtorArgs>(args)...);
+            return *this;
+        }
+
+        /// Build the LunarLog instance and set it as the global logger.
+        /// @note Should be called exactly once.  Calling build() again
+        ///       replaces the global logger (previous instance is destroyed
+        ///       when all in-flight references are released).
+        void build() {
+            Log::init(m_config.build());
+        }
+
+    private:
+        LoggerConfiguration m_config;
+    };
+
+    // --- Out-of-class definition (needs complete GlobalLoggerConfiguration) ---
+
+    inline GlobalLoggerConfiguration Log::configure() {
+        return GlobalLoggerConfiguration();
+    }
+
+} // namespace minta
+
+// --- Convenience macros ---
+// Use standard __VA_ARGS__ (message is part of the variadic pack).
+#ifndef LUNAR_LOG_NO_GLOBAL_MACROS
+
+#define LUNAR_GTRACE(...) ::minta::Log::trace(__VA_ARGS__)
+#define LUNAR_GDEBUG(...) ::minta::Log::debug(__VA_ARGS__)
+#define LUNAR_GINFO(...)  ::minta::Log::info(__VA_ARGS__)
+#define LUNAR_GWARN(...)  ::minta::Log::warn(__VA_ARGS__)
+#define LUNAR_GERROR(...) ::minta::Log::error(__VA_ARGS__)
+#define LUNAR_GFATAL(...) ::minta::Log::fatal(__VA_ARGS__)
+
+#endif // LUNAR_LOG_NO_GLOBAL_MACROS
 
 
 #define LUNAR_LOG_CONTEXT __FILE__, __LINE__, __func__

@@ -6,11 +6,19 @@
 #include "../transport/stdout_transport.hpp"
 
 namespace minta {
+
+    /// Selects which standard stream a console sink writes to.
+    enum class ConsoleStream { StdOut, StdErr };
+
     class ConsoleSink : public BaseSink {
     public:
-        ConsoleSink() {
+        explicit ConsoleSink(ConsoleStream stream = ConsoleStream::StdOut) {
             setFormatter(detail::make_unique<HumanReadableFormatter>());
-            setTransport(detail::make_unique<StdoutTransport>());
+            if (stream == ConsoleStream::StdOut) {
+                setTransport(detail::make_unique<StdoutTransport>());
+            } else {
+                setTransport(detail::make_unique<StderrTransport>());
+            }
         }
     };
 } // namespace minta

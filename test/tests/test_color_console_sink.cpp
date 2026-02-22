@@ -247,7 +247,7 @@ TEST_F(ColorConsoleSinkEnvTest, LunarLogNoColorEmptyDoesNotDisable) {
 }
 
 TEST_F(ColorConsoleSinkEnvTest, BothUnsetReturnsBasedOnTty) {
-    // With both env vars unset, detectColorSupport() falls through
+    // With both env vars unset, detectAndEnableColorSupport() falls through
     // to TTY detection. Verify it runs without crashing and returns bool.
     minta::ColorConsoleSink sink;
     bool result = sink.isColorEnabled();

@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `CallbackSink` (#84) — callback-based sink with `EntryCallback` / `StringCallback` variants for custom in-process handling
+- `ConsoleStream` selection for `ConsoleSink` / `ColorConsoleSink` (#85) — choose `StdOut` or `StdErr`
+- Global static logger facade `minta::Log` + `LUNAR_G*` macros (#86) — process-wide logger access without passing instances
+
 ## [v1.25.0] — 2026-02-21
 
 ### Added
@@ -235,7 +240,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Global and scoped context capture
 - C++11/14/17 support (GCC, Clang, AppleClang, MSVC)
 
-[Unreleased]: https://github.com/LunarECL/LunarLog/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/LunarECL/LunarLog/compare/v1.25.0...HEAD
 [v1.24.0]: https://github.com/LunarECL/LunarLog/compare/v1.23.0...v1.24.0
 [v1.23.0]: https://github.com/LunarECL/LunarLog/compare/v1.22.0...v1.23.0
 [v1.22.0]: https://github.com/LunarECL/LunarLog/compare/v1.21.1...v1.22.0

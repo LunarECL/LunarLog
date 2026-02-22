@@ -110,6 +110,10 @@ Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/
 | [Message Templates](https://github.com/LunarECL/LunarLog/wiki/Message-Templates) | Placeholders, operators, format specifiers |
 | [Filtering](https://github.com/LunarECL/LunarLog/wiki/Filtering) | Per-sink levels, predicates, DSL rules |
 | [Enrichers](https://github.com/LunarECL/LunarLog/wiki/Enrichers) | Auto-attach metadata to every log entry |
+| [Performance Tuning](https://github.com/LunarECL/LunarLog/wiki/Performance-Tuning) | CI benchmark snapshot and practical tuning tips |
+| [Comparison](https://github.com/LunarECL/LunarLog/wiki/Comparison) | Honest comparison with spdlog, Boost.Log, and glog |
+| [Migrating from spdlog](https://github.com/LunarECL/LunarLog/wiki/Migrating-from-spdlog) | API mapping and migration checklist |
+| [Building Your Own Sink](https://github.com/LunarECL/LunarLog/wiki/Building-Your-Own-Sink) | Step-by-step custom sink patterns |
 | [Cookbook](https://github.com/LunarECL/LunarLog/wiki/Cookbook) | Real-world recipes and patterns |
 | [Benchmark Suite](https://github.com/LunarECL/LunarLog/wiki/Benchmark-Suite) | Performance benchmarks and CI integration |
 

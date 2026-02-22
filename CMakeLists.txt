@@ -155,6 +155,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_callback_sink.cpp
             test/tests/test_console_stream.cpp
             test/tests/test_global_logger.cpp
+            test/tests/test_key_value_args.cpp
             test/tests/utils/test_utils.cpp
     )
 

@@ -40,7 +40,7 @@ Highlights:
 ```cpp
 auto logger = minta::LunarLog::configure()
     .writeTo<minta::ConsoleSink>(minta::ConsoleStream::StdOut)
-    .writeTo<minta::ColorConsoleSink>("err", minta::ConsoleStream::StdErr)
+    .writeTo<minta::ColorConsoleSink>(minta::ConsoleStream::StdErr)
     .build();
 
 logger.info("Service started on {port}", "port", 8080);   // stdout sink

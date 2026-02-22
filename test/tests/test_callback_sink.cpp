@@ -278,7 +278,10 @@ TEST_F(CallbackSinkTest, EntryCallbackSeesArguments) {
 }
 
 TEST_F(CallbackSinkTest, ThrowingEntryCallbackDoesNotCrash) {
+    std::mutex mtx;
+    std::condition_variable cv;
     std::atomic<int> delivered(0);
+    const int kExpected = 3;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -288,8 +291,10 @@ TEST_F(CallbackSinkTest, ThrowingEntryCallbackDoesNotCrash) {
         minta::CallbackSink::EntryCallback([&](const minta::LogEntry&) {
             int n = delivered.fetch_add(1, std::memory_order_relaxed);
             if (n == 0) {
+                cv.notify_all();
                 throw std::runtime_error("boom");
             }
+            if (n + 1 >= kExpected) cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
@@ -298,11 +303,18 @@ TEST_F(CallbackSinkTest, ThrowingEntryCallbackDoesNotCrash) {
     logger.info("third - should still arrive");
     logger.flush();
 
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait_for(lock, std::chrono::seconds(5), [&] {
+        return delivered.load(std::memory_order_relaxed) >= 2;
+    });
     EXPECT_GE(delivered.load(std::memory_order_relaxed), 2);
 }
 
 TEST_F(CallbackSinkTest, ThrowingStringCallbackDoesNotCrash) {
+    std::mutex mtx;
+    std::condition_variable cv;
     std::atomic<int> delivered(0);
+    const int kExpected = 3;
 
     auto logger = minta::LunarLog::configure()
         .minLevel(minta::LogLevel::TRACE)
@@ -312,8 +324,10 @@ TEST_F(CallbackSinkTest, ThrowingStringCallbackDoesNotCrash) {
         minta::CallbackSink::StringCallback([&](const std::string&) {
             int n = delivered.fetch_add(1, std::memory_order_relaxed);
             if (n == 0) {
+                cv.notify_all();
                 throw std::runtime_error("boom");
             }
+            if (n + 1 >= kExpected) cv.notify_all();
         }));
     logger.addCustomSink(std::move(sink));
 
@@ -322,5 +336,9 @@ TEST_F(CallbackSinkTest, ThrowingStringCallbackDoesNotCrash) {
     logger.info("third - should still arrive");
     logger.flush();
 
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait_for(lock, std::chrono::seconds(5), [&] {
+        return delivered.load(std::memory_order_relaxed) >= 2;
+    });
     EXPECT_GE(delivered.load(std::memory_order_relaxed), 2);
 }

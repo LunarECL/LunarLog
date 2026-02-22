@@ -38,6 +38,7 @@ HEADERS = [
     "lunar_log/sink/http_sink.hpp",
     "lunar_log/sink/callback_sink.hpp",
     "lunar_log/log_manager.hpp",
+    "lunar_log/logger_configuration.hpp",
     "lunar_log/log_source.hpp",
     "lunar_log/macros.hpp",
     "lunar_log/global.hpp",

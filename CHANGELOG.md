@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.26.3] — 2026-02-23
+
+### Fixed
+- Lazy thread start for async/batched sinks — background thread now starts on first log call, not construction, eliminating CI timeouts on unused loggers
+
 ## [v1.26.2] — 2026-02-23
 
 ### Fixed

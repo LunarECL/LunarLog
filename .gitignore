@@ -53,3 +53,4 @@ bench_results.json
 # Cache/temp
 .ruff_cache/
 .sisyphus/
+test_detail.json

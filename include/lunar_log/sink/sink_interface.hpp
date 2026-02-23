@@ -244,6 +244,7 @@ namespace minta {
 
         friend class LunarLog;
         friend class LoggerConfiguration;
+        friend class SubLoggerConfiguration;
         friend class SinkProxy;
     };
 

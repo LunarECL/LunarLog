@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.27.0] — 2026-02-23
+
+### Added
+- **Sub-Logger / Nested Pipeline** (#82) — create sub-loggers with independent filters, enrichers, and sinks for complex routing scenarios
+- `SubLoggerSink` class wrapping a mini pipeline inside an ISink
+- `subLogger()` builder method on `LoggerConfiguration` and global `minta::Log`
+- Sub-sink auto-naming (`sub_sink_0`, `sub_sink_1`, ...) for unnamed sinks
+- SFINAE-constrained lambda constructor for `SubLoggerSink`
+- 34 new tests covering sub-logger filtering, enrichers, nesting, async wrapping, exception propagation, tag routing, concurrency, and error isolation
+- `examples/sub_logger.cpp` demonstrating error routing and audit trail patterns
+
 ## [v1.26.3] — 2026-02-23
 
 ### Fixed

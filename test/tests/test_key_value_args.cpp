@@ -242,7 +242,9 @@ TEST_F(KeyValueArgsTest, KeyValueWithIndexedFallsBackToPositional) {
     ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
         [&]() { return captured.size() >= 1u; }));
 
-    EXPECT_FALSE(captured[0].message.empty());
+    // 3 args != 2*2 placeholders, so positional mode.
+    // {0}→slot 0→"zero", {name}→named ordinal 0→slot 0→"zero"
+    EXPECT_EQ(captured[0].message, "zero and zero");
 }
 
 // ---------------------------------------------------------------------------

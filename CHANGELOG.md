@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.26.2] — 2026-02-23
+
+### Fixed
+- Guard sparse/offset indexed placeholders in key-value mode to avoid spurious warnings
+- Strengthened test assertions for mixed indexed+named placeholder edge case
+
 ## [v1.26.1] — 2026-02-23
 
 ### Added

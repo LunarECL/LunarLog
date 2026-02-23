@@ -1075,6 +1075,9 @@ namespace detail {
                 if (placeholders[i].indexedArg < 0) ++namedOrd;
                 if (slot + 1 > maxSlot) maxSlot = slot + 1;
             }
+            // Guard: if sparse/offset indexed placeholders produce gaps,
+            // fall back to positional to avoid spurious "more values" warnings.
+            if (maxSlot > phCount) return;
 
             std::vector<std::string> reordered(maxSlot);
             namedOrd = 0;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(LunarLog VERSION 1.26.1 LANGUAGES CXX)
+project(LunarLog VERSION 1.26.2 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 

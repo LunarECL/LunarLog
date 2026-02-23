@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.26.1] — 2026-02-23
+
+### Added
+- Key-value argument support for message templates — Serilog-style `"key", value` pairs alongside existing positional arguments
+- 15 new tests for key-value argument handling (basic, format specifiers, pipe transforms, out-of-order keys, structured output, macros, global logger)
+
+### Fixed
+- Wiki documentation audit: 9 files corrected (API-Reference, Batched-Sink, Callback-Sink, Color-Console-Sink, Cookbook, HTTP-Sink, Rate-Limiting, Syslog-Sink, Migration-Guide)
+- Wiki Home reorganized into categorized sections
+- Comparison page updated with spdlog v2.x info and glog deprecation notice
+
 ## [v1.26.0] — 2026-02-22
 
 ### Added

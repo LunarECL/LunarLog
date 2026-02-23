@@ -112,7 +112,6 @@ namespace detail {
             if (addDefaultConsoleSink) {
                 addSink<ConsoleSink>();
             }
-            ensureProcessingThread();
         }
 
         // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
@@ -1299,15 +1298,10 @@ namespace detail {
             }
         }
 
-        // Start the background processing thread.
-        logger.ensureProcessingThread();
-
-        // Safe to return by move: LunarLog's move constructor transfers all
-        // internal state (queue, sinks, atomics, enrichers, filters).  The
-        // processing thread has not yet received any log entries at this point
-        // because ensureProcessingThread() only starts the thread — it does
-        // not produce entries.  The moved-from instance is left in a valid
-        // but empty state (m_isRunning == false).
+        // Thread starts lazily on first log call (ensureProcessingThread()
+        // is called in emitLogEntryImpl). This avoids spawning a thread that
+        // may never be needed and prevents CI timeout issues when many
+        // loggers are created but never used.
         return logger;
     }
 

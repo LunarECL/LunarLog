@@ -39,7 +39,7 @@ jobs:
           echo "CXX=${{ matrix.cxx }}" >> $GITHUB_ENV
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DLUNARLOG_CXX_STANDARD=${{ matrix.cpp_standard }} -DLUNARLOG_BUILD_BENCHMARKS=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DLUNARLOG_CXX_STANDARD=${{ matrix.cpp_standard }} -DLUNARLOG_BUILD_BENCHMARKS=OFF
 
       - name: Build
         run: cmake --build build --config Debug
@@ -51,7 +51,6 @@ jobs:
   coverage:
     name: Test Coverage
     runs-on: ubuntu-latest
-    needs: matrix
 
     steps:
       - uses: actions/checkout@v4

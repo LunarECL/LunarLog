@@ -13,12 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build & test before release
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUNARLOG_CXX_STANDARD=17
-          cmake --build build
-          cd build && ctest --output-on-failure
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

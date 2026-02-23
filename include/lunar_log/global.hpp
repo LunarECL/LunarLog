@@ -386,6 +386,30 @@ namespace minta {
             return *this;
         }
 
+        // --- subLogger: named sub-logger ---
+        template<typename ConfigFn>
+        typename std::enable_if<
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        subLogger(const std::string& name, ConfigFn&& configure) {
+            m_config.subLogger(name, std::forward<ConfigFn>(configure));
+            return *this;
+        }
+
+        // --- subLogger: unnamed sub-logger ---
+        template<typename ConfigFn>
+        typename std::enable_if<
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        subLogger(ConfigFn&& configure) {
+            m_config.subLogger(std::forward<ConfigFn>(configure));
+            return *this;
+        }
+
         /// Build the LunarLog instance and set it as the global logger.
         /// @note Should be called exactly once.  Calling build() again
         ///       replaces the global logger (previous instance is destroyed

@@ -2887,6 +2887,7 @@ namespace minta {
 
         friend class LunarLog;
         friend class LoggerConfiguration;
+        friend class SubLoggerConfiguration;
         friend class SinkProxy;
     };
 
@@ -5890,6 +5891,58 @@ namespace minta {
         }
 
         // ------------------------------------------------------------------
+        //  subLogger — nested pipeline as a special sink
+        // ------------------------------------------------------------------
+
+        /// Add a named sub-logger with its own filter/enricher/sink pipeline.
+        ///
+        /// The configuration lambda receives a SubLoggerConfiguration& for
+        /// fluent setup of the sub-pipeline.  Sub-loggers receive all log
+        /// entries that pass the parent's global filter, then apply their
+        /// own independent filters before dispatching to their own sinks.
+        ///
+        /// @code
+        ///   .subLogger("errors", [](SubLoggerConfiguration& sub) {
+        ///       sub.filter("ERROR+")
+        ///          .enrich(Enrichers::property("pipeline", "error-alerts"))
+        ///          .writeTo<FileSink>("error-log", "errors.log");
+        ///   })
+        /// @endcode
+        template<typename ConfigFn>
+        typename std::enable_if<
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value,
+            LoggerConfiguration&
+        >::type
+        subLogger(const std::string& name, ConfigFn&& configure) {
+            SubLoggerConfiguration subConfig;
+            configure(subConfig);
+            SinkRegistration reg;
+            reg.name    = name;
+            reg.hasName = true;
+            reg.sink = detail::make_unique<SubLoggerSink>(std::move(subConfig));
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        /// Add an unnamed sub-logger.
+        template<typename ConfigFn>
+        typename std::enable_if<
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value,
+            LoggerConfiguration&
+        >::type
+        subLogger(ConfigFn&& configure) {
+            SubLoggerConfiguration subConfig;
+            configure(subConfig);
+            SinkRegistration reg;
+            reg.hasName = false;
+            reg.sink = detail::make_unique<SubLoggerSink>(std::move(subConfig));
+            m_sinks.push_back(std::move(reg));
+            return *this;
+        }
+
+        // ------------------------------------------------------------------
         //  build()
         // ------------------------------------------------------------------
 
@@ -7659,6 +7712,30 @@ namespace minta {
             m_config.writeTo<SinkType, FormatterType>(
                 name, std::forward<ConfigFn>(configure),
                 std::forward<CtorArgs>(args)...);
+            return *this;
+        }
+
+        // --- subLogger: named sub-logger ---
+        template<typename ConfigFn>
+        typename std::enable_if<
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        subLogger(const std::string& name, ConfigFn&& configure) {
+            m_config.subLogger(name, std::forward<ConfigFn>(configure));
+            return *this;
+        }
+
+        // --- subLogger: unnamed sub-logger ---
+        template<typename ConfigFn>
+        typename std::enable_if<
+            !std::is_convertible<
+                typename std::decay<ConfigFn>::type, std::string>::value,
+            GlobalLoggerConfiguration&
+        >::type
+        subLogger(ConfigFn&& configure) {
+            m_config.subLogger(std::forward<ConfigFn>(configure));
             return *this;
         }
 

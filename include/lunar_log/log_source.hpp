@@ -701,6 +701,8 @@ namespace detail {
                 localeCopy = m_locale;
             }
 
+            resolveKeyValueArgs(*placeholdersPtr, values);
+
             std::vector<std::string> warnings = validatePlaceholders(effectiveTemplate, *placeholdersPtr, values);
             std::string message = formatMessage(effectiveTemplate, *placeholdersPtr, values, localeCopy);
             auto argumentPairs = mapArgumentsToPlaceholders(*placeholdersPtr, values);
@@ -1034,6 +1036,57 @@ namespace detail {
             const std::vector<PlaceholderInfo> &placeholders, const std::vector<std::string> &values,
             const std::string &locale = "C") {
             return detail::walkTemplate(messageTemplate, placeholders, values, locale);
+        }
+
+        /// Detect and resolve Serilog-style key-value argument pairs.
+        /// Heuristic: if values.size() == 2*placeholders and at least one
+        /// even-indexed value matches a placeholder name, treat as key-value.
+        /// This can misfire when a single placeholder's positional value
+        /// happens to equal its own name (e.g. info("{x}", "x", "extra")).
+        /// Serilog has the same inherent trade-off.
+        static void resolveKeyValueArgs(
+            const std::vector<PlaceholderInfo> &placeholders, std::vector<std::string> &values) {
+            size_t phCount = placeholders.size();
+            if (phCount == 0 || values.size() != 2 * phCount) return;
+
+            std::set<std::string> phNames;
+            for (size_t i = 0; i < phCount; ++i) {
+                phNames.insert(placeholders[i].name);
+            }
+
+            bool anyMatch = false;
+            for (size_t i = 0; i < values.size(); i += 2) {
+                if (phNames.count(values[i]) > 0) {
+                    anyMatch = true;
+                    break;
+                }
+            }
+            if (!anyMatch) return;
+
+            std::map<std::string, std::string> kvMap;
+            for (size_t i = 0; i + 1 < values.size(); i += 2) {
+                kvMap[values[i]] = values[i + 1];
+            }
+
+            size_t maxSlot = 0;
+            size_t namedOrd = 0;
+            for (size_t i = 0; i < phCount; ++i) {
+                size_t slot = detail::resolveValueSlot(placeholders[i].indexedArg, namedOrd);
+                if (placeholders[i].indexedArg < 0) ++namedOrd;
+                if (slot + 1 > maxSlot) maxSlot = slot + 1;
+            }
+
+            std::vector<std::string> reordered(maxSlot);
+            namedOrd = 0;
+            for (size_t i = 0; i < phCount; ++i) {
+                size_t slot = detail::resolveValueSlot(placeholders[i].indexedArg, namedOrd);
+                if (placeholders[i].indexedArg < 0) ++namedOrd;
+                auto it = kvMap.find(placeholders[i].name);
+                if (it != kvMap.end() && slot < reordered.size()) {
+                    reordered[slot] = it->second;
+                }
+            }
+            values = std::move(reordered);
         }
 
         static std::vector<std::pair<std::string, std::string>> mapArgumentsToPlaceholders(

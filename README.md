@@ -47,7 +47,7 @@ int main() {
 
 ## Features
 
-- [**Message Templates**](https://github.com/LunarECL/LunarLog/wiki/Message-Templates) — named & indexed placeholders, `@`/`$` operators, [format specifiers](https://github.com/LunarECL/LunarLog/wiki/Format-Specifiers)
+- [**Message Templates**](https://github.com/LunarECL/LunarLog/wiki/Message-Templates) — named & indexed placeholders with key-value or positional arguments, `@`/`$` operators, [format specifiers](https://github.com/LunarECL/LunarLog/wiki/Format-Specifiers)
 - [**Output Formats**](https://github.com/LunarECL/LunarLog/wiki/Structured-Output) — human-readable, JSON, [Compact JSON (CLEF)](https://github.com/LunarECL/LunarLog/wiki/Compact-JSON-Formatter), XML
 - [**Filtering**](https://github.com/LunarECL/LunarLog/wiki/Filtering) — per-sink levels, predicates, DSL rules, [compact syntax](https://github.com/LunarECL/LunarLog/wiki/Compact-Filter) (`"WARN+ ~timeout"`)
 - [**Sinks**](https://github.com/LunarECL/LunarLog/wiki/Getting-Started) — Console / ColorConsole (`ConsoleStream::StdOut` / `ConsoleStream::StdErr`), File, [RollingFile](https://github.com/LunarECL/LunarLog/wiki/Rolling-File-Sink), [AsyncSink](https://github.com/LunarECL/LunarLog/wiki/Async-Sink), [BatchedSink](https://github.com/LunarECL/LunarLog/wiki/Batched-Sink), [SyslogSink](https://github.com/LunarECL/LunarLog/wiki/Syslog-Sink), [HttpSink](https://github.com/LunarECL/LunarLog/wiki/HTTP-Sink), [CallbackSink](https://github.com/LunarECL/LunarLog/wiki/Callback-Sink) — [named sinks & tag routing](https://github.com/LunarECL/LunarLog/wiki/Named-Sinks-and-Tag-Routing)

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(LunarLog VERSION 1.25.0 LANGUAGES CXX)
+project(LunarLog VERSION 1.26.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -155,6 +155,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_callback_sink.cpp
             test/tests/test_console_stream.cpp
             test/tests/test_global_logger.cpp
+            test/tests/test_key_value_args.cpp
             test/tests/utils/test_utils.cpp
     )
 

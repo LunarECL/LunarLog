@@ -125,7 +125,7 @@ jobs:
       matrix:
         include:
           - { sanitizer: ASan,  flags: "-fsanitize=address -fno-omit-frame-pointer" }
-          - { sanitizer: UBSan, flags: "-fsanitize=undefined -fno-omit-frame-pointer" }
+          - { sanitizer: UBSan, flags: "-fsanitize=undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" }
           - { sanitizer: TSan,  flags: "-fsanitize=thread" }
     steps:
       - uses: actions/checkout@v4
@@ -134,13 +134,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: deps-ubuntu-latest-${{ hashFiles('CMakeLists.txt') }}
+          key: deps-${{ matrix.sanitizer }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug \
             -DLUNARLOG_CXX_STANDARD=17 \
             -DLUNARLOG_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
 

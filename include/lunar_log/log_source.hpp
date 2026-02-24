@@ -843,9 +843,7 @@ namespace detail {
             std::shared_ptr<const std::vector<FilterRule>> globalRules;
             snapshotGlobalFilters(globalFilter, globalRules);
 
-            try {
-                m_logManager.log(entry, globalFilter, globalRules);
-            } catch (...) {}
+            m_logManager.log(entry, globalFilter, globalRules);
 
             for (const auto& warning : warnings) {
                 uint32_t warnHash = detail::fnv1a(warning);
@@ -865,9 +863,7 @@ namespace detail {
                     /* locale */       "C",
                     /* threadId */     std::this_thread::get_id()
                 );
-                try {
-                    m_logManager.log(warnEntry, globalFilter, globalRules);
-                } catch (...) {}
+                m_logManager.log(warnEntry, globalFilter, globalRules);
             }
         }
 

@@ -2755,8 +2755,8 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
-        /// @note The predicate is invoked on the consumer thread against an
-        ///       immutable snapshot.  It must be fast and non-blocking.
+        /// @note The predicate is invoked on the caller's thread.
+        ///       It must be fast and non-blocking.
         ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
@@ -5682,8 +5682,7 @@ namespace minta {
     /// @endcode
     ///
     /// Each configuration call stores settings eagerly.  build() creates a
-    /// LunarLog instance, applies all settings, adds all sinks, and starts
-    /// the background processing thread.
+    /// LunarLog instance, applies all settings, and adds all sinks.
     class LoggerConfiguration {
     public:
         LoggerConfiguration()
@@ -6016,10 +6015,7 @@ namespace minta {
 // --- lunar_log/log_source.hpp ---
 
 #include <atomic>
-#include <thread>
-#include <queue>
 #include <mutex>
-#include <condition_variable>
 #include <type_traits>
 #include <set>
 #include <functional>
@@ -6107,12 +6103,10 @@ namespace detail {
             , m_logCount(0)
             , m_captureSourceLocation(false)
             , m_hasCustomContext(false)
-            , m_sinkWriteInProgress(false)
             , m_templateCacheSize(128)
             , m_hasGlobalFilters(false)
             , m_rateLimitMaxLogs(1000)
-            , m_rateLimitWindowMs(1000)
-            , m_threadStarted(false) {
+            , m_rateLimitWindowMs(1000) {
             if (addDefaultConsoleSink) {
                 addSink<ConsoleSink>();
             }
@@ -6121,19 +6115,13 @@ namespace detail {
         // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
         // while other threads are still calling log methods is undefined behavior.
         ~LunarLog() noexcept {
-            // Stop config watcher first (its callbacks may enqueue log entries)
+            // Stop config watcher first (its callbacks may log entries)
             if (m_configWatcher) {
                 m_configWatcher->stop();
                 m_configWatcher.reset();
             }
-            if (m_threadStarted.load(std::memory_order_acquire)) {
-                flush();
-                m_isRunning = false;
-                m_logCV.notify_one();
-                if (m_logThread.joinable()) {
-                    m_logThread.join();
-                }
-            }
+            m_isRunning.store(false, std::memory_order_release);
+            flush();
         }
 
         LunarLog(const LunarLog &) = delete;
@@ -6149,7 +6137,6 @@ namespace detail {
             , m_customContext(std::move(other.m_customContext))
             , m_captureSourceLocation(other.m_captureSourceLocation.load(std::memory_order_relaxed))
             , m_hasCustomContext(other.m_hasCustomContext.load(std::memory_order_relaxed))
-            , m_sinkWriteInProgress(false)
             , m_templateCache(std::move(other.m_templateCache))
             , m_templateCacheSize(other.m_templateCacheSize)
             , m_hasGlobalFilters(other.m_hasGlobalFilters.load(std::memory_order_relaxed))
@@ -6161,7 +6148,6 @@ namespace detail {
             , m_hasEnrichers(other.m_hasEnrichers.load(std::memory_order_relaxed))
             , m_rateLimitMaxLogs(other.m_rateLimitMaxLogs)
             , m_rateLimitWindowMs(other.m_rateLimitWindowMs)
-            , m_threadStarted(false)
             , m_levelSwitch(std::move(other.m_levelSwitch))
             , m_watcherParams(std::move(other.m_watcherParams))
             , m_watcherStarted(false)
@@ -6209,17 +6195,7 @@ namespace detail {
             return getCaptureSourceLocation();
         }
 
-        /// @warning Do not call flush() from within a sink write() implementation.
-        ///          flush() acquires the queue mutex and waits for sink writes to
-        ///          complete, so calling it from inside write() will deadlock.
         void flush() {
-            if (!m_threadStarted.load(std::memory_order_acquire)) return;
-            {
-                std::unique_lock<std::mutex> lock(m_queueMutex);
-                m_flushCV.wait(lock, [this] {
-                    return m_logQueue.empty() && !m_sinkWriteInProgress.load(std::memory_order_relaxed);
-                });
-            }
             m_logManager.flushSinks();
         }
 
@@ -6406,8 +6382,8 @@ namespace detail {
         }
         void fatal(const std::exception& ex) { log(LogLevel::FATAL, ex); }
 
-        /// @note The predicate is invoked on the consumer thread against an
-        ///       immutable snapshot.  It must be fast and non-blocking.
+        /// @note The predicate is invoked on the caller's thread.
+        ///       It must be fast and non-blocking.
         ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
@@ -6565,22 +6541,10 @@ namespace detail {
             , m_logCount(0)
             , m_captureSourceLocation(false)
             , m_hasCustomContext(false)
-            , m_sinkWriteInProgress(false)
             , m_templateCacheSize(128)
             , m_hasGlobalFilters(false)
             , m_rateLimitMaxLogs(1000)
-            , m_rateLimitWindowMs(1000)
-            , m_threadStarted(false) {
-        }
-
-        void ensureProcessingThread() {
-            if (!m_threadStarted.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> lock(m_queueMutex);
-                if (!m_threadStarted.load(std::memory_order_relaxed)) {
-                    m_logThread = std::thread(&LunarLog::processLogQueue, this);
-                    m_threadStarted.store(true, std::memory_order_release);
-                }
-            }
+            , m_rateLimitWindowMs(1000) {
         }
 
         void ensureConfigWatcher() {
@@ -6686,17 +6650,11 @@ namespace detail {
         std::atomic<bool> m_isRunning;
         std::atomic<long long> m_rateLimitWindowStart;
         std::atomic<size_t> m_logCount;
-        std::mutex m_queueMutex;
         std::mutex m_contextMutex;
-        std::condition_variable m_logCV;
-        std::condition_variable m_flushCV;
-        std::queue<LogEntry> m_logQueue;
-        std::thread m_logThread;
         LogManager m_logManager;
         std::map<std::string, std::string> m_customContext;
         std::atomic<bool> m_captureSourceLocation;
         std::atomic<bool> m_hasCustomContext;
-        std::atomic<bool> m_sinkWriteInProgress;
 
         struct PlaceholderInfo {
             std::string name;
@@ -6728,7 +6686,6 @@ namespace detail {
 
         size_t m_rateLimitMaxLogs;
         long long m_rateLimitWindowMs;
-        std::atomic<bool> m_threadStarted;
 
         std::shared_ptr<LevelSwitch> m_levelSwitch;
         std::unique_ptr<detail::ConfigWatcherParams> m_watcherParams;
@@ -6880,15 +6837,19 @@ namespace detail {
                 entry.customContext = std::move(contextCopy);
             }
 
-            ensureProcessingThread();
             ensureConfigWatcher();
 
-            std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_logQueue.push(std::move(entry));
+            std::shared_ptr<const FilterPredicate> globalFilter;
+            std::shared_ptr<const std::vector<FilterRule>> globalRules;
+            snapshotGlobalFilters(globalFilter, globalRules);
+
+            try {
+                m_logManager.log(entry, globalFilter, globalRules);
+            } catch (...) {}
 
             for (const auto& warning : warnings) {
                 uint32_t warnHash = detail::fnv1a(warning);
-                m_logQueue.emplace(LogEntry(
+                LogEntry warnEntry(
                     /* level */        LogLevel::WARN,
                     /* message */      warning,
                     /* timestamp */    now,
@@ -6903,11 +6864,11 @@ namespace detail {
                     /* tags */         {},
                     /* locale */       "C",
                     /* threadId */     std::this_thread::get_id()
-                ));
+                );
+                try {
+                    m_logManager.log(warnEntry, globalFilter, globalRules);
+                } catch (...) {}
             }
-
-            lock.unlock();
-            m_logCV.notify_one();
         }
 
         void snapshotGlobalFilters(
@@ -6917,55 +6878,6 @@ namespace detail {
                 std::lock_guard<std::mutex> flock(m_globalFilterMutex);
                 filter = m_globalFilter;
                 rules  = m_globalFilterRules;
-            }
-        }
-
-        void processLogQueue() {
-            while (m_isRunning) {
-                std::unique_lock<std::mutex> lock(m_queueMutex);
-                m_logCV.wait(lock, [this] { return !m_logQueue.empty() || !m_isRunning; });
-
-                while (!m_logQueue.empty()) {
-                    auto entry = std::move(m_logQueue.front());
-                    m_logQueue.pop();
-                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
-                    lock.unlock();
-
-                    try {
-                        std::shared_ptr<const FilterPredicate> globalFilter;
-                        std::shared_ptr<const std::vector<FilterRule>> globalRules;
-                        snapshotGlobalFilters(globalFilter, globalRules);
-                        m_logManager.log(entry, globalFilter, globalRules);
-                    } catch (...) {}
-
-                    // Re-acquire lock BEFORE clearing sinkWriteInProgress and
-                    // notifying, so that flush() cannot miss the state change.
-                    // Without this, flush() can check the predicate (seeing
-                    // sinkWriteInProgress==true), then we set it to false and
-                    // notify, and THEN flush() enters wait — a classic lost wakeup.
-                    lock.lock();
-                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
-                    m_flushCV.notify_all();
-                }
-            }
-
-            {
-                std::unique_lock<std::mutex> lock(m_queueMutex);
-                while (!m_logQueue.empty()) {
-                    auto entry = std::move(m_logQueue.front());
-                    m_logQueue.pop();
-                    m_sinkWriteInProgress.store(true, std::memory_order_relaxed);
-                    lock.unlock();
-                    try {
-                        std::shared_ptr<const FilterPredicate> globalFilter;
-                        std::shared_ptr<const std::vector<FilterRule>> globalRules;
-                        snapshotGlobalFilters(globalFilter, globalRules);
-                        m_logManager.log(entry, globalFilter, globalRules);
-                    } catch (...) {}
-                    lock.lock();
-                    m_sinkWriteInProgress.store(false, std::memory_order_relaxed);
-                    m_flushCV.notify_all();
-                }
             }
         }
 
@@ -7429,10 +7341,6 @@ namespace detail {
             logger.m_watcherParams = std::move(m_watcherParams);
         }
 
-        // Thread starts lazily on first log call (ensureProcessingThread()
-        // is called in emitLogEntryImpl). This avoids spawning a thread that
-        // may never be needed and prevents CI timeout issues when many
-        // loggers are created but never used.
         return logger;
     }
 

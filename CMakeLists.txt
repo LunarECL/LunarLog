@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(LunarLog VERSION 1.27.0 LANGUAGES CXX)
+project(LunarLog VERSION 1.28.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -47,6 +47,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             SyslogSink
             HttpSink
             SubLogger
+            DynamicLevel
     )
 
     set(EXAMPLE_SOURCES
@@ -76,6 +77,7 @@ if(LUNARLOG_BUILD_EXAMPLES)
             examples/syslog_sink.cpp
             examples/http_sink.cpp
             examples/sub_logger.cpp
+            examples/dynamic_level.cpp
     )
 
     list(LENGTH EXAMPLE_TARGETS EXAMPLE_COUNT)
@@ -159,6 +161,7 @@ if(LUNARLOG_BUILD_TESTS)
             test/tests/test_console_stream.cpp
             test/tests/test_global_logger.cpp
             test/tests/test_key_value_args.cpp
+            test/tests/test_dynamic_config.cpp
             test/tests/utils/test_utils.cpp
     )
 

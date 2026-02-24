@@ -56,6 +56,7 @@ int main() {
 - [**Exception Attachment**](https://github.com/LunarECL/LunarLog/wiki/Exception-Attachment) — `logger.error(ex, "msg")` with nested exception unwinding
 - [**Fluent Builder**](https://github.com/LunarECL/LunarLog/wiki/Fluent-Builder) — declarative `LunarLog::configure().writeTo<>().enrich().build()`
 - [**Sub-Logger / Nested Pipeline**](https://github.com/LunarECL/LunarLog/wiki/Sub-Logger) — independent filters, enrichers, and sinks for complex routing (error alerts, audit trails)
+- [**Dynamic Log Level**](https://github.com/LunarECL/LunarLog/wiki/Dynamic-Configuration) — change levels, per-sink levels, and filters at runtime via LevelSwitch or config file watcher
 - [**Global Logger**](https://github.com/LunarECL/LunarLog/wiki/Global-Logger) — process-wide static facade: `minta::Log::info("...")`
 - [**Source Location Macros**](https://github.com/LunarECL/LunarLog/wiki/Source-Location-Macros) — `LUNAR_INFO(logger, ...)` auto-captures `__FILE__`, `__LINE__`, `__func__`
 - [**Scoped Context**](https://github.com/LunarECL/LunarLog/wiki/Scoped-Context) — RAII `LogScope` for request-lifetime fields

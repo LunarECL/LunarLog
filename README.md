@@ -42,8 +42,11 @@ int main() {
 - **Structured logging** — [message templates](https://messagetemplates.org/) with named placeholders, not printf. Properties are preserved in JSON/XML for machine processing.
 - **Zero dependencies** — header-only, no external libraries. Just `#include` and go.
 - **C++11 and up** — works with GCC, Clang, and MSVC. No C++17 required.
-- **Production-ready** — thread-safe, rate-limited, rolling file rotation, multi-layer filtering.
+- **Sync-first architecture** — direct dispatch by default, [async opt-in](https://github.com/LunarECL/LunarLog/wiki/Async-Sink) via `AsyncSink` decorator. No hidden threads or queues.
+- **Production-ready** — thread-safe (CI-verified with ASan/TSan/UBSan), rate-limited, rolling file rotation, multi-layer filtering.
 - **Serilog-inspired** — destructuring operators, enrichers, and fluent builder will feel familiar.
+
+> **Performance note:** LunarLog prioritizes structured logging capabilities over raw throughput. See [Performance Tuning](https://github.com/LunarECL/LunarLog/wiki/Performance-Tuning#comparison-with-spdlog) for honest benchmarks vs spdlog.
 
 ## Features
 
@@ -97,7 +100,7 @@ Once in the official registry: `vcpkg install lunarlog`
 **Conan** *(pending ConanCenter acceptance)*:
 
 ```bash
-conan install --requires="lunarlog/1.24.0"
+conan install --requires="lunarlog/1.29.0"
 ```
 
 Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/wiki/Getting-Started)

@@ -112,8 +112,8 @@ namespace minta {
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
-        /// @note The predicate is invoked on the consumer thread against an
-        ///       immutable snapshot.  It must be fast and non-blocking.
+        /// @note The predicate is invoked on the caller's thread.
+        ///       It must be fast and non-blocking.
         ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {

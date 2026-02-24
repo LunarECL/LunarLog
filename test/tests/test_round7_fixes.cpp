@@ -147,3 +147,15 @@ TEST_F(Round7FixTest, ContextValuesWithoutDelimitersNotQuoted) {
     // Should NOT have quotes around alice
     EXPECT_TRUE(content.find("\"alice\"") == std::string::npos);
 }
+
+// Sync-first: throwing sink catch on warning path (invalid placeholder triggers warning entry)
+TEST_F(Round7FixTest, ThrowingSinkCatchesWarningPath) {
+    minta::LunarLog logger(minta::LogLevel::TRACE, false);
+    logger.addCustomSink(std::unique_ptr<ThrowingSink>(new ThrowingSink()));
+
+    // Use more args than placeholders to trigger a warning entry
+    // The warning dispatch also goes through try/catch — covers the second catch block
+    logger.info("{name}", "alice", "extra_arg");
+    logger.flush();
+    SUCCEED();
+}

@@ -39,8 +39,7 @@ namespace minta {
     /// @endcode
     ///
     /// Each configuration call stores settings eagerly.  build() creates a
-    /// LunarLog instance, applies all settings, adds all sinks, and starts
-    /// the background processing thread.
+    /// LunarLog instance, applies all settings, and adds all sinks.
     class LoggerConfiguration {
     public:
         LoggerConfiguration()

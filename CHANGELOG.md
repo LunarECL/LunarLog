@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.29.0] — 2026-02-24
+
+### Changed
+- **Sync-first core architecture** — log entries are now dispatched synchronously on the caller's thread instead of through an internal async queue. AsyncSink remains the opt-in decorator for async delivery. This eliminates double-async when wrapping sinks in AsyncSink, removes ~1.8μs flush overhead, and aligns with Serilog's sync-first design.
+- `flush()` is now a direct call to sink flush (no queue drain needed)
+- Destructor no longer joins a background thread
+
+### Removed
+- Internal async queue infrastructure (`m_logQueue`, `m_logThread`, `processLogQueue()`) — replaced by direct synchronous dispatch
+
+### Performance
+- Single-thread throughput: ~339ns → ~164ns per log call (2x improvement)
+- Flush-every-1: ~1,828ns → ~176ns (10x improvement)
+
 ## [v1.28.0] — 2026-02-24
 
 ### Added

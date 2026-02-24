@@ -1,63 +1,51 @@
-## What's New in v1.28.0
+## What's New in v1.29.0
 
-### Dynamic Log Level / Runtime Configuration Reload (#83)
+### Sync-First Core Architecture
 
-Change log levels, per-sink levels, and filter rules at runtime without restarting your application.
+LunarLog now dispatches log entries **synchronously on the caller's thread** by default. The internal async queue and consumer thread have been removed.
 
-#### LevelSwitch — Shared Observable Level
+#### Before (v1.28.0 and earlier)
+
+```
+logger.info() → format → [internal queue] → consumer thread → sink
+```
+
+Every log call paid ~200ns queue overhead + flush required a round-trip sync (~1.8μs to null sink).
+
+#### After (v1.29.0)
+
+```
+logger.info() → format → sink (direct call)
+```
+
+Logging is now a direct function call. No queue, no thread handoff, no flush overhead.
+
+#### What This Means for You
+
+- **Default behavior is synchronous** — log calls block until the sink finishes writing
+- **Want async?** Wrap any sink with `AsyncSink` — this is the opt-in async decorator with bounded queue, overflow policies (Block/DropOldest/DropNewest), and flush sync
+- **No API changes** — your existing code compiles and works as before
+- **No double-async** — previously, using `AsyncSink` meant double-queuing (internal queue → AsyncSink queue). Now there's exactly one queue when you opt in.
+
+#### Performance Impact
+
+| Benchmark | v1.28.0 (async core) | v1.29.0 (sync core) | Improvement |
+|-----------|---------------------|---------------------|-------------|
+| Info SingleThread | 339 ns | 164 ns | **2x faster** |
+| Flush Every 1 | 1,828 ns | 176 ns | **10x faster** |
+| Flush Every 100 | 457 ns | 193 ns | **2.4x faster** |
+| Trace Disabled | 11.7 ns | 11.7 ns | unchanged |
+
+#### Async Example
 
 ```cpp
-auto levelSwitch = std::make_shared<LevelSwitch>(LogLevel::INFO);
-auto logger = LunarLog::configure()
-    .minLevel(levelSwitch)
-    .writeTo<ConsoleSink>("console")
+auto logger = minta::LunarLog::configure()
+    .minLevel(minta::LogLevel::DEBUG)
+    .writeTo<minta::AsyncSink>("async-console",
+        minta::detail::make_unique<minta::ConsoleSink>(),
+        minta::AsyncOptions{}.queueSize(8192).overflowPolicy(minta::OverflowPolicy::DropOldest))
     .build();
 
-logger.debug("This won't show");      // filtered by INFO
-
-levelSwitch->set(LogLevel::DEBUG);     // takes effect immediately
-
-logger.debug("Now this shows!");       // DEBUG is now visible
+// Non-blocking — enqueued to AsyncSink's internal queue
+logger.info("This won't block the caller");
 ```
-
-Share a `LevelSwitch` between multiple loggers for coordinated level changes.
-
-#### Config File Watcher
-
-```cpp
-auto logger = LunarLog::configure()
-    .minLevel(LogLevel::INFO)
-    .writeTo<ConsoleSink>("console")
-    .writeTo<FileSink>("file", "app.log")
-    .watchConfig("lunarlog.json", std::chrono::seconds(5))
-    .build();
-```
-
-The watcher polls the config file every N seconds and applies changes atomically:
-
-```json
-{
-    "minLevel": "DEBUG",
-    "sinks": {
-        "console": { "level": "WARN" },
-        "file": { "level": "DEBUG" }
-    },
-    "filters": ["INFO+ !~heartbeat"]
-}
-```
-
-**Graceful degradation:** If the config file is malformed or missing, current settings are kept and a warning is logged.
-
-#### Features
-
-- **Atomic level changes** — `LevelSwitch::set()` is thread-safe, takes effect immediately
-- **Per-sink level override** — adjust individual sink verbosity via config
-- **Filter hot-reload** — replace filter rules atomically using COW
-- **Polling-based** — no platform-specific dependencies (inotify/FSEvents)
-- **Case-insensitive** — config accepts `"debug"`, `"DEBUG"`, `"Debug"`
-- **Minimal JSON parser** — header-only, no external dependencies, RFC 8259 compliant
-- **C++11 compatible**
-
-### Test Coverage
-
-40 new tests: JSON parser (12), LevelSwitch (6), config watcher (6), builder integration (2), level parsing (2), config format (2), stress/concurrency (10).

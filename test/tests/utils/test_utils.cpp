@@ -217,7 +217,21 @@ void TestUtils::cleanupLogFiles() {
         // Syslog sink tests
         "syslog_integration_test.txt",
         // Console stream tests
-        "_cs_stdout_cap.txt", "_cs_stderr_cap.txt"
+        "_cs_stdout_cap.txt", "_cs_stderr_cap.txt",
+        // Dynamic config tests
+        "dc_level_switch.txt", "dc_level_thread.txt",
+        "dc_shared_1.txt", "dc_shared_2.txt", "dc_imperative.txt",
+        "dc_watch_level.txt", "dc_watch_malformed.txt",
+        "dc_sink_errors.txt", "dc_sink_all.txt",
+        "dc_filter_reload.txt", "dc_missing_file.txt",
+        "dc_nochange.txt", "dc_builder_full.txt",
+        "dc_switch_restrict.txt",
+        "dc_test_config.json", "dc_test_malformed.json",
+        "dc_test_sinks.json", "dc_test_filters.json",
+        "dc_test_nochange.json", "dc_test_full.json",
+        "dc_nonexistent_config.json",
+        "dc_nolevelswitch.txt", "dc_test_nolevelswitch.json",
+        "dc_concurrent.txt", "dc_test_concurrent.json"
     };
 
     for (const auto &filename : filesToRemove) {

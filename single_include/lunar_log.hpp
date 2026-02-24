@@ -5708,6 +5708,17 @@ namespace minta {
             return *this;
         }
 
+        /// Set a shared observable log level.
+        /// The logger reads from this LevelSwitch on every log call.
+        /// Changing the switch from any thread takes effect immediately.
+        LoggerConfiguration& minLevel(std::shared_ptr<LevelSwitch> levelSwitch) {
+            m_levelSwitch = std::move(levelSwitch);
+            if (m_levelSwitch) {
+                m_minLevel = m_levelSwitch->get();
+            }
+            return *this;
+        }
+
         LoggerConfiguration& captureSourceLocation(bool enable) {
             m_captureSourceLocation = enable;
             return *this;
@@ -5745,6 +5756,22 @@ namespace minta {
         /// Add a DSL filter rule.
         LoggerConfiguration& filterRule(const std::string& dsl) {
             m_filterRules.push_back(dsl);
+            return *this;
+        }
+
+        /// Watch a JSON configuration file for runtime changes.
+        /// The file is polled at the given interval (checking mtime).
+        /// On change, the config is parsed and applied atomically:
+        ///   - "minLevel": updates the global min level (or LevelSwitch)
+        ///   - "sinks": updates per-sink levels by name
+        ///   - "filters": replaces global filter rules via COW
+        /// If the file is malformed, current settings are kept and a
+        /// warning is logged.
+        LoggerConfiguration& watchConfig(const std::string& path,
+                                         std::chrono::seconds interval) {
+            m_watcherParams = detail::make_unique<detail::ConfigWatcherParams>();
+            m_watcherParams->path = path;
+            m_watcherParams->interval = interval;
             return *this;
         }
 
@@ -5979,6 +6006,8 @@ namespace minta {
         std::vector<std::string>      m_filterRules;
         std::vector<SinkRegistration> m_sinks;
         bool m_built;
+        std::shared_ptr<LevelSwitch>  m_levelSwitch;
+        std::unique_ptr<detail::ConfigWatcherParams> m_watcherParams;
     };
 
 } // namespace minta
@@ -6092,6 +6121,11 @@ namespace detail {
         // NOTE: LunarLog must outlive all logging threads. Destroying LunarLog
         // while other threads are still calling log methods is undefined behavior.
         ~LunarLog() noexcept {
+            // Stop config watcher first (its callbacks may enqueue log entries)
+            if (m_configWatcher) {
+                m_configWatcher->stop();
+                m_configWatcher.reset();
+            }
             if (m_threadStarted.load(std::memory_order_acquire)) {
                 flush();
                 m_isRunning = false;
@@ -6128,6 +6162,9 @@ namespace detail {
             , m_rateLimitMaxLogs(other.m_rateLimitMaxLogs)
             , m_rateLimitWindowMs(other.m_rateLimitWindowMs)
             , m_threadStarted(false)
+            , m_levelSwitch(std::move(other.m_levelSwitch))
+            , m_watcherParams(std::move(other.m_watcherParams))
+            , m_watcherStarted(false)
         {
             other.m_isRunning.store(false, std::memory_order_relaxed);
         }
@@ -6142,6 +6179,7 @@ namespace detail {
         }
 
         LogLevel getMinLevel() const {
+            if (m_levelSwitch) return m_levelSwitch->get();
             return m_minLevel.load(std::memory_order_relaxed);
         }
 
@@ -6545,6 +6583,105 @@ namespace detail {
             }
         }
 
+        void ensureConfigWatcher() {
+            if (m_watcherParams &&
+                !m_watcherStarted.load(std::memory_order_acquire)) {
+                std::lock_guard<std::mutex> lock(m_watcherMutex);
+                if (!m_watcherStarted.load(std::memory_order_relaxed)) {
+                    m_configWatcher = detail::make_unique<detail::ConfigWatcher>(
+                        m_watcherParams->path,
+                        m_watcherParams->interval,
+                        [this](const detail::JsonValue& config) {
+                            applyWatcherConfig(config);
+                        },
+                        [this](const std::string& msg) {
+                            this->warn(msg);
+                        }
+                    );
+                    m_configWatcher->start();
+                    m_watcherStarted.store(true, std::memory_order_release);
+                }
+            }
+        }
+
+        void applyWatcherConfig(const detail::JsonValue& config) {
+            if (!config.isObject()) return;
+
+            if (config.hasKey("minLevel") && config["minLevel"].isString()) {
+                LogLevel level;
+                if (detail::tryParseLogLevel(config["minLevel"].asString(), level)) {
+                    if (m_levelSwitch) {
+                        m_levelSwitch->set(level);
+                    } else {
+                        setMinLevel(level);
+                    }
+                }
+            }
+
+            if (config.hasKey("sinks") && config["sinks"].isObject()) {
+                const std::map<std::string, detail::JsonValue>& sinks =
+                    config["sinks"].asObject();
+                for (std::map<std::string, detail::JsonValue>::const_iterator
+                         it = sinks.begin(); it != sinks.end(); ++it) {
+                    if (it->second.isObject() &&
+                        it->second.hasKey("level") &&
+                        it->second["level"].isString()) {
+                        LogLevel sinkLevel;
+                        if (detail::tryParseLogLevel(
+                                it->second["level"].asString(), sinkLevel)) {
+                            try {
+                                size_t idx = m_logManager.getSinkIndex(it->first);
+                                m_logManager.setSinkLevel(idx, sinkLevel);
+                            } catch (...) {
+                                // Unknown sink name — skip
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (config.hasKey("filters") && config["filters"].isArray()) {
+                std::vector<FilterRule> newRules;
+                bool anyFailed = false;
+                const std::vector<detail::JsonValue>& filters =
+                    config["filters"].asArray();
+                for (size_t i = 0; i < filters.size(); ++i) {
+                    if (filters[i].isString()) {
+                        try {
+                            std::vector<FilterRule> parsed =
+                                detail::parseCompactFilter(filters[i].asString());
+                            for (size_t j = 0; j < parsed.size(); ++j) {
+                                newRules.push_back(std::move(parsed[j]));
+                            }
+                        } catch (...) {
+                            anyFailed = true;
+                        }
+                    }
+                }
+                // Only replace if at least one rule parsed successfully,
+                // or if the config explicitly has an empty filters array.
+                // If all entries failed to parse, preserve existing filters.
+                if (!anyFailed || !newRules.empty()) {
+                    replaceFilterRules(std::move(newRules));
+                }
+            }
+        }
+
+        void replaceFilterRules(std::vector<FilterRule> rules) {
+            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            if (rules.empty()) {
+                m_globalFilterRules.reset();
+            } else {
+                m_globalFilterRules =
+                    std::make_shared<const std::vector<FilterRule>>(
+                        std::move(rules));
+            }
+            m_hasGlobalFilters.store(
+                (m_globalFilter && static_cast<bool>(*m_globalFilter)) ||
+                (m_globalFilterRules && !m_globalFilterRules->empty()),
+                std::memory_order_release);
+        }
+
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_isRunning;
         std::atomic<long long> m_rateLimitWindowStart;
@@ -6593,6 +6730,12 @@ namespace detail {
         long long m_rateLimitWindowMs;
         std::atomic<bool> m_threadStarted;
 
+        std::shared_ptr<LevelSwitch> m_levelSwitch;
+        std::unique_ptr<detail::ConfigWatcherParams> m_watcherParams;
+        std::unique_ptr<detail::ConfigWatcher> m_configWatcher;
+        std::atomic<bool> m_watcherStarted{false};
+        std::mutex m_watcherMutex;
+
         static std::vector<PlaceholderInfo> extractPlaceholders(const std::string &messageTemplate) {
             std::vector<PlaceholderInfo> placeholders;
             detail::forEachPlaceholder(messageTemplate, [&](const detail::ParsedPlaceholder& ph) {
@@ -6601,10 +6744,15 @@ namespace detail {
             return placeholders;
         }
 
+        LogLevel effectiveMinLevel() const {
+            if (m_levelSwitch) return m_levelSwitch->get();
+            return m_minLevel.load(std::memory_order_relaxed);
+        }
+
         template<typename... Args>
         void logInternal(LogLevel level, const char* file, int line, const char* function, const std::string &messageTemplate, const Args &... args) {
             if (!m_isRunning.load(std::memory_order_acquire)) return;
-            if (level < m_minLevel.load(std::memory_order_relaxed)) return;
+            if (level < effectiveMinLevel()) return;
             if (!rateLimitCheck()) return;
 
             std::vector<std::string> values{toString(args)...};
@@ -6613,9 +6761,9 @@ namespace detail {
 
         template<typename... Args>
         void logInternalWithException(LogLevel level, const char* file, int line, const char* function,
-                                      const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
+                                       const std::exception& ex, const std::string &messageTemplate, const Args &... args) {
             if (!m_isRunning.load(std::memory_order_acquire)) return;
-            if (level < m_minLevel.load(std::memory_order_relaxed)) return;
+            if (level < effectiveMinLevel()) return;
             if (!rateLimitCheck()) return;
 
             std::vector<std::string> values{toString(args)...};
@@ -6733,6 +6881,7 @@ namespace detail {
             }
 
             ensureProcessingThread();
+            ensureConfigWatcher();
 
             std::unique_lock<std::mutex> lock(m_queueMutex);
             m_logQueue.push(std::move(entry));
@@ -7273,6 +7422,13 @@ namespace detail {
             }
         }
 
+        if (m_levelSwitch) {
+            logger.m_levelSwitch = std::move(m_levelSwitch);
+        }
+        if (m_watcherParams) {
+            logger.m_watcherParams = std::move(m_watcherParams);
+        }
+
         // Thread starts lazily on first log call (ensureProcessingThread()
         // is called in emitLogEntryImpl). This avoids spawning a thread that
         // may never be needed and prevents CI timeout issues when many
@@ -7601,6 +7757,13 @@ namespace minta {
 
         GlobalLoggerConfiguration& minLevel(LogLevel level) {
             m_config.minLevel(level); return *this;
+        }
+        GlobalLoggerConfiguration& minLevel(std::shared_ptr<LevelSwitch> levelSwitch) {
+            m_config.minLevel(std::move(levelSwitch)); return *this;
+        }
+        GlobalLoggerConfiguration& watchConfig(const std::string& path,
+                                               std::chrono::seconds interval) {
+            m_config.watchConfig(path, interval); return *this;
         }
         GlobalLoggerConfiguration& captureSourceLocation(bool enable) {
             m_config.captureSourceLocation(enable); return *this;

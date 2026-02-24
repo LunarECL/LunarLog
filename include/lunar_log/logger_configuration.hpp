@@ -5,9 +5,11 @@
 // class definition.  It must not be included directly — use lunar_log.hpp.
 
 #include "core/log_level.hpp"
+#include "core/level_switch.hpp"
 #include "core/enricher.hpp"
 #include "core/sink_proxy.hpp"
 #include "core/log_common.hpp"
+#include "core/config_watcher.hpp"
 #include "sink/sink_interface.hpp"
 #include "sink/sub_logger_sink.hpp"
 #include "formatter/formatter_interface.hpp"
@@ -63,6 +65,17 @@ namespace minta {
             return *this;
         }
 
+        /// Set a shared observable log level.
+        /// The logger reads from this LevelSwitch on every log call.
+        /// Changing the switch from any thread takes effect immediately.
+        LoggerConfiguration& minLevel(std::shared_ptr<LevelSwitch> levelSwitch) {
+            m_levelSwitch = std::move(levelSwitch);
+            if (m_levelSwitch) {
+                m_minLevel = m_levelSwitch->get();
+            }
+            return *this;
+        }
+
         LoggerConfiguration& captureSourceLocation(bool enable) {
             m_captureSourceLocation = enable;
             return *this;
@@ -100,6 +113,22 @@ namespace minta {
         /// Add a DSL filter rule.
         LoggerConfiguration& filterRule(const std::string& dsl) {
             m_filterRules.push_back(dsl);
+            return *this;
+        }
+
+        /// Watch a JSON configuration file for runtime changes.
+        /// The file is polled at the given interval (checking mtime).
+        /// On change, the config is parsed and applied atomically:
+        ///   - "minLevel": updates the global min level (or LevelSwitch)
+        ///   - "sinks": updates per-sink levels by name
+        ///   - "filters": replaces global filter rules via COW
+        /// If the file is malformed, current settings are kept and a
+        /// warning is logged.
+        LoggerConfiguration& watchConfig(const std::string& path,
+                                         std::chrono::seconds interval) {
+            m_watcherParams = detail::make_unique<detail::ConfigWatcherParams>();
+            m_watcherParams->path = path;
+            m_watcherParams->interval = interval;
             return *this;
         }
 
@@ -334,6 +363,8 @@ namespace minta {
         std::vector<std::string>      m_filterRules;
         std::vector<SinkRegistration> m_sinks;
         bool m_built;
+        std::shared_ptr<LevelSwitch>  m_levelSwitch;
+        std::unique_ptr<detail::ConfigWatcherParams> m_watcherParams;
     };
 
 } // namespace minta

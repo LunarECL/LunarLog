@@ -5,6 +5,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.28.0] — 2026-02-24
+
+### Added
+- **Dynamic Log Level / Runtime Configuration Reload** (#83) — change log levels, per-sink levels, and filter rules at runtime
+- `LevelSwitch` class — shared observable log level with atomic updates
+- `ConfigWatcher` — polling-based config file watcher (no inotify/FSEvents dependency)
+- Minimal header-only JSON parser for config files (no external dependencies)
+- `watchConfig()` builder method for automatic config file monitoring
+- `minLevel(std::shared_ptr<LevelSwitch>)` builder overload
+- Per-sink level reload and filter hot-reload via COW
+- Graceful degradation: malformed config keeps current settings with warning
+- Case-insensitive log level parsing in config files
+- 40 new tests covering JSON parser, LevelSwitch, config watcher, concurrency stress, and edge cases
+- `examples/dynamic_level.cpp` demonstrating LevelSwitch and config file watcher
+
 ## [v1.27.0] — 2026-02-23
 
 ### Added

@@ -273,6 +273,13 @@ namespace minta {
         GlobalLoggerConfiguration& minLevel(LogLevel level) {
             m_config.minLevel(level); return *this;
         }
+        GlobalLoggerConfiguration& minLevel(std::shared_ptr<LevelSwitch> levelSwitch) {
+            m_config.minLevel(std::move(levelSwitch)); return *this;
+        }
+        GlobalLoggerConfiguration& watchConfig(const std::string& path,
+                                               std::chrono::seconds interval) {
+            m_config.watchConfig(path, interval); return *this;
+        }
         GlobalLoggerConfiguration& captureSourceLocation(bool enable) {
             m_config.captureSourceLocation(enable); return *this;
         }

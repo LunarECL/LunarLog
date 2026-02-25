@@ -77,7 +77,7 @@ wget https://raw.githubusercontent.com/LunarECL/LunarLog/master/single_include/l
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(LunarLog GIT_REPOSITORY https://github.com/LunarECL/LunarLog.git GIT_TAG v1.29.0)
+FetchContent_Declare(LunarLog GIT_REPOSITORY https://github.com/LunarECL/LunarLog.git GIT_TAG v1.29.1)
 FetchContent_MakeAvailable(LunarLog)
 target_link_libraries(YourTarget PRIVATE LunarLog)
 ```
@@ -100,7 +100,7 @@ Once in the official registry: `vcpkg install lunarlog`
 **Conan** *(pending ConanCenter acceptance)*:
 
 ```bash
-conan install --requires="lunarlog/1.29.0"
+conan install --requires="lunarlog/1.29.1"
 ```
 
 Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/wiki/Getting-Started)

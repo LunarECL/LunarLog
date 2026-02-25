@@ -1,8 +1,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO LunarECL/LunarLog
-    REF "v1.29.0"
-    SHA512 0  # SHA512 will be updated after release tag is created
+    REF "v1.29.1"
+    SHA512 07e479734568ebf7dd00f3e7d9dbc3d359fa3c1fe7270440aa719f7ee48904a5556e97397195398ada3375b1c7e0e5b289dccabb0ec82e362e7010fd441450a9
     HEAD_REF master
 )
 

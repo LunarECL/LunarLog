@@ -6,7 +6,7 @@ import os
 
 class LunarLogConan(ConanFile):
     name = "lunarlog"
-    version = "1.29.0"
+    version = "1.29.1"
     description = "Header-only C++11 structured logging with message templates"
     license = "MIT"
     url = "https://github.com/LunarECL/LunarLog"

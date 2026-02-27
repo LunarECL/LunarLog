@@ -14,6 +14,7 @@
 #include "log_manager.hpp"
 #include "sink/console_sink.hpp"
 #include "formatter/human_readable_formatter.hpp"
+#include "core/shared_mutex.hpp"
 #include <atomic>
 #include <mutex>
 #include <type_traits>
@@ -387,20 +388,20 @@ namespace detail {
         ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             m_globalFilter = std::make_shared<const FilterPredicate>(std::move(filter));
             m_hasGlobalFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             m_globalFilter.reset();
             m_hasGlobalFilters.store(m_globalFilterRules && !m_globalFilterRules->empty(), std::memory_order_release);
         }
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             auto newRules = std::make_shared<std::vector<FilterRule>>(
                 m_globalFilterRules ? *m_globalFilterRules : std::vector<FilterRule>());
             newRules->push_back(std::move(rule));
@@ -409,13 +410,13 @@ namespace detail {
         }
 
         void clearFilterRules() {
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             m_globalFilterRules.reset();
             m_hasGlobalFilters.store(m_globalFilter && static_cast<bool>(*m_globalFilter), std::memory_order_release);
         }
 
         void clearAllFilters() {
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             m_globalFilter.reset();
             m_globalFilterRules.reset();
             m_hasGlobalFilters.store(false, std::memory_order_release);
@@ -428,7 +429,7 @@ namespace detail {
         void filter(const std::string& compactExpr) {
             std::vector<FilterRule> rules = detail::parseCompactFilter(compactExpr);
             if (rules.empty()) return;
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             auto newRules = std::make_shared<std::vector<FilterRule>>(
                 m_globalFilterRules ? *m_globalFilterRules : std::vector<FilterRule>());
             newRules->reserve(newRules->size() + rules.size());
@@ -464,19 +465,19 @@ namespace detail {
         }
 
         void setContext(const std::string& key, const std::string& value) {
-            std::lock_guard<std::mutex> lock(m_contextMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_contextMutex);
             m_customContext[key] = value;
             m_hasCustomContext.store(true, std::memory_order_release);
         }
 
         void clearContext(const std::string& key) {
-            std::lock_guard<std::mutex> lock(m_contextMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_contextMutex);
             m_customContext.erase(key);
             m_hasCustomContext.store(!m_customContext.empty(), std::memory_order_release);
         }
 
         void clearAllContext() {
-            std::lock_guard<std::mutex> lock(m_contextMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_contextMutex);
             m_customContext.clear();
             m_hasCustomContext.store(false, std::memory_order_release);
         }
@@ -489,7 +490,7 @@ namespace detail {
         /// they remain accessible for lookups but no new entries are
         /// inserted until the map size drops below the new cap.
         void setTemplateCacheSize(size_t size) {
-            std::lock_guard<std::mutex> lock(m_cacheMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_cacheMutex);
             m_templateCacheSize = size;
             if (size == 0) {
                 m_templateCache.clear();
@@ -497,13 +498,13 @@ namespace detail {
         }
 
         void setLocale(const std::string& locale) {
-            std::lock_guard<std::mutex> lock(m_localeMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_localeMutex);
             m_locale = locale;
             m_hasLocale.store(locale != "C" && locale != "POSIX" && !locale.empty(), std::memory_order_release);
         }
 
         std::string getLocale() const {
-            std::lock_guard<std::mutex> lock(m_localeMutex);
+            detail::ReadLock<detail::SharedMutex> lock(m_localeMutex);
             return m_locale;
         }
 
@@ -632,7 +633,7 @@ namespace detail {
         }
 
         void replaceFilterRules(std::vector<FilterRule> rules) {
-            std::lock_guard<std::mutex> lock(m_globalFilterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_globalFilterMutex);
             if (rules.empty()) {
                 m_globalFilterRules.reset();
             } else {
@@ -650,7 +651,7 @@ namespace detail {
         std::atomic<bool> m_isRunning;
         std::atomic<long long> m_rateLimitWindowStart;
         std::atomic<size_t> m_logCount;
-        std::mutex m_contextMutex;
+        detail::SharedMutex m_contextMutex;
         LogManager m_logManager;
         std::map<std::string, std::string> m_customContext;
         std::atomic<bool> m_captureSourceLocation;
@@ -668,16 +669,16 @@ namespace detail {
             int alignment;   // >0 right-align, <0 left-align, 0 = none
         };
 
-        std::mutex m_cacheMutex;
+        detail::SharedMutex m_cacheMutex;
         std::unordered_map<std::string, std::shared_ptr<const std::vector<PlaceholderInfo>>> m_templateCache;
         size_t m_templateCacheSize;
 
-        std::mutex m_globalFilterMutex;
+        detail::SharedMutex m_globalFilterMutex;
         std::atomic<bool> m_hasGlobalFilters;
         std::shared_ptr<const FilterPredicate> m_globalFilter;
         std::shared_ptr<const std::vector<FilterRule>> m_globalFilterRules;
 
-        mutable std::mutex m_localeMutex;
+        mutable detail::SharedMutex m_localeMutex;
         std::atomic<bool> m_hasLocale{false};
         std::string m_locale = "C";
 
@@ -754,7 +755,7 @@ namespace detail {
             std::shared_ptr<const std::vector<PlaceholderInfo>> placeholdersPtr;
             bool cacheHit = false;
             {
-                std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
+                detail::ReadLock<detail::SharedMutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     auto it = m_templateCache.find(effectiveTemplate);
                     if (it != m_templateCache.end()) {
@@ -766,7 +767,7 @@ namespace detail {
             if (!cacheHit) {
                 auto parsed = extractPlaceholders(effectiveTemplate);
                 placeholdersPtr = std::make_shared<const std::vector<PlaceholderInfo>>(std::move(parsed));
-                std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
+                detail::WriteLock<detail::SharedMutex> cacheLock(m_cacheMutex);
                 if (m_templateCacheSize > 0) {
                     if (m_templateCache.size() < m_templateCacheSize) {
                         m_templateCache[effectiveTemplate] = placeholdersPtr;
@@ -776,7 +777,7 @@ namespace detail {
 
             std::string localeCopy = "C";
             if (m_hasLocale.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> localeLock(m_localeMutex);
+                detail::ReadLock<detail::SharedMutex> localeLock(m_localeMutex);
                 localeCopy = m_locale;
             }
 
@@ -790,7 +791,7 @@ namespace detail {
             bool captureCtx = m_captureSourceLocation.load(std::memory_order_relaxed);
             std::map<std::string, std::string> contextCopy;
             if (m_hasCustomContext.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> contextLock(m_contextMutex);
+                detail::ReadLock<detail::SharedMutex> contextLock(m_contextMutex);
                 contextCopy = m_customContext;
             }
 
@@ -871,7 +872,7 @@ namespace detail {
             std::shared_ptr<const FilterPredicate>& filter,
             std::shared_ptr<const std::vector<FilterRule>>& rules) {
             if (m_hasGlobalFilters.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> flock(m_globalFilterMutex);
+                detail::ReadLock<detail::SharedMutex> flock(m_globalFilterMutex);
                 filter = m_globalFilter;
                 rules  = m_globalFilterRules;
             }

@@ -326,3 +326,145 @@ TEST_F(NamedSinksTest, ThreeSinksWithDifferentLevels) {
     EXPECT_TRUE(errorContent.find("Info msg") == std::string::npos);
     EXPECT_TRUE(errorContent.find("Error msg") != std::string::npos);
 }
+
+
+// ── ISink filter/tag clear methods coverage ─────────────────────────────────
+
+TEST(SinkFilterCoverage, ClearAllFilters) {
+    std::remove("test_clear_all.txt");
+    auto logger = minta::LunarLog::configure()
+        .writeTo<minta::FileSink>("s", "test_clear_all.txt")
+        .build();
+
+    logger.sink("s").filter([](const minta::LogEntry&) { return false; });
+    logger.sink("s").filter("WARN+");
+    logger.info("blocked");
+    logger.flush();
+
+    logger.sink("s").clearFilters();
+    logger.info("visible after clearAll");
+    logger.flush();
+
+    TestUtils::waitForFileContent("test_clear_all.txt");
+    auto content = TestUtils::readLogFile("test_clear_all.txt");
+    EXPECT_TRUE(content.find("blocked") == std::string::npos);
+    EXPECT_TRUE(content.find("visible after clearAll") != std::string::npos);
+}
+
+TEST(SinkFilterCoverage, ClearFilterPredicate) {
+    std::remove("test_clear_pred.txt");
+    auto logger = minta::LunarLog::configure()
+        .writeTo<minta::FileSink>("s", "test_clear_pred.txt")
+        .build();
+
+    logger.sink("s").filter([](const minta::LogEntry&) { return false; });
+    logger.info("blocked");
+    logger.flush();
+
+    logger.sink("s").clearFilter();
+    logger.info("visible after clearFilter");
+    logger.flush();
+
+    TestUtils::waitForFileContent("test_clear_pred.txt");
+    auto content = TestUtils::readLogFile("test_clear_pred.txt");
+    EXPECT_TRUE(content.find("blocked") == std::string::npos);
+    EXPECT_TRUE(content.find("visible after clearFilter") != std::string::npos);
+}
+
+TEST(SinkFilterCoverage, ClearFilterRules) {
+    std::remove("test_clear_rules.txt");
+    auto logger = minta::LunarLog::configure()
+        .writeTo<minta::FileSink>("s", "test_clear_rules.txt")
+        .build();
+
+    logger.sink("s").filter("WARN+");
+    logger.info("filtered out");
+    logger.flush();
+
+    logger.sink("s").clearFilterRules();
+    logger.info("visible after clearRules");
+    logger.flush();
+
+    TestUtils::waitForFileContent("test_clear_rules.txt");
+    auto content = TestUtils::readLogFile("test_clear_rules.txt");
+    EXPECT_TRUE(content.find("filtered out") == std::string::npos);
+    EXPECT_TRUE(content.find("visible after clearRules") != std::string::npos);
+}
+
+TEST(SinkTagCoverage, ClearOnlyTags) {
+    std::remove("test_clear_only.txt");
+    auto logger = minta::LunarLog::configure()
+        .writeTo<minta::FileSink>("s", "test_clear_only.txt")
+        .build();
+
+    logger.sink("s").only("special");
+
+    auto tags = logger.sink("s").getOnlyTags();
+    EXPECT_EQ(tags.size(), 1u);
+    EXPECT_TRUE(tags.count("special"));
+
+    logger.info("untagged blocked");
+    logger.flush();
+
+    logger.sink("s").clearOnlyTags();
+    tags = logger.sink("s").getOnlyTags();
+    EXPECT_TRUE(tags.empty());
+
+    logger.info("untagged visible");
+    logger.flush();
+
+    TestUtils::waitForFileContent("test_clear_only.txt");
+    auto content = TestUtils::readLogFile("test_clear_only.txt");
+    EXPECT_TRUE(content.find("untagged blocked") == std::string::npos);
+    EXPECT_TRUE(content.find("untagged visible") != std::string::npos);
+}
+
+TEST(SinkTagCoverage, ClearExceptTags) {
+    std::remove("test_clear_except.txt");
+    auto logger = minta::LunarLog::configure()
+        .writeTo<minta::FileSink>("s", "test_clear_except.txt")
+        .build();
+
+    logger.sink("s").except("noisy");
+
+    auto tags = logger.sink("s").getExceptTags();
+    EXPECT_EQ(tags.size(), 1u);
+    EXPECT_TRUE(tags.count("noisy"));
+
+    logger.info("[noisy] should be blocked");
+    logger.flush();
+
+    logger.sink("s").clearExceptTags();
+    tags = logger.sink("s").getExceptTags();
+    EXPECT_TRUE(tags.empty());
+
+    logger.info("[noisy] now visible");
+    logger.flush();
+
+    TestUtils::waitForFileContent("test_clear_except.txt");
+    auto content = TestUtils::readLogFile("test_clear_except.txt");
+    EXPECT_TRUE(content.find("should be blocked") == std::string::npos);
+    EXPECT_TRUE(content.find("now visible") != std::string::npos);
+}
+
+TEST(SinkTagCoverage, ClearAllTagFilters) {
+    std::remove("test_clearall_tags.txt");
+    auto logger = minta::LunarLog::configure()
+        .writeTo<minta::FileSink>("s", "test_clearall_tags.txt")
+        .build();
+
+    logger.sink("s").only("a").except("b");
+    logger.sink("s").clearTagFilters();
+
+    auto only = logger.sink("s").getOnlyTags();
+    auto except = logger.sink("s").getExceptTags();
+    EXPECT_TRUE(only.empty());
+    EXPECT_TRUE(except.empty());
+
+    logger.info("all clear");
+    logger.flush();
+
+    TestUtils::waitForFileContent("test_clearall_tags.txt");
+    auto content = TestUtils::readLogFile("test_clearall_tags.txt");
+    EXPECT_TRUE(content.find("all clear") != std::string::npos);
+}

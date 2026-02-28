@@ -81,6 +81,24 @@ namespace minta {
             return *this;
         }
 
+        SinkProxy& clearOnlyTags() {
+            m_sink->clearOnlyTags();
+            return *this;
+        }
+
+        SinkProxy& clearExceptTags() {
+            m_sink->clearExceptTags();
+            return *this;
+        }
+
+        std::set<std::string> getOnlyTags() const {
+            return m_sink->getOnlyTags();
+        }
+
+        std::set<std::string> getExceptTags() const {
+            return m_sink->getExceptTags();
+        }
+
         /// Set the output template for text-based formatters.
         /// Only applies to HumanReadableFormatter. No-op for JSON/XML formatters.
         SinkProxy& outputTemplate(const std::string& templateStr) {

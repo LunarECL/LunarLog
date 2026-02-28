@@ -6,6 +6,7 @@
 #include "../core/filter_rule.hpp"
 #include "../formatter/formatter_interface.hpp"
 #include "../transport/transport_interface.hpp"
+#include "../core/shared_mutex.hpp"
 #include <memory>
 #include <atomic>
 #include <mutex>
@@ -33,7 +34,7 @@ namespace minta {
 
         // --- Tag routing (COW) ---
         void addOnlyTag(const std::string& tag) {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_tagMutex);
             auto newTags = std::make_shared<std::set<std::string>>(
                 m_onlyTags ? *m_onlyTags : std::set<std::string>());
             newTags->insert(tag);
@@ -41,7 +42,7 @@ namespace minta {
             m_hasTagFilters.store(true, std::memory_order_release);
         }
         void addExceptTag(const std::string& tag) {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_tagMutex);
             auto newTags = std::make_shared<std::set<std::string>>(
                 m_exceptTags ? *m_exceptTags : std::set<std::string>());
             newTags->insert(tag);
@@ -49,27 +50,27 @@ namespace minta {
             m_hasTagFilters.store(true, std::memory_order_release);
         }
         void clearOnlyTags() {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_tagMutex);
             m_onlyTags.reset();
             m_hasTagFilters.store(m_exceptTags && !m_exceptTags->empty(), std::memory_order_release);
         }
         void clearExceptTags() {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_tagMutex);
             m_exceptTags.reset();
             m_hasTagFilters.store(m_onlyTags && !m_onlyTags->empty(), std::memory_order_release);
         }
         void clearTagFilters() {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_tagMutex);
             m_onlyTags.reset();
             m_exceptTags.reset();
             m_hasTagFilters.store(false, std::memory_order_release);
         }
         std::set<std::string> getOnlyTags() const {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::ReadLock<detail::SharedMutex> lock(m_tagMutex);
             return m_onlyTags ? *m_onlyTags : std::set<std::string>();
         }
         std::set<std::string> getExceptTags() const {
-            std::lock_guard<std::mutex> lock(m_tagMutex);
+            detail::ReadLock<detail::SharedMutex> lock(m_tagMutex);
             return m_exceptTags ? *m_exceptTags : std::set<std::string>();
         }
 
@@ -86,7 +87,7 @@ namespace minta {
             std::shared_ptr<const std::set<std::string>> onlyTags;
             std::shared_ptr<const std::set<std::string>> exceptTags;
             {
-                std::lock_guard<std::mutex> lock(m_tagMutex);
+                detail::ReadLock<detail::SharedMutex> lock(m_tagMutex);
                 onlyTags = m_onlyTags;
                 exceptTags = m_exceptTags;
             }
@@ -117,19 +118,19 @@ namespace minta {
         ///       Filter predicates must capture state by value.  Referenced
         ///       objects must outlive the logger.
         void setFilter(FilterPredicate filter) {
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             m_filter = std::make_shared<const FilterPredicate>(std::move(filter));
             m_hasFilters.store(true, std::memory_order_release);
         }
 
         void clearFilter() {
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             m_filter.reset();
             m_hasFilters.store(m_filterRules && !m_filterRules->empty(), std::memory_order_release);
         }
 
         void addFilterRule(FilterRule rule) {
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             auto newRules = std::make_shared<std::vector<FilterRule>>(
                 m_filterRules ? *m_filterRules : std::vector<FilterRule>());
             newRules->push_back(std::move(rule));
@@ -139,7 +140,7 @@ namespace minta {
 
         void addFilterRules(std::vector<FilterRule> rules) {
             if (rules.empty()) return;
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             auto newRules = std::make_shared<std::vector<FilterRule>>(
                 m_filterRules ? *m_filterRules : std::vector<FilterRule>());
             newRules->reserve(newRules->size() + rules.size());
@@ -152,7 +153,7 @@ namespace minta {
 
         void addFilterRule(const std::string& ruleStr) {
             FilterRule rule = FilterRule::parse(ruleStr);
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             auto newRules = std::make_shared<std::vector<FilterRule>>(
                 m_filterRules ? *m_filterRules : std::vector<FilterRule>());
             newRules->push_back(std::move(rule));
@@ -161,13 +162,13 @@ namespace minta {
         }
 
         void clearFilterRules() {
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             m_filterRules.reset();
             m_hasFilters.store(m_filter && static_cast<bool>(*m_filter), std::memory_order_release);
         }
 
         void clearAllFilters() {
-            std::lock_guard<std::mutex> lock(m_filterMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_filterMutex);
             m_filter.reset();
             m_filterRules.reset();
             m_hasFilters.store(false, std::memory_order_release);
@@ -197,7 +198,7 @@ namespace minta {
             std::shared_ptr<const FilterPredicate> filter;
             std::shared_ptr<const std::vector<FilterRule>> rules;
             {
-                std::lock_guard<std::mutex> lock(m_filterMutex);
+                detail::ReadLock<detail::SharedMutex> lock(m_filterMutex);
                 filter = m_filter;
                 rules = m_filterRules;
             }
@@ -232,13 +233,13 @@ namespace minta {
         std::unique_ptr<ITransport> m_transport;
         std::atomic<LogLevel> m_minLevel;
         std::atomic<bool> m_hasFilters;
-        mutable std::mutex m_filterMutex;
+        mutable detail::SharedMutex m_filterMutex;
         std::shared_ptr<const FilterPredicate> m_filter;
         std::shared_ptr<const std::vector<FilterRule>> m_filterRules;
 
         std::string m_sinkName;
         std::atomic<bool> m_hasTagFilters;
-        mutable std::mutex m_tagMutex;
+        mutable detail::SharedMutex m_tagMutex;
         std::shared_ptr<const std::set<std::string>> m_onlyTags;
         std::shared_ptr<const std::set<std::string>> m_exceptTags;
 

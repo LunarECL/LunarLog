@@ -231,7 +231,9 @@ void TestUtils::cleanupLogFiles() {
         "dc_test_nochange.json", "dc_test_full.json",
         "dc_nonexistent_config.json",
         "dc_nolevelswitch.txt", "dc_test_nolevelswitch.json",
-        "dc_concurrent.txt", "dc_test_concurrent.json"
+        "dc_concurrent.txt", "dc_test_concurrent.json",
+        "test_clear_all.txt", "test_clear_pred.txt", "test_clear_rules.txt",
+        "test_clear_only.txt", "test_clear_except.txt", "test_clearall_tags.txt"
     };
 
     for (const auto &filename : filesToRemove) {

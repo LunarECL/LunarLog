@@ -3,6 +3,7 @@
 
 #include "../core/log_entry.hpp"
 #include "../core/log_common.hpp"
+#include "../core/shared_mutex.hpp"
 #include <string>
 #include <vector>
 #include <mutex>
@@ -19,12 +20,12 @@ namespace minta {
         /// this locale instead of the logger-level locale stored in the entry.
         /// Thread-safe: can be called concurrently with format().
         void setLocale(const std::string& locale) {
-            std::lock_guard<std::mutex> lock(m_localeMutex);
+            detail::WriteLock<detail::SharedMutex> lock(m_localeMutex);
             m_locale = locale;
         }
 
         std::string getLocale() const {
-            std::lock_guard<std::mutex> lock(m_localeMutex);
+            detail::ReadLock<detail::SharedMutex> lock(m_localeMutex);
             return m_locale;
         }
 
@@ -36,7 +37,7 @@ namespace minta {
             // Copy locale under lock, then use the copy outside.
             std::string localeCopy;
             {
-                std::lock_guard<std::mutex> lock(m_localeMutex);
+                detail::ReadLock<detail::SharedMutex> lock(m_localeMutex);
                 localeCopy = m_locale;
             }
             if (localeCopy.empty() || localeCopy == entry.locale) {
@@ -81,7 +82,7 @@ namespace minta {
         }
 
     private:
-        mutable std::mutex m_localeMutex;
+        mutable detail::SharedMutex m_localeMutex;
         std::string m_locale;
     };
 } // namespace minta

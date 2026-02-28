@@ -77,7 +77,7 @@ wget https://raw.githubusercontent.com/LunarECL/LunarLog/master/single_include/l
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(LunarLog GIT_REPOSITORY https://github.com/LunarECL/LunarLog.git GIT_TAG v1.29.1)
+FetchContent_Declare(LunarLog GIT_REPOSITORY https://github.com/LunarECL/LunarLog.git GIT_TAG v1.29.2)
 FetchContent_MakeAvailable(LunarLog)
 target_link_libraries(YourTarget PRIVATE LunarLog)
 ```

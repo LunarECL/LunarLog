@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v1.29.2] — 2026-02-28
+
+### Changed
+- Hot-path mutexes (`m_cacheMutex`, `m_localeMutex`, `m_contextMutex`, `m_globalFilterMutex`, `ISink::m_filterMutex`, `ISink::m_tagMutex`, `IFormatter::m_localeMutex`) converted from `std::mutex` to `std::shared_mutex` on C++17, with transparent `std::mutex` fallback on C++11/14
+- Shared lock abstraction extracted to `core/shared_mutex.hpp` with `detail::SharedMutex`, `detail::ReadLock`, `detail::WriteLock` aliases
+- MSVC `_MSVC_LANG` detection for correct C++17 feature gating
+
+### Added
+- `SinkProxy::clearOnlyTags()`, `clearExceptTags()`, `getOnlyTags()`, `getExceptTags()` accessors
+- Tests for sink filter/tag clear methods (7 new tests)
+
 ## [v1.29.0] — 2026-02-24
 
 ### Changed

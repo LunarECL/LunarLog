@@ -1,51 +1,22 @@
-## What's New in v1.29.0
+# LunarLog v1.29.2 — Release Notes
 
-### Sync-First Core Architecture
+## shared_mutex for hot-path locks
 
-LunarLog now dispatches log entries **synchronously on the caller's thread** by default. The internal async queue and consumer thread have been removed.
+Converted 7 read-heavy mutexes across `log_source.hpp`, `sink_interface.hpp`, and `formatter_interface.hpp` from `std::mutex` to `std::shared_mutex` (C++17). On C++11/14, the library transparently falls back to `std::mutex` with identical behavior.
 
-#### Before (v1.28.0 and earlier)
+### What changed
 
-```
-logger.info() → format → [internal queue] → consumer thread → sink
-```
+- **Template cache**, **locale**, **context**, and **global filter** locks in the logger now use shared (reader) locks on the hot path
+- **Per-sink filter** and **tag routing** locks also converted — these are called per log entry per sink
+- **Per-formatter locale** lock converted
+- Shared lock abstraction extracted to `core/shared_mutex.hpp`
+- MSVC `_MSVC_LANG` detection ensures C++17 features activate correctly without `/Zc:__cplusplus`
 
-Every log call paid ~200ns queue overhead + flush required a round-trip sync (~1.8μs to null sink).
+### New SinkProxy accessors
 
-#### After (v1.29.0)
+- `clearOnlyTags()`, `clearExceptTags()` — clear tag routing filters individually
+- `getOnlyTags()`, `getExceptTags()` — inspect current tag filters
 
-```
-logger.info() → format → sink (direct call)
-```
+### Tests
 
-Logging is now a direct function call. No queue, no thread handoff, no flush overhead.
-
-#### What This Means for You
-
-- **Default behavior is synchronous** — log calls block until the sink finishes writing
-- **Want async?** Wrap any sink with `AsyncSink` — this is the opt-in async decorator with bounded queue, overflow policies (Block/DropOldest/DropNewest), and flush sync
-- **No API changes** — your existing code compiles and works as before
-- **No double-async** — previously, using `AsyncSink` meant double-queuing (internal queue → AsyncSink queue). Now there's exactly one queue when you opt in.
-
-#### Performance Impact
-
-| Benchmark | v1.28.0 (async core) | v1.29.0 (sync core) | Improvement |
-|-----------|---------------------|---------------------|-------------|
-| Info SingleThread | 339 ns | 164 ns | **2x faster** |
-| Flush Every 1 | 1,828 ns | 176 ns | **10x faster** |
-| Flush Every 100 | 457 ns | 193 ns | **2.4x faster** |
-| Trace Disabled | 11.7 ns | 11.7 ns | unchanged |
-
-#### Async Example
-
-```cpp
-auto logger = minta::LunarLog::configure()
-    .minLevel(minta::LogLevel::DEBUG)
-    .writeTo<minta::AsyncSink>("async-console",
-        minta::detail::make_unique<minta::ConsoleSink>(),
-        minta::AsyncOptions{}.queueSize(8192).overflowPolicy(minta::OverflowPolicy::DropOldest))
-    .build();
-
-// Non-blocking — enqueued to AsyncSink's internal queue
-logger.info("This won't block the caller");
-```
+- 7 new tests covering sink filter and tag clear/get methods

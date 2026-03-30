@@ -3,9 +3,10 @@
 **Header-only C++11 structured logging with [message templates](https://messagetemplates.org/). Inspired by [Serilog](https://serilog.net/).**
 
 [![CI](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarECL/LunarLog/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/LunarECL/LunarLog/branch/master/graph/badge.svg)](https://codecov.io/gh/LunarECL/LunarLog)
+[![Coverage](https://codecov.io/gh/LunarECL/LunarLog/branch/main/graph/badge.svg)](https://codecov.io/gh/LunarECL/LunarLog)
 [![Release](https://img.shields.io/github/v/release/LunarECL/LunarLog)](https://github.com/LunarECL/LunarLog/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Conan](https://img.shields.io/conan/v/lunarlog)](https://conan.io/center/recipes/lunarlog)
 ![C++11](https://img.shields.io/badge/C%2B%2B-11%2F14%2F17-blue.svg)
 
 ## Quick Start
@@ -89,18 +90,16 @@ add_subdirectory(LunarLog)
 target_link_libraries(YourTarget PRIVATE LunarLog)
 ```
 
-**vcpkg** *(pending official registry acceptance)*:
+**Conan:**
 
 ```bash
-vcpkg install lunarlog --overlay-ports=./ports
+conan install --requires="lunarlog/1.29.2"
 ```
 
-Once in the official registry: `vcpkg install lunarlog`
-
-**Conan** *(pending ConanCenter acceptance)*:
+**vcpkg** (overlay port):
 
 ```bash
-conan install --requires="lunarlog/1.29.1"
+vcpkg install lunarlog --overlay-ports=path/to/LunarLog/ports
 ```
 
 Full installation guide: [Getting Started](https://github.com/LunarECL/LunarLog/wiki/Getting-Started)
